@@ -1,7 +1,7 @@
 """producer 層：決定這一輪要做哪些任務，依序執行（課程補充 J Step 4）。API → raw 表。
 
-    uv run python -m crawler.producer                        # 抓今天（daily ＝ 只有今天的 init）
-    uv run python -m crawler.producer init --start 20261001  # 回補到今天（可加 --end）
+    uv run python -m crawler.producer                        # 抓今天（daily ＝ 只有今天的 backfill）
+    uv run python -m crawler.producer backfill --start 20261001  # 回補到今天（可加 --end）
 
 任務清單的每一項是 (任務函式, 參數 dict)，例如 (task.crawl_notice, {"date_yyyymmdd": "20261113"})。
 現在用 func(**kwargs) 當場執行；Step 5 接 Celery 時改成 func.delay(**kwargs) 送進 RabbitMQ。
@@ -76,19 +76,19 @@ def run_jobs(jobs: list[tuple], sleep: float) -> list[str]:
 
 
 def parse_args() -> argparse.Namespace:
-    """讀指令參數，例如 `init --start 20261001` → args.mode="init"、args.start="20261001"。"""
+    """讀指令參數，例如 `backfill --start 20261001` → args.mode="backfill"、args.start="20261001"。"""
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="mode")                # 模式（子指令）存到 args.mode；沒給就是 None
     sub.add_parser("daily", help="只抓今天（預設）")
-    init = sub.add_parser("init", help="回補一段期間")
-    init.add_argument("--start", required=True, help="YYYYMMDD")
-    init.add_argument("--end", default=today_yyyymmdd(), help="YYYYMMDD，預設今天")
+    backfill = sub.add_parser("backfill", help="回補一段期間")
+    backfill.add_argument("--start", required=True, help="YYYYMMDD")
+    backfill.add_argument("--end", default=today_yyyymmdd(), help="YYYYMMDD，預設今天")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    if args.mode == "init":
+    if args.mode == "backfill":
         start, end = args.start, args.end
     else:
         start = end = today_yyyymmdd()

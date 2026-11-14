@@ -47,17 +47,19 @@ analyze    stage_* 表 → app_* 表     規則引擎算進度
 | `transform 有任務失敗，不跑 analyze` | 整理時程式出錯 | 看上面 `✗` 那行的錯誤，修好程式再補跑 |
 | `缺少必要的資料，不算進度：[...]` | 算進度需要的資料那天還沒有 | 補跑那天 |
 
-3. 補跑 11/13：`uv run python main.py init --start 20261113 --end 20261113`（不加 `--end` 就從 11/13 補到今天）。只更新那幾天的資料，重跑也不會重複。
+3. 補跑 11/13：`uv run python main.py backfill --start 20261113 --end 20261113`（不加 `--end` 就從 11/13 補到今天）。只更新那幾天的資料，重跑也不會重複。
 
    也可以一步一步跑，從出錯的那一步開始，後面的步驟都要跟著跑：
 
    ```
-   uv run python -m crawler.producer   init --start 20261113 --end 20261113   # 1. 抓資料（打 API）
-   uv run python -m transform.producer init --start 20261113 --end 20261113   # 2. 整理資料
-   uv run python -m analyze.producer   init --start 20261113 --end 20261113   # 3. 算離處置還差幾次
+   uv run python -m crawler.producer   backfill --start 20261113 --end 20261113   # 1. 抓資料（打 API）
+   uv run python -m transform.producer backfill --start 20261113 --end 20261113   # 2. 整理資料
+   uv run python -m analyze.producer   backfill --start 20261113 --end 20261113   # 3. 算離處置還差幾次
    ```
 
    例如 raw 都有抓到、只是 transform 出錯：修好程式後跑 2、3，不用重打 API。
+
+   改了規則或 transform 之後要從 raw 重算一段期間：`scripts\run_rebuild.bat 20260701`（先跑測試，沒過就不動資料；再跑 2、3，不打 API；log 在 `data/rebuild.log`）。
 
 ## crawler：API → raw
 
@@ -94,13 +96,13 @@ analyze    stage_* 表 → app_* 表     規則引擎算進度
 
 ```
 uv run python main.py                                   # 三步一次跑完（今天）
-uv run python main.py init --start 20260701             # 三步一次跑完（一段期間，可加 --end）
-uv run python -m crawler.producer [init --start ...]    # 只跑一步，transform、analyze 同樣
+uv run python main.py backfill --start 20260701             # 三步一次跑完（一段期間，可加 --end）
+uv run python -m crawler.producer [backfill --start ...]    # 只跑一步，transform、analyze 同樣
 uv run python -m analyze.backtest                       # 回測
 uv run pytest                                           # 測試
 ```
 
-漏跑：`main.py init --start <漏跑那天>`。注意累計名單只有最新一份，要在下一個交易日收盤前補。
+漏跑：`main.py backfill --start <漏跑那天>`。注意累計名單只有最新一份，要在下一個交易日收盤前補。
 
 改了 `schema/` 的欄位：程式不會刪表重建，要自己對資料庫下 `ALTER TABLE`。
 

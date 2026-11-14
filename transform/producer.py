@@ -1,7 +1,7 @@
 """producer 層（轉換）：決定這一輪要整理哪些 raw，依序執行（跟 crawler/producer.py 同樣的寫法）。raw → stage。
 
     uv run python -m transform.producer                        # 只處理今天（daily）
-    uv run python -m transform.producer init --start 20260701  # 處理一段期間（可加 --end）
+    uv run python -m transform.producer backfill --start 20260701  # 處理一段期間（可加 --end）
 
 任務清單的每一項是 (任務函式, 參數 dict)，例如 (task.transform_notice, {"date_yyyymmdd": "20261113"})。
 範圍跟 crawler 抓的一樣。任務之間互不依賴：一個任務失敗不影響其他任務，最後列出失敗清單。
@@ -48,19 +48,19 @@ def run_jobs(jobs: list[tuple]) -> list[str]:
 
 
 def parse_args() -> argparse.Namespace:
-    """跟 crawler/producer.py 一樣：daily（預設，只處理今天）或 init --start（處理一段期間）。"""
+    """跟 crawler/producer.py 一樣：daily（預設，只處理今天）或 backfill --start（處理一段期間）。"""
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="mode")
     sub.add_parser("daily", help="只處理今天（預設）")
-    init = sub.add_parser("init", help="處理一段期間")
-    init.add_argument("--start", required=True, help="YYYYMMDD")
-    init.add_argument("--end", default=today_yyyymmdd(), help="YYYYMMDD，預設今天")
+    backfill = sub.add_parser("backfill", help="處理一段期間")
+    backfill.add_argument("--start", required=True, help="YYYYMMDD")
+    backfill.add_argument("--end", default=today_yyyymmdd(), help="YYYYMMDD，預設今天")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    if args.mode == "init":
+    if args.mode == "backfill":
         start, end = args.start, args.end
     else:
         start = end = today_yyyymmdd()

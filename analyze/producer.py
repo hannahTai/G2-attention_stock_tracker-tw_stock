@@ -1,7 +1,7 @@
 """producer 層（分析）：決定這一輪要算哪幾天的進度，依序執行（跟 crawler、transform 的 producer 同樣的寫法）。stage → app。
 
     uv run python -m analyze.producer                        # 只算今天（daily）
-    uv run python -m analyze.producer init --start 20260701  # 算一段期間（可加 --end）
+    uv run python -m analyze.producer backfill --start 20260701  # 算一段期間（可加 --end）
 
 任務清單的每一項是 (任務函式, 參數 dict)，例如 (task.analyze_progress, {"date_yyyymmdd": "20261113"})。
 每個日期一個任務，照日期順序執行，其中一個任務失敗就停。要在 transform 之後執行（要用到前幾天的 stage）。
@@ -53,19 +53,19 @@ def run_jobs(jobs: list[tuple]) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    """跟 crawler/producer.py 一樣：daily（預設，只算今天）或 init --start（算一段期間）。"""
+    """跟 crawler/producer.py 一樣：daily（預設，只算今天）或 backfill --start（算一段期間）。"""
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="mode")
     sub.add_parser("daily", help="只算今天（預設）")
-    init = sub.add_parser("init", help="算一段期間")
-    init.add_argument("--start", required=True, help="YYYYMMDD")
-    init.add_argument("--end", default=today_yyyymmdd(), help="YYYYMMDD，預設今天")
+    backfill = sub.add_parser("backfill", help="算一段期間")
+    backfill.add_argument("--start", required=True, help="YYYYMMDD")
+    backfill.add_argument("--end", default=today_yyyymmdd(), help="YYYYMMDD，預設今天")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    if args.mode == "init":
+    if args.mode == "backfill":
         start, end = args.start, args.end
     else:
         start = end = today_yyyymmdd()
