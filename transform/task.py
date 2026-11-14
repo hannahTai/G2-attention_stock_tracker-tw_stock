@@ -67,13 +67,21 @@ def transform_punish(date_yyyymmdd: str) -> str:
 
 
 # ==================== 一份涵蓋一段期間 ====================
+def notice_days(month_yyyymm: str) -> set:
+    """這個月有人被列注意的日子（讀 raw_notice，不靠 stage，跟 transform_notice 誰先跑都沒關係）。"""
+    keys = [k for k in repository.list_raw_keys("notice") if k.startswith(month_yyyymm)]
+    return {pd.Timestamp(raw["meta"]["key"]).date() for raw in repository.read_raws("notice", keys)
+            if isinstance(raw["body"], dict) and raw["body"].get("data")}
+
+
 def transform_market_daily(month_yyyymm: str) -> str:
     """每日市場成交（一個月）→ stage_trading_day：涵蓋到的每一天一列，標是不是交易日。"""
     raw = repository.read_raw("market_daily", month_yyyymm)
     if raw is None:
         return skipped("market_daily", month_yyyymm)
     through = transformer.covered_through(raw["meta"]["fetched_at"])   # 這份涵蓋到哪天（看抓取時間）
-    days = transformer.clean_trading_day(transformer.market_daily_to_frame([raw]), month_yyyymm, through)
+    days = transformer.clean_trading_day(transformer.market_daily_to_frame([raw]), month_yyyymm, through,
+                                         notice_days(month_yyyymm))
     rows = upsert_stage({"stage_trading_day": days})
     return f"stage_trading_day {month_yyyymm}：{rows} 列"
 

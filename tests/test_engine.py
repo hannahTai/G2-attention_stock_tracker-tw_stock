@@ -119,10 +119,10 @@ def test_only_stocks_noticed_in_last_30_days_get_a_row():
     assert rows["stock_id"].tolist() == ["2424"]   # 1111 是 35 個營業日前，已經超過 30 天
 
 
-def test_full_history_needs_30_trading_days():
+def test_has_full_history_needs_30_trading_days():
     c = clauses(("2424", 28, [1]), ("2424", 29, [1]))
-    assert not progress(c, punishes(), 28)[0]["full_history"]
-    assert progress(c, punishes(), 29)[0]["full_history"]
+    assert not progress(c, punishes(), 28)[0]["has_full_history"]
+    assert progress(c, punishes(), 29)[0]["has_full_history"]
 
 
 # ---------- 還差幾次、若再列注意 ----------

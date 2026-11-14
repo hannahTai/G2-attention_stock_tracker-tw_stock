@@ -10,14 +10,16 @@ SELECT
     (SELECT n2.stock_name FROM stage_notice n2
       WHERE n2.stock_id = p.stock_id AND n2.trade_date <= p.trade_date
       ORDER BY n2.trade_date DESC LIMIT 1)                      AS stock_name,      -- 最近一次被列注意時的名稱
-    n.stock_id IS NOT NULL                                      AS listed_today,    -- 今天有沒有被列注意（注意股分頁）
+    n.stock_id IS NOT NULL                                      AS is_listed_today, -- 今天有沒有被列注意（注意股分頁）
+    EXISTS (SELECT 1 FROM stage_company co WHERE co.company_id = p.stock_id)
+                                                                AS is_company,      -- 是不是上市公司（卡片牆只放上市公司，不放權證、ETF）
     n.close_price,                                                                  -- 今天沒被列為 NULL
     n.reason_text,                                                                  -- 今天被列的原因全文
     (SELECT GROUP_CONCAT(c.clause ORDER BY c.clause) FROM stage_notice_clause c
       WHERE c.stock_id = p.stock_id AND c.trade_date = p.trade_date)  AS clauses,    -- 今天被列第幾款，例如 1,2
     (SELECT COUNT(*) > 0 FROM stage_notice_clause c
       WHERE c.stock_id = p.stock_id AND c.trade_date = p.trade_date
-        AND c.clause BETWEEN 1 AND 8)                           AS counted_today,   -- 今天會不會累計（第 1～8 款）
+        AND c.clause BETWEEN 1 AND 8)                           AS is_counted_today, -- 今天會不會累計（第 1～8 款）
     s.measure_type    AS punish_measure,                                            -- 處置中那次：第一次處置、第二次處置…
     s.trigger_condition AS punish_condition,                                        -- 處置條件，例如 連續三次
     s.match_interval_minutes AS punish_match_minutes,                               -- 撮合間隔（分鐘）
@@ -41,7 +43,7 @@ SELECT
     c.trade_date,
     c.stock_id,
     GROUP_CONCAT(c.clause ORDER BY c.clause) AS clauses,
-    MAX(c.clause BETWEEN 1 AND 8)            AS counted     -- 1＝累計（有第 1～8 款），0＝不累計（只有第 9～14 款）
+    MAX(c.clause BETWEEN 1 AND 8)            AS is_counted  -- 1＝累計（有第 1～8 款），0＝不累計（只有第 9～14 款）
 FROM stage_notice_clause c
 GROUP BY c.trade_date, c.stock_id;
 
@@ -59,7 +61,7 @@ SELECT
     announce_time,
     company_name,
     subject,
-    announce_time <= '14:30:00' AS during_session,     -- 1＝交易時段內（14:30 前，含盤後定價交易）
+    announce_time <= '14:30:00' AS is_during_session,  -- 1＝交易時段內（14:30 前，含盤後定價交易）
     subject LIKE '%更正%'        AS is_correction,      -- 更正公告
     (subject LIKE '%澄清%' OR (subject LIKE '%說明%' AND subject NOT LIKE '%說明會%'))
                                 AS is_explanation       -- 說明、澄清公告（排除「法人說明會」）

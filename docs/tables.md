@@ -329,7 +329,7 @@ erDiagram
 | steps_left | TINYINT | 還差幾次：四條裡最少的（卡片上的大字「差 N 次」） |
 | closest_path | VARCHAR(10) | 最快達標的那條（同分依 streak3、streak5、in10、in30 的順序） |
 | punished_by | VARCHAR(40) | 今天達到哪幾條，例如 `streak3`；沒有為 NULL |
-| full_history | BOOLEAN | 前面有沒有 30 個營業日的資料；沒有時 in30 可能偏少 |
+| has_full_history | BOOLEAN | 前面有沒有 30 個營業日的資料；沒有時 in30 可能偏少 |
 | punish_start | DATE | 處置起日（來自 `stage_punish`）；公布當天到出關當天都有值，其他為 NULL，下兩欄同 |
 | punish_end | DATE | 處置迄日 |
 | resume_date | DATE | 出關：迄日的下一個營業日，恢復正常交易 |
@@ -344,7 +344,7 @@ erDiagram
 - 今天達標（`punished_by` 有值）時，`*_left`、`steps_left` 都是 NULL：隔天重新算。
 - 未來的營業日依開休市日期推算（週一～五、扣掉休市日）；臨時休市要隔天重算才會反映。
 - 第 13 款若在再列的那天才出現，會延長為 7 天，事前算不出來（回測 129 筆中 5 筆是這種）。
-- 卡片牆分頁：聽牌＝`steps_left = 1`；處置股＝`punish_start ≤ trade_date ≤ punish_end`；明日出關＝`punish_end = trade_date`；今日出關＝`resume_date = trade_date`；注意股＝`app_card.listed_today`。
+- 卡片牆分頁：聽牌＝`steps_left = 1`；處置股＝`punish_start ≤ trade_date ≤ punish_end`；明日出關＝`punish_end = trade_date`；今日出關＝`resume_date = trade_date`；注意股＝`app_card.is_listed_today`。卡片牆只放 `app_card.is_company = 1`（不放權證、ETF）。
 
 ### app_progress_date　計入的日期
 
@@ -364,7 +364,7 @@ VIEW 是存起來的查詢，不複製資料；網頁查的時候 MySQL 才去�
 
 | VIEW | 給哪個畫面 | 內容 |
 |---|---|---|
-| `app_card` | 卡片牆、個股卡片上半部 | `app_progress` 每一列，加上 `stock_name`、`listed_today`、`close_price`、`reason_text`、`clauses`（今天被列第幾款，例如 `1,2`）、`counted_today`、處置中那次的 `punish_measure`／`punish_condition`／`punish_match_minutes`、`announcement_count`（近 30 個營業日公告則數） |
-| `app_notice_history` | 注意紀錄格子 | 每檔每個被列注意的交易日：`clauses`、`counted`（1＝累計）。沒被列的日子沒有列；早於 `count_start` 的是「已計入前次處置」 |
+| `app_card` | 卡片牆、個股卡片上半部 | `app_progress` 每一列，加上 `stock_name`、`is_listed_today`、`is_company`（上市公司；卡片牆只放這些，不放權證、ETF）、`close_price`、`reason_text`、`clauses`（今天被列第幾款，例如 `1,2`）、`is_counted_today`、處置中那次的 `punish_measure`／`punish_condition`／`punish_match_minutes`、`announcement_count`（近 30 個營業日公告則數） |
+| `app_notice_history` | 注意紀錄格子 | 每檔每個被列注意的交易日：`clauses`、`is_counted`（1＝累計）。沒被列的日子沒有列；早於 `count_start` 的是「已計入前次處置」 |
 | `app_punish_history` | 處置紀錄 | `stage_punish` 的欄位 |
-| `app_announcement` | 公司公告 | `stage_announcement`，加上 `during_session`（14:30 前＝交易時段內）、`is_correction`（更正）、`is_explanation`（說明、澄清；排除法人說明會） |
+| `app_announcement` | 公司公告 | `stage_announcement`，加上 `is_during_session`（14:30 前＝交易時段內）、`is_correction`（更正）、`is_explanation`（說明、澄清；排除法人說明會） |

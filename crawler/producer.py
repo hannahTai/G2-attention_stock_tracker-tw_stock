@@ -7,10 +7,9 @@
 現在用 func(**kwargs) 當場執行；Step 5 接 Celery 時改成 func.delay(**kwargs) 送進 RabbitMQ。
 分兩批：證交所先跑完，觀測站才能依當天的注意股、處置股決定要查哪些公司。
 """
-import argparse
 import time
 
-from common import repository
+from common import cli, repository
 from common.config import SLEEP_SECONDS, SLEEP_SECONDS_MOPS
 from common.date_utils import dates_between, months_between, prev_month, today_yyyymmdd
 from crawler import client, task
@@ -75,23 +74,8 @@ def run_jobs(jobs: list[tuple], sleep: float) -> list[str]:
     return failed
 
 
-def parse_args() -> argparse.Namespace:
-    """讀指令參數，例如 `backfill --start 20261001` → args.mode="backfill"、args.start="20261001"。"""
-    parser = argparse.ArgumentParser()
-    sub = parser.add_subparsers(dest="mode")                # 模式（子指令）存到 args.mode；沒給就是 None
-    sub.add_parser("daily", help="只抓今天（預設）")
-    backfill = sub.add_parser("backfill", help="回補一段期間")
-    backfill.add_argument("--start", required=True, help="YYYYMMDD")
-    backfill.add_argument("--end", default=today_yyyymmdd(), help="YYYYMMDD，預設今天")
-    return parser.parse_args()
-
-
 def main() -> None:
-    args = parse_args()
-    if args.mode == "backfill":
-        start, end = args.start, args.end
-    else:
-        start = end = today_yyyymmdd()
+    start, end = cli.date_range()   # daily：今天；backfill：--start～--end
 
     failed = run_jobs(build_twse_jobs(start, end), SLEEP_SECONDS)
     failed += run_jobs(build_mops_jobs(start, end), SLEEP_SECONDS_MOPS)   # 要先有第一批的注意股、處置股、公司清單

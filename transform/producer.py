@@ -7,10 +7,9 @@
 範圍跟 crawler 抓的一樣。任務之間互不依賴：一個任務失敗不影響其他任務，最後列出失敗清單。
 raw 沒抓到（crawler 失敗）的任務會自己跳過，不算失敗；要不要算進度由 analyze 檢查。
 """
-import argparse
 
-from common import repository
-from common.date_utils import dates_between, months_between, prev_month, today_yyyymmdd
+from common import cli, repository
+from common.date_utils import dates_between, months_between, prev_month
 from transform import task
 
 
@@ -47,23 +46,8 @@ def run_jobs(jobs: list[tuple]) -> list[str]:
     return failed
 
 
-def parse_args() -> argparse.Namespace:
-    """跟 crawler/producer.py 一樣：daily（預設，只處理今天）或 backfill --start（處理一段期間）。"""
-    parser = argparse.ArgumentParser()
-    sub = parser.add_subparsers(dest="mode")
-    sub.add_parser("daily", help="只處理今天（預設）")
-    backfill = sub.add_parser("backfill", help="處理一段期間")
-    backfill.add_argument("--start", required=True, help="YYYYMMDD")
-    backfill.add_argument("--end", default=today_yyyymmdd(), help="YYYYMMDD，預設今天")
-    return parser.parse_args()
-
-
 def main() -> None:
-    args = parse_args()
-    if args.mode == "backfill":
-        start, end = args.start, args.end
-    else:
-        start = end = today_yyyymmdd()
+    start, end = cli.date_range()   # daily：今天；backfill：--start～--end
 
     repository.create_tables()   # 確認資料庫和表都在：不存在就建立（不會刪表）
 

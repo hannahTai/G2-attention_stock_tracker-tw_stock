@@ -8,12 +8,11 @@
 算之前先檢查必要的 stage 資料（注意股、處置股、交易日）那天都有；缺了就不算，避免算出錯的進度。
 其他資料（重大訊息、公司清單…）只給卡片顯示，缺了不影響進度。
 """
-import argparse
 import datetime
 
 from analyze import task
-from common import repository
-from common.date_utils import dates_between, today_yyyymmdd
+from common import cli, repository
+from common.date_utils import dates_between
 
 
 def build_jobs(start: str, end: str) -> list[tuple]:
@@ -52,23 +51,8 @@ def run_jobs(jobs: list[tuple]) -> None:
             raise SystemExit(1)
 
 
-def parse_args() -> argparse.Namespace:
-    """跟 crawler/producer.py 一樣：daily（預設，只算今天）或 backfill --start（算一段期間）。"""
-    parser = argparse.ArgumentParser()
-    sub = parser.add_subparsers(dest="mode")
-    sub.add_parser("daily", help="只算今天（預設）")
-    backfill = sub.add_parser("backfill", help="算一段期間")
-    backfill.add_argument("--start", required=True, help="YYYYMMDD")
-    backfill.add_argument("--end", default=today_yyyymmdd(), help="YYYYMMDD，預設今天")
-    return parser.parse_args()
-
-
 def main() -> None:
-    args = parse_args()
-    if args.mode == "backfill":
-        start, end = args.start, args.end
-    else:
-        start = end = today_yyyymmdd()
+    start, end = cli.date_range()   # daily：今天；backfill：--start～--end
 
     repository.create_tables()   # 確認資料庫和表都在：不存在就建立（不會刪表）
 

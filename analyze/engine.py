@@ -26,7 +26,7 @@ EXTEND_CLAUSE = 13                             # 當沖占比過高
 
 PROGRESS_COLUMNS = ["trade_date", "stock_id", "count_start", "streak3", "streak5", "in10", "in30",
                     "streak3_left", "streak5_left", "in10_left", "in30_left", "steps_left", "closest_path",
-                    "punished_by", "full_history", "punish_start", "punish_end", "resume_date",
+                    "punished_by", "has_full_history", "punish_start", "punish_end", "resume_date",
                     "next_listed_date", "next_punish_round", "next_punish_start", "next_punish_end", "next_resume_date"]
 NEXT_COLUMNS = ["next_listed_date", "next_punish_round", "next_punish_start", "next_punish_end", "next_resume_date"]
 DATE_COLUMNS = ["trade_date", "stock_id", "path", "counted_date"]
@@ -185,7 +185,7 @@ def one_stock_one_day(stock: str, stock_days: dict, punishments: list[tuple],
     punished_by = [path for path in THRESHOLDS if counts[path] >= THRESHOLDS[path]]
 
     row = {"trade_date": day, "stock_id": stock, "count_start": days[first], **counts,
-           "punished_by": ",".join(punished_by) or None, "full_history": i >= 29}
+           "punished_by": ",".join(punished_by) or None, "has_full_history": i >= 29}
 
     # 3. 每條還差幾次；今天已經達標的話明天重新算，還差幾次就沒有意義
     if punished_by:

@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS app_progress (
     steps_left    TINYINT               COMMENT '還差幾次：四條裡最少的；今天達標為 NULL',
     closest_path  VARCHAR(10)           COMMENT '最快達標的那條（同分依 streak3、streak5、in10、in30 的順序）',
     punished_by   VARCHAR(40)           COMMENT '今天達到哪幾條，例如 streak3,in10；沒有為 NULL',
-    full_history  BOOLEAN      NOT NULL COMMENT '前面有沒有足夠的資料（30 個營業日）；沒有的話 in30 可能偏少',
+    has_full_history  BOOLEAN      NOT NULL COMMENT '前面有沒有足夠的資料（30 個營業日）；沒有的話 in30 可能偏少',
     punish_start  DATE                  COMMENT '處置起日：公布當天到出關當天都有值；沒有為 NULL，下同',
     punish_end    DATE                  COMMENT '處置迄日',
     resume_date   DATE                  COMMENT '出關：迄日的下一個營業日，恢復正常交易',

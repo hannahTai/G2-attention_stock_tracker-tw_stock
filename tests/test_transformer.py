@@ -260,3 +260,12 @@ def test_announcement_no_data_is_empty():
     """code 406「查無相符資料」：那個月沒有公告，result 是 null。"""
     raw = {"meta": {}, "body": {"code": 406, "message": "查無相符資料", "result": None}}
     assert clean_announcement(announcement_to_frame([raw])).empty
+
+
+def test_trading_day_not_updated_if_notices_exist():
+    """11/04 市場成交裡沒有，但那天有人被列注意 → 其實有交易，是資料還沒更新：不寫這列（不是颱風假）。"""
+    rows = [["115/11/02", "1", "1", "1", "1", "1"], ["115/11/03", "1", "1", "1", "1", "1"]]
+    with pytest.warns(UserWarning, match="還沒有"):
+        df = clean_trading_day(market_daily_to_frame([envelope(rows, MARKET_API_FIELDS)]), "202611",
+                               datetime.date(2026, 11, 4), notice_days={datetime.date(2026, 11, 4)})
+    assert df["trade_date"].tolist() == [datetime.date(2026, 11, d) for d in (1, 2, 3)]

@@ -139,11 +139,14 @@ def covered_through(fetched_time: str) -> datetime.date:
     return fetched.date() - datetime.timedelta(days=1)
 
 
-def clean_trading_day(df: pd.DataFrame, month_yyyymm: str, through: datetime.date) -> pd.DataFrame:
+def clean_trading_day(df: pd.DataFrame, month_yyyymm: str, through: datetime.date,
+                      notice_days: set[datetime.date] = frozenset()) -> pd.DataFrame:
     """→ stage_trading_day：這個月 1 號到 through（資料涵蓋到的那天）的每一天，一天一列。
 
     資料裡有的那天＝有交易（is_trading=1）；涵蓋範圍內但資料裡沒有＝沒交易（週末、休市、颱風假，is_trading=0）。
     through 之後的日子不寫：還不知道有沒有交易，analyze 看到沒有這列就不算那天。
+    notice_days：有人被列注意的日子。資料裡沒有、但那天有人被列注意 → 那天其實有交易，是市場成交還沒更新，
+    不寫這列（當作還不知道），免得把交易日當成沒交易。
     """
     trading = clean_trading_rows(df)
     first = pd.Period(month_yyyymm, "M").start_time.date()
@@ -152,7 +155,10 @@ def clean_trading_day(df: pd.DataFrame, month_yyyymm: str, through: datetime.dat
 
     out = calendar.merge(trading, on="trade_date", how="outer")   # outer：資料比 through 新的那天也留著
     out.insert(1, "is_trading", out["trade_date"].isin(set(trading["trade_date"])))
-    return out.sort_values("trade_date").reset_index(drop=True)
+    not_updated = ~out["is_trading"] & out["trade_date"].isin(set(notice_days))
+    if not_updated.any():
+        warnings.warn(f"市場成交還沒有 {sorted(out.loc[not_updated, 'trade_date'])}，但那天有注意股：先不寫，等下次抓")
+    return out[~not_updated].sort_values("trade_date").reset_index(drop=True)
 
 
 def clean_trading_rows(df: pd.DataFrame) -> pd.DataFrame:

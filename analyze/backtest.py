@@ -39,7 +39,7 @@ def read_punish_and_progress(start: str, end: str) -> tuple[pd.DataFrame, pd.Dat
         "SELECT announce_date AS trade_date, stock_id, stock_name, trigger_condition "
         "FROM stage_punish WHERE announce_date BETWEEN :start AND :end"), engine, params=params)
     predicted = pd.read_sql(sqlalchemy.text(
-        "SELECT trade_date, stock_id, punished_by, streak3, streak5, in10, in30, count_start, full_history "
+        "SELECT trade_date, stock_id, punished_by, streak3, streak5, in10, in30, count_start, has_full_history "
         "FROM app_progress WHERE trade_date BETWEEN :start AND :end"), engine, params=params)
     for df in (actual, predicted):
         df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.date
@@ -83,7 +83,7 @@ def report(result: pd.DataFrame) -> None:
         print(f"一致的處置裡，條件也對上的：{int(hits['same_condition'].sum())}／{len(hits)}")
 
     cols = ["trade_date", "stock_id", "stock_name", "trigger_condition", "punished_by",
-            "streak3", "streak5", "in10", "in30", "count_start", "full_history"]
+            "streak3", "streak5", "in10", "in30", "count_start", "has_full_history"]
     for label in ("漏判", "誤判"):
         rows = result[result["result"] == label]
         if len(rows):
