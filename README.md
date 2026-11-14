@@ -1,29 +1,52 @@
 # 注意股，還差幾步？
 
-> 證交所每天告訴你哪檔股票被列為「注意股」；這個專案告訴你**它還差幾次會變成處置股、每一步依據哪條規則、這段期間公司說了什麼**。
+> 一句話描述：為收盤後才看盤的短線、融資散戶，解決「自選股被列注意後，還差幾次會被處置、哪天開始受限」查不到的問題。
 
 TibaMe 資料工程專題（NKR204），個人製作。2026/11 起實作，預計 12 月底 Demo。
 
 ---
 
-## 這個專案在解決什麼問題
+## 為什麼做這個
 
-台股有一套「注意 → 處置」制度：證交所每個交易日收盤後公布注意股，其中第 1–8 款的注意次數會累計，達到門檻（連 3 日、連 5 日、10 日內 6 次、30 日內 12 次）就成為**處置股**——撮合變慢、大額委託要先預收款券。
+台股有一套「注意 → 處置」制度：證交所每個交易日收盤後公布注意股，第 1–8 款的注意次數會累計，達到門檻（連 3 日、連 5 日、10 日內 6 次、30 日內 12 次）就成為**處置股**——撮合變慢、大額委託要先預收款券。
 
-做短線或用融資的散戶，自選股被列注意時最想知道的是：
+自選股被列注意時，散戶最想知道：這次會不會累計？還差幾次會被處置？如果明天再被列注意，從哪天開始受限？這些資訊今天散在 4 個地方（作業要點、證交所兩個公告頁面、觀測站逐家查詢），官方名單只列「只差一次」的股票，而且沒有歷史。
 
-- 這次的注意款次**會不會累計**？
-- 還差幾次會被處置？計入的是哪幾天？
-- 如果明天再被列注意，**從哪天開始受限、限到哪天**？
-- 這段期間公司在公開資訊觀測站說了什麼？
+**本專案每個交易日替每檔注意股與處置股產生一張卡片**，只放可指回原文的事實：注意款次、四條累計路徑的進度（列出計入的日期）、處置條件與措施、公司公告，並標示與官方名單的比對結果。
 
-這些資訊今天散在 4 個地方：《注意交易資訊暨處置作業要點》、證交所兩個公告頁面、觀測站逐家查詢。官方的「注意累計可能達處置標準」名單只列**只差一次**的股票，而且沒有歷史。
+**不做的事：** 不預測漲跌、不推薦買賣、不判斷是否涉及炒作。範圍限上市公司股票（不含權證、ETF）。
 
-**本專案每個交易日替每檔注意股與處置股產生一張卡片**，只放可指回原文的事實：注意款次、四條累計路徑的進度、處置條件與措施、公司公告。每個累計數字列出計入的日期，並標示與官方名單的比對結果（官方一致／依要點推算／與官方不一致）。
+---
 
-**不做的事：** 不預測漲跌、不推薦買賣、不判斷是否涉及炒作。
+## 系統架構
 
-## 產出長什麼樣
+```
+Source → Ingest → Storage → Process → Serve → Observe
+```
+
+```mermaid
+flowchart LR
+    S["📁 Source<br/>證交所 API<br/>觀測站 API"] --> I["📥 Ingest<br/>Python requests<br/>每日 21:00 排程"]
+    I --> ST["💾 Storage<br/>MySQL<br/>raw / stage / app"]
+    ST --> P["⚙️ Process<br/>pandas<br/>清理 + 規則引擎"]
+    P --> SE["🖥 Serve<br/>FastAPI 卡片網站"]
+    SE --> O["📡 Observe<br/>daily.log + 回測<br/>失敗通知"]
+```
+
+| 階段 | 工具 |
+|---|---|
+| Source | 證交所 API（注意股、處置股、注意累計名單、開休市日期、市場成交、上市公司）、公開資訊觀測站 API（重大訊息） |
+| Ingest | Python requests；Windows 工作排程器（之後 Airflow + Celery + RabbitMQ） |
+| Storage | MySQL 三層：`raw_*`（API 原文）→ `stage_*`（清理後）→ `app_*`（引擎結果）；之後 Cloud SQL、BigQuery |
+| Process | pandas：`transform/` 整理（raw → stage）、`analyze/` 規則引擎——要點第六條累計進度（stage → app） |
+| Serve | FastAPI 卡片網站（個股卡片、卡片牆、驗證頁）；Metabase → Looker Studio 儀表板 |
+| Observe | `data/daily.log`、回測（上市公司 66/66 一致）；之後失敗通知（Discord webhook） |
+
+順序是 ELT：原文先存進 raw，再清理、計算；規則改了可以從 raw 重算，不必重抓。每天只處理當天的資料。
+
+地端（11 月）與雲端（12 月）架構圖：[`docs/images/architecture-local.png`](docs/images/architecture-local.png)、[`docs/images/architecture-cloud.png`](docs/images/architecture-cloud.png)。
+
+### 產出
 
 | 畫面 | 內容 |
 | --- | --- |
@@ -34,67 +57,70 @@ TibaMe 資料工程專題（NKR204），個人製作。2026/11 起實作，預�
 
 線框圖見 [`docs/images/`](docs/images/)，詳細定義見 [`docs/proposal.md`](docs/proposal.md) 第 5 節。
 
-## 資料來源
-
-全部是公開 HTTP JSON，不需登入；範圍限上市公司股票。
-
-| 來源 | 用途 |
-| --- | --- |
-| 證交所 注意股 `notice` | 輸入清單、注意款次、累計計算 |
-| 證交所 處置股 `punish` | 處置 tag、歷史回測的答案 |
-| 證交所 注意累計名單 `notetrans` | 每日驗證（只有最新一日） |
-| 證交所 開休市日期、個股日成交 | 交易日曆、臨時休市判定 |
-| 證交所 OpenAPI 上市公司基本資料 | 公司股票判定、產業別 |
-| 公開資訊觀測站 重大訊息 | 公司公告 tag（一次一家、一個月） |
-
-## 架構
-
-**地端（11 月）：** WSL 2 + Docker Compose
-
-![地端架構](docs/images/architecture-local.png)
-
-**雲端（12 月）：** GCP
-
-![雲端架構](docs/images/architecture-cloud.png)
-
-| 環節 | 工具 |
-| --- | --- |
-| 擷取 | Python requests、Celery + RabbitMQ（觀測站逐家逐月查詢需限速、重試） |
-| 排程 | Airflow（只做編排，抓取與規則引擎都在 worker 執行） |
-| 資料庫 | MySQL → Cloud SQL；分析用 BigQuery |
-| 規則引擎 | Python／pandas：連續營業日、滾動窗口、前次處置扣除 |
-| 網站 | FastAPI → Cloud Run |
-| 儀表板 | Metabase → Looker Studio |
-| 測試 | pytest：款次解析、規則引擎（以官方處置公告為答案）、重跑冪等 |
-
-設計原則：**每日＝回補一天**（同一套任務只差日期，重跑筆數不變）；**raw 與計算分層**（規則改了從 raw 重算，不必重抓）。
-
-## 專案結構
+### 專案結構
 
 ```
-pipeline/                 資料線：API → raw → stage → MySQL
-├─ extract/                 E 抓資料：API → data/raw/
-│   ├─ producer.py            入口：決定抓哪些任務、依序執行
-│   ├─ tasks.py               任務：抓一份、存成 raw
-│   ├─ api_twse.py            怎麼打證交所 API
-│   ├─ api_mops.py            怎麼打觀測站 API
-│   ├─ http_utils.py          共用的 GET／POST
-│   └─ raw_file.py            raw 檔讀寫
-├─ transform/               T 整理：raw → data/stage/*.parquet
-│   ├─ stage.py               入口：讀 raw、轉換、存 parquet
-│   ├─ rules.py               每張表的轉換規則
-│   └─ utils.py               共用小工具（去 HTML、轉數字）
-└─ load/                    L 載入：parquet → MySQL
-    └─ mysql.py               入口：每張表整張換掉
-engine/                   規則引擎：stage 表 → 結果表（累計進度、處置日期、驗證）（第 2 週）
-web/                      卡片網站：結果表 → 網頁（FastAPI）
-dags/                     Airflow DAG：依序執行各步驟（第 4 週）
-common/                   共用：config.py（.env 設定）、date_utils.py、mysql_utils.py
-db/init/                  建表 SQL
-scripts/                  Windows 排程用的 .bat
-tests/                    測試（資料夾對應上面）
-docs/                     流程說明（flow.md）、資料表（tables.md）、提案
-data/                     raw／stage 檔案（不進版控）
+crawler/                    抓資料：API → raw（課程補充 J：producer → task → client → repository）
+├─ producer.py                producer：決定今天要抓哪些任務、依序執行
+├─ task.py                    task：每個 crawl_xxx 任務抓一份、存進 raw（Step 5 加 @app.task 給 Celery）
+├─ client.py                  client：打證交所、觀測站 API（fetch_xxx，不存檔）
+└─ http_utils.py              client 共用的 GET／POST
+transform/                  轉換：raw → stage（同樣的 producer → task 寫法）
+├─ producer.py                producer：產生任務清單（每份 raw 一個任務）並執行
+├─ task.py                    task：transform_xxx，每個 crawl_xxx 對應一個
+├─ transformer.py             transformer：每個資料集 xxx_to_frame 攤平、clean_xxx 整理
+└─ parsing.py                 transformer 用的解析工具（去 HTML、轉數字、檢查欄位）
+analyze/                    分析：stage → app（同樣的 producer → task 寫法）
+├─ producer.py                producer：產生任務清單（每個日期一個任務）並依序執行
+├─ task.py                    task：analyze_progress(day)
+├─ engine.py                  規則引擎：依要點第六條算處置累計進度
+└─ backtest.py                回測（Observe）：引擎預測的處置 vs 真實處置公告
+common/                     三個資料夾共用（彼此不互相 import，只用 common）
+├─ repository.py              repository：連線、建表、raw 表讀寫、stage／app 表寫入
+├─ config.py                  設定（會因環境改變的值，從 .env 讀）
+├─ constant.py                固定值：raw 來源、stage 主鍵、規則門檻
+└─ date_utils.py              日期工具
+schema/                     建表 SQL：raw.sql、stage.sql、app.sql
+scripts/                    Windows 排程用的 .bat、資料庫備份（backup_db.py）
+tests/                      測試
+docs/                       流程說明（flow.md）、資料表（tables.md）、處置規則（rules.md）、提案
+main.py                     一次跑完：crawler → transform → analyze
 ```
 
-每一步只從「入口」執行，例如 `uv run python -m pipeline.extract.producer daily`；常用指令見 [`docs/flow.md`](docs/flow.md)。
+---
+
+## 快速開始
+
+```bash
+git clone https://github.com/hannahTai/G2-attention_stock_tracker-tw_stock.git
+cd G2-attention_stock_tracker-tw_stock
+cp .env.example .env   # 填入 MySQL 連線資訊
+pip install -r requirements.txt
+python main.py         # 抓今天 → 整理 → 算進度
+```
+
+回補一段期間：`python main.py init --start 20260701`。也可以用 uv：`uv sync` 後 `uv run python main.py`。
+每一步單獨執行、排程設定見 [`docs/flow.md`](docs/flow.md)；資料表見 [`docs/tables.md`](docs/tables.md)；規則見 [`docs/rules.md`](docs/rules.md)。
+
+---
+
+## 團隊
+
+| 成員 | 負責範圍 | GitHub |
+|---|---|---|
+| Hannah（個人製作） | Ingest：證交所、觀測站 API → raw 表 | @hannahTai |
+| | Pipeline：每日排程、raw → stage → app 三層、回補 | |
+| | Analytics：規則引擎（要點第六條）、回測、官方名單比對 | |
+| | Product：FastAPI 卡片網站 | |
+
+---
+
+## 進度追蹤
+
+見 [task.md](task.md)
+
+---
+
+## License
+
+MIT

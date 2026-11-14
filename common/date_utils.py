@@ -55,19 +55,28 @@ def roc_compact_to_dates(s: pd.Series) -> pd.Series:
     return pd.to_datetime(pd.DataFrame({"year": year, "month": month, "day": day})).dt.date
 
 
-def prev_month(yyyymm: str) -> str:
+def dates_between(start: str, end: str) -> list[str]:
+    """start～end（YYYYMMDD）的每一天。
+
+    >>> dates_between("20261112", "20261113")
+    ['20261112', '20261113']
+    """
+    return pd.date_range(start, end).strftime("%Y%m%d").tolist()
+
+
+def months_between(start: str, end: str) -> list[str]:
+    """start～end（YYYYMMDD）經過的每個月。
+
+    >>> months_between("20261230", "20270102")
+    ['202612', '202701']
+    """
+    return pd.period_range(pd.Timestamp(start), pd.Timestamp(end), freq="M").strftime("%Y%m").tolist()
+
+
+def prev_month(month_yyyymm: str) -> str:
     """上個月，跨年也對；傳 YYYYMMDD 也可以（只看前 6 碼）。
 
     >>> prev_month("202611"), prev_month("20260115")
     ('202610', '202512')
     """
-    return (pd.Period(f"{yyyymm[:4]}-{yyyymm[4:6]}", "M") - 1).strftime("%Y%m")
-
-
-def month_end(yyyymm: str) -> datetime.date:
-    """某個月的最後一天。
-
-    >>> month_end("202602")
-    datetime.date(2026, 2, 28)
-    """
-    return pd.Period(f"{yyyymm[:4]}-{yyyymm[4:6]}", "M").end_time.date()
+    return (pd.Period(f"{month_yyyymm[:4]}-{month_yyyymm[4:6]}", "M") - 1).strftime("%Y%m")
