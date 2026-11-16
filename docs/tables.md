@@ -329,6 +329,7 @@ erDiagram
 - 來源：`raw_announcement_detail`（觀測站 `POST /mops/api/t05st01_detail`，一則公告 → `result.data`）
 - 主鍵和 `stage_announcement` 相同，一則公告一列；主鍵從 raw_key（`9908_20261102_1`）取，回應裡沒有輸入日期。
 - 發言人姓名、職稱、電話是個資，只留在 raw，不放進 stage。
+- 存託憑證（DR，`t59sb01_detail`）格式不同：沒有「說明」，`content` 取「發生依外國發行人…應即申報之重大情事」＋「其他」；`clause` 是另一份規定的 `第五條第N款`，對不到 `stage_announcement_clause`（`clause_name` 為 NULL）。
 
 | 欄位 | 型別 | API 欄位 | 轉換／說明 |
 |---|---|---|---|

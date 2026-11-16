@@ -30,9 +30,11 @@ def build_jobs(start: str, end: str) -> list[tuple]:
         stock_id, month_yyyymm = key.split("_")
         if month_yyyymm in announcement_months:
             jobs.append((task.transform_announcements, {"stock_id": stock_id, "year": int(month_yyyymm[:4]), "month": int(month_yyyymm[4:])}))
+    # 全文用輸入日期找：輸入日期可能比發言日期早（5/29 輸入、6/1 發言），所以再往前多看一個月
+    detail_months = announcement_months | {prev_month(m) for m in announcement_months}
     for key in repository.list_raw_keys("announcement_detail"):              # 例如 9908_20261102_1
         stock_id, enter_yyyymmdd, serial_number = key.split("_")
-        if enter_yyyymmdd[:6] in announcement_months:                        # 輸入日期在處理範圍的月份
+        if enter_yyyymmdd[:6] in detail_months:
             jobs.append((task.transform_announcement_detail,
                          {"stock_id": stock_id, "enter_yyyymmdd": enter_yyyymmdd, "serial_number": int(serial_number)}))
     return jobs

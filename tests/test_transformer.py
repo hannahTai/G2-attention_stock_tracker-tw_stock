@@ -291,3 +291,17 @@ def test_announcement_detail_keys_from_raw_key_and_no_spokesperson():
 def test_announcement_detail_no_data_is_empty():
     raw = {"meta": {"key": "9908_20261102_1"}, "body": {"code": 200, "result": {"data": []}}}
     assert clean_announcement_detail(announcement_detail_to_frame([raw])).empty
+
+
+DR_TITLES = [{"main": m, "sub": []} for m in
+             ["公司代號", "公告序號", "事實發生日", "公司名稱", "主旨", "符合條款",
+              "發生依外國發行人所屬國及上市地國法令規定應即申報之重大情事", "其他"]]
+
+
+def test_announcement_detail_dr_format():
+    """存託憑證（9103 美德醫療-DR）：內容在「重大情事」＋「其他」兩欄，日期寫「民國115年6月9日」，條款是第五條。"""
+    data = [["9103", 1, "民國115年6月9日", "美德向邦醫療", "主旨", "第五條第28款", "營業收入 42,528\n", "補充說明"]]
+    raw = {"meta": {"key": "9103_20260609_1"}, "body": {"code": 200, "result": {"titles": DR_TITLES, "data": data}}}
+    row = clean_announcement_detail(announcement_detail_to_frame([raw])).iloc[0]
+    assert (row["clause"], row["fact_date"]) == ("第五條第28款", datetime.date(2026, 6, 9))
+    assert row["content"] == "營業收入 42,528\n\n其他：\n補充說明"

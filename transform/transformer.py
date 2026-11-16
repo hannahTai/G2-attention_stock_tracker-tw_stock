@@ -256,6 +256,18 @@ def clean_announcement(df: pd.DataFrame) -> pd.DataFrame:
 # 一份 raw 是一則公告。主旨、發言日期已經在 stage_announcement；發言人姓名、電話是個資，不放進 stage。
 ANNOUNCEMENT_DETAIL_TITLES = ["符合條款", "事實發生日", "說明"]
 ANNOUNCEMENT_DETAIL_COLUMNS = ["company_id", "enter_date", "serial_number", "clause", "fact_date", "content"]
+# 存託憑證（DR，t59sb01_detail）沒有「說明」，內容放在這兩欄；符合條款是另一份規定的「第五條第N款」
+DR_CONTENT_TITLE = "發生依外國發行人所屬國及上市地國法令規定應即申報之重大情事"
+DR_OTHER_TITLE = "其他"
+
+
+def dr_to_common(df: pd.DataFrame) -> pd.DataFrame:
+    """DR 的全文欄位 → 和一般公司一樣的「說明」：重大情事＋（有的話）其他。一般公司原樣回傳。"""
+    if "說明" in df.columns or DR_CONTENT_TITLE not in df.columns:
+        return df
+    other = df[DR_OTHER_TITLE].astype(str).str.strip() if DR_OTHER_TITLE in df.columns else ""
+    content = df[DR_CONTENT_TITLE].astype(str).str.strip()
+    return df.assign(說明=content.where(other == "", content + "\n\n其他：\n" + other))
 
 
 def announcement_detail_to_frame(raws: list[dict]) -> pd.DataFrame:
@@ -266,7 +278,8 @@ def announcement_detail_to_frame(raws: list[dict]) -> pd.DataFrame:
         if not result.get("data"):
             continue
         titles = [t["main"] for t in result["titles"]]   # 欄名在 titles，依位置對應
-        df = require_columns(pd.DataFrame(result["data"], columns=titles), ANNOUNCEMENT_DETAIL_TITLES, "重大訊息全文")
+        df = dr_to_common(pd.DataFrame(result["data"], columns=titles))
+        df = require_columns(df, ANNOUNCEMENT_DETAIL_TITLES, "重大訊息全文")
         company_id, enter_yyyymmdd, serial_number = raw["meta"]["key"].split("_")
         frames.append(df[ANNOUNCEMENT_DETAIL_TITLES].assign(
             company_id=company_id, enter_date=enter_yyyymmdd, serial_number=serial_number))

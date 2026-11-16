@@ -31,14 +31,14 @@ def test_daily_jobs_cover_what_crawler_fetched(raw_store):
 
 
 def test_detail_jobs_by_enter_month(raw_store):
-    """全文：輸入日期在當月或上個月的才整理。"""
-    raw_store.put("announcement_detail", "2330_20260930_1", {})   # 上上個月：不處理
-    raw_store.put("announcement_detail", "2330_20261002_1", {})
+    """全文：輸入日期可能比發言日期早一點（5/29 輸入、6/1 發言），所以比重大訊息多看一個月。"""
+    raw_store.put("announcement_detail", "2330_20260831_1", {})   # 再早一個月：不處理
+    raw_store.put("announcement_detail", "2330_20260930_1", {})   # 可能是 10 月發言的
     raw_store.put("announcement_detail", "2330_20261112_3", {})
 
     jobs = jobs_by_task(producer.build_jobs("20261113", "20261113"))
 
-    assert jobs["transform_announcement_detail"] == [("2330", "20261002", 1), ("2330", "20261112", 3)]
+    assert jobs["transform_announcement_detail"] == [("2330", "20260930", 1), ("2330", "20261112", 3)]
 
 
 def test_range_covers_every_month_and_year(raw_store):
