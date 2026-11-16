@@ -90,6 +90,7 @@ analyze    stage_* 表 → app_* 表     規則引擎算進度
 - 只讀 ok 的 raw，沒有就跳過；用主鍵更新 stage 表，其他日期不動。任務之間互不依賴。
 - 注意股、款次：當天先清掉再寫入。上市公司：依 company_id 更新，下市的留著。
 - 重大訊息全文：一則一個任務 `transform_announcement_detail(stock_id, enter_yyyymmdd, serial_number)`，整理輸入日期在當月和上個月的。
+- 重大訊息條款對照表（`stage_announcement_clause`，第 1～51 款的名稱）是固定資料，不用爬：寫在 `schema/stage.sql`，transform 開始建表時一併寫入。條文修正時改那裡。
 
 ## analyze：stage → app
 

@@ -54,6 +54,7 @@
 | `stage_company` | 一家上市公司 | company_id | 11/14 快照 |
 | `stage_announcement` | 一則重大訊息 | company_id, enter_date, serial_number | 09/01–11/13 |
 | `stage_announcement_detail` | 一則重大訊息的全文 | company_id, enter_date, serial_number | 回補後同上 |
+| `stage_announcement_clause` | 一個符合條款（固定資料，51 列） | clause | — |
 
 ## 關聯圖
 
@@ -64,6 +65,7 @@ erDiagram
     stage_company |o--o{ stage_punish_watchlist : "stock_id"
     stage_company ||--o{ stage_announcement : "company_id"
     stage_announcement ||--o| stage_announcement_detail : "company_id + enter_date + serial_number"
+    stage_announcement_clause ||--o{ stage_announcement_detail : "clause"
     stage_notice ||--|{ stage_notice_clause : "trade_date + stock_id"
     stage_trading_day ||--o{ stage_notice : "trade_date"
     stage_notice_day ||--o{ stage_notice : "trade_date"
@@ -136,9 +138,16 @@ erDiagram
         varchar company_id PK, FK
         date enter_date PK, FK
         int serial_number PK, FK
-        varchar clause
+        varchar clause FK
         date fact_date
         mediumtext content
+        datetime loaded_at
+    }
+    stage_announcement_clause {
+        varchar clause PK
+        tinyint clause_no
+        varchar short_name
+        varchar description
         datetime loaded_at
     }
     stage_trading_day {
@@ -330,6 +339,19 @@ erDiagram
 | fact_date | DATE | 事實發生日 | 民國 → 西元 |
 | content | MEDIUMTEXT | 說明 | 全文；換行統一成 `\n` |
 
+### stage_announcement_clause　重大訊息條款對照表
+
+- 固定資料，不用爬：寫在 `schema/stage.sql`，每次建表（transform 開始時）一併寫入／更新。條文修正時改那裡。
+- 來源：證交所《對有價證券上市公司重大訊息之查證暨公開處理程序》第 4 條第 1 項（115.09.30 版），共 51 款（第 39 款已刪除）。
+- `short_name`、`description` 是整理後的摘要，不是條文原文。第 51 款是概括條款（其他重大事項），被列注意後公司被要求公布的財務業務資訊也是這款。
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| clause | VARCHAR(20) | 主鍵，例如 `第31款`（和 `stage_announcement_detail.clause` 一樣） |
+| clause_no | TINYINT | 款次數字，排序用 |
+| short_name | VARCHAR(20) | 簡短名稱（卡片標籤），例如 `財務報告`、`法人說明會`、`其他重大事項` |
+| description | VARCHAR(200) | 條文摘要 |
+
 ## app 層
 
 規則引擎（`analyze/engine.py`）的結果，規則見 [`rules.md`](rules.md)。只有最近 30 個營業日被列過注意的股票才有一列。
@@ -394,4 +416,4 @@ VIEW 是存起來的查詢，不複製資料；網頁查的時候 MySQL 才去�
 | `app_card` | 卡片牆、個股卡片上半部 | `app_progress` 每一列，加上 `stock_name`、`is_listed_today`、`is_company`（上市公司；卡片牆只放這些，不放權證、ETF）、`close_price`、`reason_text`、`clauses`（今天被列第幾款，例如 `1,2`）、`is_counted_today`、處置中那次的 `punish_measure`／`punish_condition`／`punish_match_minutes`、`announcement_count`（近 30 個營業日公告則數） |
 | `app_notice_history` | 注意紀錄格子 | 每檔每個被列注意的交易日：`clauses`、`is_counted`（1＝累計）。沒被列的日子沒有列；早於 `count_start` 的是「已計入前次處置」 |
 | `app_punish_history` | 處置紀錄 | `stage_punish` 的欄位 |
-| `app_announcement` | 公司公告 | `stage_announcement`，加上 `is_during_session`（14:30 前＝交易時段內）、`is_correction`（更正）、`is_explanation`（說明、澄清；排除法人說明會）；LEFT JOIN `stage_announcement_detail` 帶出 `clause`、`fact_date`、`content`（還沒抓到全文的為 NULL） |
+| `app_announcement` | 公司公告 | `stage_announcement`，加上 `is_during_session`（14:30 前＝交易時段內）、`is_correction`（更正）、`is_explanation`（說明、澄清；排除法人說明會）；LEFT JOIN `stage_announcement_detail` 帶出 `clause`、`fact_date`、`content`（還沒抓到全文的為 NULL），再 JOIN `stage_announcement_clause` 帶出 `clause_name`（例如 財務報告） |

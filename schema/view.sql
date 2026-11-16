@@ -66,8 +66,11 @@ SELECT
     (a.subject LIKE '%澄清%' OR (a.subject LIKE '%說明%' AND a.subject NOT LIKE '%說明會%'))
                                   AS is_explanation,     -- 說明、澄清公告（排除「法人說明會」）
     d.clause,                                            -- 符合條款，例如 第31款
+    c.short_name AS clause_name,                         -- 條款的簡短名稱，例如 財務報告
     d.fact_date,                                         -- 事實發生日
     d.content                                            -- 說明全文
 FROM stage_announcement a
 LEFT JOIN stage_announcement_detail d
-       ON d.company_id = a.company_id AND d.enter_date = a.enter_date AND d.serial_number = a.serial_number;
+       ON d.company_id = a.company_id AND d.enter_date = a.enter_date AND d.serial_number = a.serial_number
+LEFT JOIN stage_announcement_clause c
+       ON c.clause = d.clause;
