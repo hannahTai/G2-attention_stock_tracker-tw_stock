@@ -2,6 +2,7 @@
 
     python main.py                              # 只處理今天（daily）
     python main.py backfill --start 20260701        # 處理一段期間（可加 --end 20261031）
+    python main.py backfill --start 20260701 --refetch  # 同上，crawler 已經抓完整的也重抓
 
 - crawler 有任務失敗：照樣往下跑。transform 會跳過沒抓到的 raw；analyze 會檢查必要的 raw，缺了就不算。
 - transform 有任務失敗（程式錯誤）：不跑 analyze。

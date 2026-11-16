@@ -39,6 +39,7 @@ logs/
 airflow.db
 airflow-webserver.pid
 unittests.cfg
+task.md
 
 # ===== Celery =====
 celerybeat-schedule*

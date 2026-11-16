@@ -35,6 +35,7 @@
 | `raw_holiday` | 西元年 | `stage_holiday` |
 | `raw_companies` | 抓取日期 | `stage_company` |
 | `raw_announcements` | 公司代號_月份 | `stage_announcement` |
+| `raw_announcement_detail` | 公司代號_輸入日期_序號 | `stage_announcement_detail` |
 
 - 同一個 raw_key 重抓：成功就覆蓋；失敗只在還沒有成功的資料時才寫入，不會蓋掉好的資料。
 
@@ -52,6 +53,7 @@
 | `stage_holiday` | 官方開休市日期的一天 | holiday_date | 2026 全年 |
 | `stage_company` | 一家上市公司 | company_id | 11/14 快照 |
 | `stage_announcement` | 一則重大訊息 | company_id, enter_date, serial_number | 09/01–11/13 |
+| `stage_announcement_detail` | 一則重大訊息的全文 | company_id, enter_date, serial_number | 回補後同上 |
 
 ## 關聯圖
 
@@ -61,6 +63,7 @@ erDiagram
     stage_company |o--o{ stage_punish : "stock_id"
     stage_company |o--o{ stage_punish_watchlist : "stock_id"
     stage_company ||--o{ stage_announcement : "company_id"
+    stage_announcement ||--o| stage_announcement_detail : "company_id + enter_date + serial_number"
     stage_notice ||--|{ stage_notice_clause : "trade_date + stock_id"
     stage_trading_day ||--o{ stage_notice : "trade_date"
     stage_notice_day ||--o{ stage_notice : "trade_date"
@@ -127,6 +130,15 @@ erDiagram
         time announce_time
         varchar company_name
         text subject
+        datetime loaded_at
+    }
+    stage_announcement_detail {
+        varchar company_id PK, FK
+        date enter_date PK, FK
+        int serial_number PK, FK
+        varchar clause
+        date fact_date
+        mediumtext content
         datetime loaded_at
     }
     stage_trading_day {
@@ -303,6 +315,21 @@ erDiagram
 - 只有被列注意或處置的公司，查當月和上個月。
 - 序號依輸入日期編，同一天發言的公告可能同號，所以主鍵用 enter_date。
 
+### stage_announcement_detail　重大訊息全文
+
+- 來源：`raw_announcement_detail`（觀測站 `POST /mops/api/t05st01_detail`，一則公告 → `result.data`）
+- 主鍵和 `stage_announcement` 相同，一則公告一列；主鍵從 raw_key（`9908_20261102_1`）取，回應裡沒有輸入日期。
+- 發言人姓名、職稱、電話是個資，只留在 raw，不放進 stage。
+
+| 欄位 | 型別 | API 欄位 | 轉換／說明 |
+|---|---|---|---|
+| company_id | VARCHAR(10) | （raw_key） | — |
+| enter_date | DATE | （raw_key） | `20261102` → 日期 |
+| serial_number | INT | （raw_key） | 輸入日期當天第幾則 |
+| clause | VARCHAR(20) | 符合條款 | 例如 `第31款`（觀測站的公告分類） |
+| fact_date | DATE | 事實發生日 | 民國 → 西元 |
+| content | MEDIUMTEXT | 說明 | 全文；換行統一成 `\n` |
+
 ## app 層
 
 規則引擎（`analyze/engine.py`）的結果，規則見 [`rules.md`](rules.md)。只有最近 30 個營業日被列過注意的股票才有一列。
@@ -367,4 +394,4 @@ VIEW 是存起來的查詢，不複製資料；網頁查的時候 MySQL 才去�
 | `app_card` | 卡片牆、個股卡片上半部 | `app_progress` 每一列，加上 `stock_name`、`is_listed_today`、`is_company`（上市公司；卡片牆只放這些，不放權證、ETF）、`close_price`、`reason_text`、`clauses`（今天被列第幾款，例如 `1,2`）、`is_counted_today`、處置中那次的 `punish_measure`／`punish_condition`／`punish_match_minutes`、`announcement_count`（近 30 個營業日公告則數） |
 | `app_notice_history` | 注意紀錄格子 | 每檔每個被列注意的交易日：`clauses`、`is_counted`（1＝累計）。沒被列的日子沒有列；早於 `count_start` 的是「已計入前次處置」 |
 | `app_punish_history` | 處置紀錄 | `stage_punish` 的欄位 |
-| `app_announcement` | 公司公告 | `stage_announcement`，加上 `is_during_session`（14:30 前＝交易時段內）、`is_correction`（更正）、`is_explanation`（說明、澄清；排除法人說明會） |
+| `app_announcement` | 公司公告 | `stage_announcement`，加上 `is_during_session`（14:30 前＝交易時段內）、`is_correction`（更正）、`is_explanation`（說明、澄清；排除法人說明會）；LEFT JOIN `stage_announcement_detail` 帶出 `clause`、`fact_date`、`content`（還沒抓到全文的為 NULL） |

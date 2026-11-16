@@ -2,7 +2,7 @@
 
 不知道資料從哪個 API 來、被整理過什麼。連線設定從 .env 讀（見 config.py）。
   - 連線、建表：get_engine()、create_tables()
-  - raw 表：upsert_raw()、read_raw()、read_raws()、list_raw_keys()、raw_exists()
+  - raw 表：upsert_raw()、read_raw()、read_raws()、list_raw_keys()、raw_exists()、raw_fetched_times()
   - stage 表：stage_has_day()（analyze 檢查那天的資料到齊了沒）
   - stage、app 表：upload_data_to_mysql()、upsert_rows()、delete_where_in()
 """
@@ -24,7 +24,8 @@ from common.constant import STAGE_KEYS
 SQL_FILES = sorted((PROJECT_ROOT / "schema").glob("*.sql"))
 
 # raw 表的來源：raw_<來源> 一個來源一張表
-SOURCES = ("notice", "punish", "punish_watchlist", "market_daily", "holiday", "companies", "announcements")
+SOURCES = ("notice", "punish", "punish_watchlist", "market_daily", "holiday", "companies", "announcements",
+           "announcement_detail")
 
 RAW_COLUMNS = ["raw_key", "fetched_at", "http_status", "ok", "problem", "url", "request_body", "body"]
 
@@ -191,6 +192,13 @@ def raw_exists(source: str, raw_key: str) -> bool:
         found = conn.execute(sqlalchemy.text(f"SELECT 1 FROM {raw_table_name(source)} WHERE raw_key = :raw_key AND ok"),
                              {"raw_key": raw_key}).scalar()
     return found is not None
+
+
+def raw_fetched_times(source: str) -> dict[str, datetime.datetime]:
+    """這個來源每份成功回應的抓取時間（台灣時間），例如 {"20261113": datetime(2026, 11, 13, 21, 0, 5)}。"""
+    with get_engine().connect() as conn:
+        rows = conn.execute(sqlalchemy.text(f"SELECT raw_key, fetched_at FROM {raw_table_name(source)} WHERE ok"))
+        return {row.raw_key: row.fetched_at for row in rows}
 
 
 # ---------- stage 表：讀 ----------

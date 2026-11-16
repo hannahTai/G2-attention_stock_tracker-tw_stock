@@ -53,16 +53,21 @@ SELECT announce_date, stock_id, stock_name, trigger_condition, period_start, per
        measure_type, match_interval_minutes, content
 FROM stage_punish;
 
--- 公司公告：加上交易時段內／後、更正、說明公告的標記
+-- 公司公告：加上交易時段內／後、更正、說明公告的標記，和全文（還沒抓到全文的為 NULL）
 CREATE OR REPLACE VIEW app_announcement AS
 SELECT
-    company_id AS stock_id,
-    announce_date,
-    announce_time,
-    company_name,
-    subject,
-    announce_time <= '14:30:00' AS is_during_session,  -- 1＝交易時段內（14:30 前，含盤後定價交易）
-    subject LIKE '%更正%'        AS is_correction,      -- 更正公告
-    (subject LIKE '%澄清%' OR (subject LIKE '%說明%' AND subject NOT LIKE '%說明會%'))
-                                AS is_explanation       -- 說明、澄清公告（排除「法人說明會」）
-FROM stage_announcement;
+    a.company_id AS stock_id,
+    a.announce_date,
+    a.announce_time,
+    a.company_name,
+    a.subject,
+    a.announce_time <= '14:30:00' AS is_during_session,  -- 1＝交易時段內（14:30 前，含盤後定價交易）
+    a.subject LIKE '%更正%'        AS is_correction,      -- 更正公告
+    (a.subject LIKE '%澄清%' OR (a.subject LIKE '%說明%' AND a.subject NOT LIKE '%說明會%'))
+                                  AS is_explanation,     -- 說明、澄清公告（排除「法人說明會」）
+    d.clause,                                            -- 符合條款，例如 第31款
+    d.fact_date,                                         -- 事實發生日
+    d.content                                            -- 說明全文
+FROM stage_announcement a
+LEFT JOIN stage_announcement_detail d
+       ON d.company_id = a.company_id AND d.enter_date = a.enter_date AND d.serial_number = a.serial_number;

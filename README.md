@@ -35,7 +35,7 @@ flowchart LR
 
 | 階段 | 工具 |
 |---|---|
-| Source | 證交所 API（注意股、處置股、注意累計名單、開休市日期、市場成交、上市公司）、公開資訊觀測站 API（重大訊息） |
+| Source | 證交所 API（注意股、處置股、注意累計名單、開休市日期、市場成交、上市公司）、公開資訊觀測站 API（重大訊息、重大訊息全文） |
 | Ingest | Python requests；Windows 工作排程器（之後 Airflow + Celery + RabbitMQ） |
 | Storage | MySQL 三層：`raw_*`（API 原文）→ `stage_*`（清理後）→ `app_*`（引擎結果）；之後 Cloud SQL、BigQuery |
 | Process | pandas：`transform/` 整理（raw → stage）、`analyze/` 規則引擎——依要點第六條算離處置還差幾次（stage → app） |
@@ -76,7 +76,7 @@ analyze/                    分析：stage → app（同樣的 producer → task
 └─ backtest.py                回測（Observe）：引擎預測的處置 vs 真實處置公告
 common/                     三個資料夾共用（彼此不互相 import，只用 common）
 ├─ repository.py              repository：連線、建表、raw 表讀寫、stage／app 表讀寫
-├─ cli.py                     三個 producer 共用的指令參數（daily／backfill）
+├─ cli.py                     三個 producer 共用的指令參數（daily／backfill、--refetch）
 ├─ config.py                  設定（會因環境改變的值，從 .env 讀）
 ├─ constant.py                跨資料夾共用的固定值（stage 主鍵）；只有一個檔案用的寫在那個檔案裡
 └─ date_utils.py              日期工具
@@ -99,7 +99,7 @@ pip install -r requirements.txt
 python main.py         # 抓今天 → 整理 → 算還差幾次
 ```
 
-回補一段期間：`python main.py backfill --start 20260701`。也可以用 uv：`uv sync` 後 `uv run python main.py`。
+回補一段期間：`python main.py backfill --start 20260701`（已經抓完整的跳過，加 `--refetch` 全部重抓）。也可以用 uv：`uv sync` 後 `uv run python main.py`。
 每一步單獨執行、排程設定見 [`docs/flow.md`](docs/flow.md)；資料表見 [`docs/tables.md`](docs/tables.md)；規則見 [`docs/rules.md`](docs/rules.md)。
 
 ---

@@ -92,3 +92,16 @@ CREATE TABLE IF NOT EXISTS raw_announcements (
     loaded_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '寫入時間（台灣時間）',
     PRIMARY KEY (raw_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='觀測站 重大訊息（一家公司一個月）';
+
+CREATE TABLE IF NOT EXISTS raw_announcement_detail (
+    raw_key       VARCHAR(30)  NOT NULL COMMENT '公司代號_輸入日期_序號，例如 9908_20261102_1',
+    fetched_at    DATETIME     NOT NULL COMMENT '抓取時間（台灣時間）',
+    http_status   SMALLINT     NOT NULL COMMENT 'HTTP 狀態碼',
+    ok            BOOLEAN      NOT NULL COMMENT '成功且內容檢查通過；transform 只讀 ok 的列',
+    problem       TEXT                  COMMENT '失敗原因；成功為 NULL',
+    url           TEXT         NOT NULL COMMENT '請求網址（含查詢參數）',
+    request_body  TEXT                  COMMENT 'POST 的參數（JSON 字串）；GET 為 NULL',
+    body          LONGTEXT     NOT NULL COMMENT 'API 回應原文（JSON 字串；被擋時可能是 HTML）',
+    loaded_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '寫入時間（台灣時間）',
+    PRIMARY KEY (raw_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='觀測站 重大訊息全文（一則公告）';

@@ -100,3 +100,14 @@ CREATE TABLE IF NOT EXISTS stage_announcement (
     loaded_at      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '寫入時間（台灣時間）',
     PRIMARY KEY (company_id, enter_date, serial_number)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='公司重大訊息';
+
+CREATE TABLE IF NOT EXISTS stage_announcement_detail (
+    company_id     VARCHAR(10)   NOT NULL,
+    enter_date     DATE          NOT NULL COMMENT '輸入日期（和 stage_announcement 同一個主鍵）',
+    serial_number  INT           NOT NULL COMMENT '輸入日期當天的序號',
+    clause         VARCHAR(20)   NOT NULL COMMENT '符合條款，例如 第31款（觀測站的公告分類）',
+    fact_date      DATE                   COMMENT '事實發生日',
+    content        MEDIUMTEXT    NOT NULL COMMENT '說明全文（不含發言人姓名、電話）',
+    loaded_at      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '寫入時間（台灣時間）',
+    PRIMARY KEY (company_id, enter_date, serial_number)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='公司重大訊息全文';

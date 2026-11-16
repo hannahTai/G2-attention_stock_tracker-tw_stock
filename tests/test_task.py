@@ -49,3 +49,21 @@ def test_wrong_year_does_not_overwrite_good_data(raw_store, monkeypatch):
 
     row = raw_store.rows[("holiday", "2026")]
     assert row.ok and json.loads(row.body)["queryYear"] == 2026
+
+
+def test_announcement_detail_empty_data_saved_as_failure(raw_store, monkeypatch):
+    """全文查不到那則公告（data 空的）→ 存成失敗，下次還會再抓。"""
+    monkeypatch.setattr(client, "fetch_announcement_detail",
+                        lambda *args: fake_response({"code": 200, "message": "查無資料", "result": {"data": []}}))
+
+    with pytest.raises(RuntimeError, match="查無這則公告"):
+        task.crawl_announcement_detail("9908", "20261102", 1)
+
+    assert not raw_store.rows[("announcement_detail", "9908_20261102_1")].ok
+
+
+def test_announcement_detail_saved(raw_store, monkeypatch):
+    monkeypatch.setattr(client, "fetch_announcement_detail",
+                        lambda *args: fake_response({"code": 200, "result": {"data": [["1", "115/11/05"]]}}))
+
+    assert task.crawl_announcement_detail("9908", "20261102", 1) == "raw_announcement_detail/9908_20261102_1"

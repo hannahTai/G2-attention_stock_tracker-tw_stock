@@ -72,17 +72,24 @@ analyze    stage_* 表 → app_* 表     規則引擎算進度
 | 上市公司清單 | OpenAPI `t187ap03_L` | 快照 | 抓取日期 |
 | 注意累計名單 | `announcement/notetrans`（只有最新一份） | 一天 | 名單日期 |
 | 重大訊息 | 觀測站 `t05st01`（POST） | 一家一個月 | `1303_202611` |
+| 重大訊息全文 | 觀測站 `t05st01_detail`（POST） | 一則公告 | `9908_20261102_1`（公司_輸入日期_序號） |
 
 - 先抓證交所，再查重大訊息：當天被關注的上市公司，查當月和上個月。
+- 最後查全文：重大訊息清單裡的每則公告查一次；全文不會變，抓過的不再抓。
 - 開休市日期一年只抓一次（年初公布整年）；颱風假不在裡面，是從市場成交看出來的。要重抓：`uv run python -c "from crawler import task; print(task.crawl_holiday(2026))"`。
 - 單一任務失敗不中斷，最後列出失敗清單。
 - 同一個 raw_key 重抓：成功覆蓋；失敗不蓋掉成功的（`ok`＝0、`problem` 寫原因）。
+- 已經抓完整的不再抓（daily、backfill 都是）；加 `--refetch` 就全部重抓。「完整」＝在資料不會再變之後抓的：
+  - 注意股、處置股：那天 20:00 以後抓的（17:30～17:45 才公布，見 `data/probe_publish_time.log`）。
+  - 市場成交：那個月最後一天 20:00 以後抓的；重大訊息清單：那個月過完以後抓的。當月的照樣抓。
+  - 開休市日期、重大訊息全文：抓過就算。注意累計名單、上市公司清單只有當下一份，每次都抓。
 
 ## transform：raw → stage
 
 - 一個任務整理一份 raw，跟 crawler 的任務一一對應，例如 `crawl_notice(date_yyyymmdd)` → `transform_notice(date_yyyymmdd)`。
 - 只讀 ok 的 raw，沒有就跳過；用主鍵更新 stage 表，其他日期不動。任務之間互不依賴。
 - 注意股、款次：當天先清掉再寫入。上市公司：依 company_id 更新，下市的留著。
+- 重大訊息全文：一則一個任務 `transform_announcement_detail(stock_id, enter_yyyymmdd, serial_number)`，整理輸入日期在當月和上個月的。
 
 ## analyze：stage → app
 
@@ -96,7 +103,8 @@ analyze    stage_* 表 → app_* 表     規則引擎算進度
 
 ```
 uv run python main.py                                   # 三步一次跑完（今天）
-uv run python main.py backfill --start 20260701             # 三步一次跑完（一段期間，可加 --end）
+uv run python main.py backfill --start 20260701             # 三步一次跑完（一段期間，可加 --end）；抓完整的跳過
+uv run python main.py backfill --start 20260701 --refetch   # 同上，但全部重抓（只影響 crawler）
 uv run python -m crawler.producer [backfill --start ...]    # 只跑一步，transform、analyze 同樣
 uv run python -m analyze.backtest                       # 回測
 uv run pytest                                           # 測試

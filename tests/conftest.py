@@ -31,6 +31,9 @@ class FakeRaw:
     def list_raw_keys(self, source):
         return sorted(k for (s, k), r in self.rows.items() if s == source and r.ok)
 
+    def raw_fetched_times(self, source):
+        return {k: r.fetched_at for (s, k), r in self.rows.items() if s == source and r.ok}
+
     def raw_exists(self, source, raw_key):
         r = self.rows.get((source, raw_key))
         return r is not None and r.ok
@@ -46,6 +49,6 @@ class FakeRaw:
 def raw_store(monkeypatch):
     """把 repository 的 raw 表換成記憶體版；回傳 FakeRaw，測試可以用 put() 放資料、用 rows 檢查結果。"""
     fake = FakeRaw()
-    for name in ("upsert_raw_row", "read_raws", "list_raw_keys", "raw_exists"):
+    for name in ("upsert_raw_row", "read_raws", "list_raw_keys", "raw_exists", "raw_fetched_times"):
         monkeypatch.setattr(repository, name, getattr(fake, name))
     return fake

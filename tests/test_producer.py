@@ -32,16 +32,19 @@ def test_this_and_prev_month_for_listed_companies_only(raw_store):
     assert keys(pc.build_mops_jobs("20261113", "20261113")) == [("2330", 2026, 10), ("2330", 2026, 11)]
 
 
-def test_range_dedupes_and_always_refetches(raw_store):
-    """區間內重複的（公司, 月）只查一次；已經抓過的也照樣重抓。"""
+def test_range_dedupes_and_skips_finished_months(raw_store):
+    """區間內重複的（公司, 月）只查一次；那個月過完以後抓過的不再抓，加 refetch 就重抓。"""
     setup_day(raw_store)
     raw_store.put("notice", "20261020", {"data": [["1", "2317"], ["2", "030039"]]})   # 10/20：2317、權證
     raw_store.put("punish", "20261027", {"data": [["1", "x", "2330"]]})               # 10/27：2330 處置中
-    raw_store.put("announcements", "2330_202610", {})                                  # 抓過也會重抓
+    raw_store.put("announcements", "2330_202610", {}, fetched_at="2026-11-13T21:00:00+08:00")   # 10 月過完才抓：完整
+    raw_store.put("announcements", "2317_202610", {}, fetched_at="2026-10-20T21:00:00+08:00")   # 10 月還沒過完：要重抓
+    raw_store.put("announcements", "2330_202611", {}, fetched_at="2026-11-13T21:00:00+08:00")   # 當月：照樣抓
     assert keys(pc.build_mops_jobs("20261020", "20261113")) == [
         ("2317", 2026, 9), ("2317", 2026, 10),
-        ("2330", 2026, 9), ("2330", 2026, 10), ("2330", 2026, 11),
+        ("2330", 2026, 9), ("2330", 2026, 11),
     ]
+    assert ("2330", 2026, 10) in keys(pc.build_mops_jobs("20261020", "20261113", refetch=True))
 
 
 def test_failed_raw_is_ignored(raw_store):
@@ -57,3 +60,54 @@ def test_holiday_is_fetched_only_once_per_year(raw_store):
     assert holiday_years() == [2026, 2027]
     raw_store.put("holiday", "2026", {"data": []})
     assert holiday_years() == [2027]
+
+
+def announcement_list(*ids):
+    """做一份重大訊息清單的回應：ids 是 (公司, 民國輸入日期, 序號)。"""
+    detail = lambda c, d, n: {"parameters": {"marketKind": "sii", "enterDate": d, "serialNumber": n, "companyId": c},
+                              "apiName": "t05st01_detail"}
+    return {"result": {"data": [[c, "名稱", "115/11/05", "14:39:07", "主旨", detail(c, d, n)] for c, d, n in ids]}}
+
+
+def test_client_announcement_ids_convert_roc_date():
+    body = announcement_list(("9908 ", "1151102", "1"), ("9908", "991231", "12"))
+    assert client.announcement_ids(body) == [("9908", "20261102", 1), ("9908", "20101231", 12)]
+    assert client.announcement_ids({"result": {"data": []}}) == []
+
+
+def test_detail_jobs_skip_fetched(raw_store):
+    """第二批清單裡的每則公告查全文；已經抓過全文的不再抓。"""
+    setup_day(raw_store)
+    raw_store.put("announcements", "2330_202611", announcement_list(("2330", "1151102", "1"), ("2330", "1151105", "2")))
+    raw_store.put("announcements", "2317_202611", announcement_list(("2317", "1151102", "1")))   # 2317 今天沒被關注
+    raw_store.put("announcement_detail", "2330_20261102_1", {"result": {"data": [["1"]]}})
+    assert keys(pc.build_detail_jobs("20261113", "20261113")) == [("2330", "20261105", 2)]
+
+
+def twse_keys(jobs, name):
+    return [tuple(kw.values()) for f, kw in jobs if f.__name__ == name]
+
+
+def test_twse_skips_days_fetched_after_publish(raw_store):
+    """注意股：那天 20:00 以後抓的不再抓；20:00 前抓的（可能還沒公布）要重抓。refetch 全部重抓。"""
+    raw_store.put("notice", "20261112", {"data": []}, fetched_at="2026-11-12T21:00:00+08:00")   # 完整
+    raw_store.put("notice", "20261113", {"data": []}, fetched_at="2026-11-13T16:00:00+08:00")   # 還沒公布就抓了
+    jobs = pc.build_twse_jobs("20261112", "20261113")
+    assert twse_keys(jobs, "crawl_notice") == [("20261113",)]
+    assert twse_keys(jobs, "crawl_punish") == [("20261112",), ("20261113",)]   # 處置股都還沒抓過
+    assert twse_keys(pc.build_twse_jobs("20261112", "20261113", refetch=True), "crawl_notice") == [("20261112",), ("20261113",)]
+
+
+def test_twse_skips_finished_months(raw_store):
+    """市場成交：那個月最後一天 20:00 以後抓的不再抓；當月照樣抓。"""
+    raw_store.put("market_daily", "202610", {"data": []}, fetched_at="2026-11-02T21:00:00+08:00")
+    raw_store.put("market_daily", "202611", {"data": []}, fetched_at="2026-11-13T21:00:00+08:00")
+    assert twse_keys(pc.build_twse_jobs("20261030", "20261113"), "crawl_market_daily") == [("202611",)]
+
+
+def test_detail_refetch_includes_fetched(raw_store):
+    setup_day(raw_store)
+    raw_store.put("announcements", "2330_202611", announcement_list(("2330", "1151102", "1")))
+    raw_store.put("announcement_detail", "2330_20261102_1", {"result": {"data": [["1"]]}})
+    assert keys(pc.build_detail_jobs("20261113", "20261113")) == []
+    assert keys(pc.build_detail_jobs("20261113", "20261113", refetch=True)) == [("2330", "20261102", 1)]

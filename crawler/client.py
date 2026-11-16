@@ -3,7 +3,7 @@
 xxx_stock_ids()、company_ids()、watchlist_date()：從回應裡取出 producer、task 要用的值，API 格式只有這裡知道。
 
   證交所：注意股、處置股、注意累計名單、開休市日期、每日市場成交、上市公司清單
-  公開資訊觀測站：公司重大訊息（一家公司一個月一個請求）
+  公開資訊觀測站：公司重大訊息（一家公司一個月一個請求）、重大訊息全文（一則一個請求）
 """
 import calendar
 import re
@@ -105,4 +105,30 @@ def fetch_announcements(stock_id: str, year: int, month: int) -> requests.Respon
     return http_post(f"{MOPS_BASE}/t05st01", {
         "companyId": stock_id, "year": str(year - 1911), "month": str(month),
         "firstDay": "1", "lastDay": str(last_day),
+    })
+
+
+def announcement_ids(body) -> list[tuple[str, str, int]]:
+    """重大訊息回應裡每則公告的 (公司代號, 輸入日期 YYYYMMDD, 序號)，查全文要用。
+
+    取自每列最後一欄「詳細資料」，例如
+    {"parameters": {"marketKind": "sii", "enterDate": "1151102", "serialNumber": "1", "companyId": "9908"}, ...}
+    """
+    ids = []
+    for row in (body.get("result") or {}).get("data") or []:
+        params = row[-1]["parameters"]
+        roc = params["enterDate"]                                   # "1151102"：民國年＋月日
+        enter_yyyymmdd = f"{int(roc[:-4]) + 1911}{roc[-4:]}"        # "20261102"
+        ids.append((params["companyId"].strip(), enter_yyyymmdd, int(params["serialNumber"])))
+    return ids
+
+
+def fetch_announcement_detail(stock_id: str, enter_yyyymmdd: str, serial_number: int) -> requests.Response:
+    """一則重大訊息的全文（主旨、符合條款、事實發生日、說明）。
+
+    用輸入日期（民國年月日連寫）＋當天序號指定哪一則；marketKind sii＝上市。
+    """
+    roc = f"{int(enter_yyyymmdd[:4]) - 1911}{enter_yyyymmdd[4:]}"   # "20261102" → "1151102"
+    return http_post(f"{MOPS_BASE}/t05st01_detail", {
+        "marketKind": "sii", "enterDate": roc, "serialNumber": str(serial_number), "companyId": stock_id,
     })

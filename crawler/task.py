@@ -61,3 +61,19 @@ def crawl_announcements(stock_id: str, year: int, month: int) -> str:
     """重大訊息：抓一家公司一個月、存進 raw_announcements（key 1303_202611）。"""
     key = f"{stock_id}_{year:04d}{month:02d}"
     return repository.upsert_raw("announcements", key, client.fetch_announcements(stock_id, year, month))
+
+
+def crawl_announcement_detail(stock_id: str, enter_yyyymmdd: str, serial_number: int) -> str:
+    """重大訊息全文：抓一則、存進 raw_announcement_detail（key 9908_20261102_1＝公司_輸入日期_序號）。
+
+    回應裡沒有那則公告（data 是空的）就當失敗，下次再抓。
+    """
+    key = f"{stock_id}_{enter_yyyymmdd}_{serial_number}"
+    resp = client.fetch_announcement_detail(stock_id, enter_yyyymmdd, serial_number)
+    body = repository.parse_body(resp.text)
+
+    problem = None
+    if isinstance(body, dict) and not (body.get("result") or {}).get("data"):
+        problem = f"查無這則公告（{body.get('message')}）"
+
+    return repository.upsert_raw("announcement_detail", key, resp, problem)

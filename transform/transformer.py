@@ -250,3 +250,43 @@ def clean_announcement(df: pd.DataFrame) -> pd.DataFrame:
         "subject": df["主旨"].str.replace(r"\s*\n\s*", "", regex=True).str.strip(),  # 接回被換行切斷的主旨
     })
     return out.drop_duplicates(keys, keep="last").sort_values(keys).reset_index(drop=True)
+
+
+# ---------- 重大訊息全文 → stage_announcement_detail ----------
+# 一份 raw 是一則公告。主旨、發言日期已經在 stage_announcement；發言人姓名、電話是個資，不放進 stage。
+ANNOUNCEMENT_DETAIL_TITLES = ["符合條款", "事實發生日", "說明"]
+ANNOUNCEMENT_DETAIL_COLUMNS = ["company_id", "enter_date", "serial_number", "clause", "fact_date", "content"]
+
+
+def announcement_detail_to_frame(raws: list[dict]) -> pd.DataFrame:
+    """主鍵（公司, 輸入日期, 序號）從 raw_key 取，例如 9908_20261102_1；回應裡沒有輸入日期。"""
+    frames = []
+    for raw in raws:
+        result = raw["body"].get("result") or {}
+        if not result.get("data"):
+            continue
+        titles = [t["main"] for t in result["titles"]]   # 欄名在 titles，依位置對應
+        df = require_columns(pd.DataFrame(result["data"], columns=titles), ANNOUNCEMENT_DETAIL_TITLES, "重大訊息全文")
+        company_id, enter_yyyymmdd, serial_number = raw["meta"]["key"].split("_")
+        frames.append(df[ANNOUNCEMENT_DETAIL_TITLES].assign(
+            company_id=company_id, enter_date=enter_yyyymmdd, serial_number=serial_number))
+
+    if not frames:
+        return pd.DataFrame(columns=["company_id", "enter_date", "serial_number"] + ANNOUNCEMENT_DETAIL_TITLES)
+    return pd.concat(frames, ignore_index=True)
+
+
+def clean_announcement_detail(df: pd.DataFrame) -> pd.DataFrame:
+    """→ stage_announcement_detail（主鍵和 stage_announcement 相同，可以直接 JOIN）"""
+    if df.empty:
+        return pd.DataFrame(columns=ANNOUNCEMENT_DETAIL_COLUMNS)
+    keys = ["company_id", "enter_date", "serial_number"]
+    out = pd.DataFrame({
+        "company_id": df["company_id"],
+        "enter_date": pd.to_datetime(df["enter_date"], format="%Y%m%d").dt.date,
+        "serial_number": df["serial_number"].astype(int),
+        "clause": df["符合條款"].str.strip(),                               # 例如 "第31款"
+        "fact_date": roc_to_dates(df["事實發生日"].str.strip()),             # 例如 "115/11/05"
+        "content": df["說明"].str.replace("\r\n", "\n").str.strip(),         # 說明全文
+    })
+    return out.drop_duplicates(keys, keep="last").sort_values(keys).reset_index(drop=True)

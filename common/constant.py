@@ -13,4 +13,5 @@ STAGE_KEYS = {
     "stage_holiday": ["holiday_date"],
     "stage_company": ["company_id"],
     "stage_announcement": ["company_id", "enter_date", "serial_number"],
+    "stage_announcement_detail": ["company_id", "enter_date", "serial_number"],
 }

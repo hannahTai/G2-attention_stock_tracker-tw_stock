@@ -9,7 +9,7 @@ import pytest
 from common.date_utils import roc_to_date, roc_to_dates
 from transform.parsing import chinese_number, strip_html, to_number
 from transform.transformer import (
-    announcement_to_frame, holiday_to_frame, market_daily_to_frame, notice_to_frame, punish_to_frame,
+    announcement_detail_to_frame, announcement_to_frame, clean_announcement_detail, holiday_to_frame, market_daily_to_frame, notice_to_frame, punish_to_frame,
     punish_watchlist_to_frame, clean_announcement, clean_company, clean_holiday, clean_notice,
     clean_punish, clean_punish_watchlist, clean_trading_day, covered_through,
 )
@@ -269,3 +269,25 @@ def test_trading_day_not_updated_if_notices_exist():
         df = clean_trading_day(market_daily_to_frame([envelope(rows, MARKET_API_FIELDS)]), "202611",
                                datetime.date(2026, 11, 4), notice_days={datetime.date(2026, 11, 4)})
     assert df["trade_date"].tolist() == [datetime.date(2026, 11, d) for d in (1, 2, 3)]
+
+
+DETAIL_TITLES = [{"main": m, "sub": []} for m in
+                 ["序號", "發言日期", "發言時間", "發言人", "發言人職稱", "發言人電話", "主旨", "符合條款", "事實發生日", "說明"]]
+
+
+def test_announcement_detail_keys_from_raw_key_and_no_spokesperson():
+    """照真實回應（9908，第31款）：主鍵從 raw_key 取；發言人姓名、電話不進 stage。"""
+    data = [["1", "115/11/05", "14:39:07", "王小明      ", "協理    ", "02-1234-5678   ", "公告第三季財報   ",
+             "第31款", "115/11/05", "1.提報董事會日期:115/11/05\r\n2.其他應敘明事項:無\n"]]
+    raw = {"meta": {"key": "9908_20261102_1"}, "body": {"code": 200, "result": {"titles": DETAIL_TITLES, "data": data}}}
+    out = clean_announcement_detail(announcement_detail_to_frame([raw]))
+    assert list(out.columns) == ["company_id", "enter_date", "serial_number", "clause", "fact_date", "content"]
+    row = out.iloc[0]
+    assert (row["company_id"], row["enter_date"], row["serial_number"]) == ("9908", datetime.date(2026, 11, 2), 1)
+    assert (row["clause"], row["fact_date"]) == ("第31款", datetime.date(2026, 11, 5))
+    assert row["content"] == "1.提報董事會日期:115/11/05\n2.其他應敘明事項:無"
+
+
+def test_announcement_detail_no_data_is_empty():
+    raw = {"meta": {"key": "9908_20261102_1"}, "body": {"code": 200, "result": {"data": []}}}
+    assert clean_announcement_detail(announcement_detail_to_frame([raw])).empty

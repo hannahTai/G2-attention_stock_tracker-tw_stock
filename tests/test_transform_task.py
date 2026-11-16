@@ -30,6 +30,17 @@ def test_daily_jobs_cover_what_crawler_fetched(raw_store):
     assert jobs["transform_announcements"] == [("2330", 2026, 10), ("2330", 2026, 11)]
 
 
+def test_detail_jobs_by_enter_month(raw_store):
+    """全文：輸入日期在當月或上個月的才整理。"""
+    raw_store.put("announcement_detail", "2330_20260930_1", {})   # 上上個月：不處理
+    raw_store.put("announcement_detail", "2330_20261002_1", {})
+    raw_store.put("announcement_detail", "2330_20261112_3", {})
+
+    jobs = jobs_by_task(producer.build_jobs("20261113", "20261113"))
+
+    assert jobs["transform_announcement_detail"] == [("2330", "20261002", 1), ("2330", "20261112", 3)]
+
+
 def test_range_covers_every_month_and_year(raw_store):
     jobs = jobs_by_task(producer.build_jobs("20261230", "20270102"))
 

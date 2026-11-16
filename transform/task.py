@@ -5,6 +5,8 @@
     crawl_market_daily(month_yyyymm)              → transform_market_daily(month_yyyymm)
     crawl_holiday(year)                     → transform_holiday(year)
     crawl_announcements(stock_id, y, m)     → transform_announcements(stock_id, y, m)
+    crawl_announcement_detail(stock_id, enter_yyyymmdd, serial_number)
+                                            → transform_announcement_detail(stock_id, enter_yyyymmdd, serial_number)
     crawl_companies()                       → transform_companies(date_yyyymmdd)         讀那天以前最新的一份
     crawl_punish_watchlist()                → transform_punish_watchlist(date_yyyymmdd)  讀那天以前最新的一份
 
@@ -103,6 +105,17 @@ def transform_announcements(stock_id: str, year: int, month: int) -> str:
         return skipped("announcements", key)
     rows = upsert_stage({"stage_announcement": transformer.clean_announcement(transformer.announcement_to_frame([raw]))})
     return f"stage_announcement {key}：{rows} 列"
+
+
+def transform_announcement_detail(stock_id: str, enter_yyyymmdd: str, serial_number: int) -> str:
+    """一則重大訊息全文 → stage_announcement_detail。"""
+    key = f"{stock_id}_{enter_yyyymmdd}_{serial_number}"
+    raw = repository.read_raw("announcement_detail", key)
+    if raw is None:
+        return skipped("announcement_detail", key)
+    df = transformer.clean_announcement_detail(transformer.announcement_detail_to_frame([raw]))
+    rows = upsert_stage({"stage_announcement_detail": df})
+    return f"stage_announcement_detail {key}：{rows} 列"
 
 
 # ==================== 只有最新一份 ====================
