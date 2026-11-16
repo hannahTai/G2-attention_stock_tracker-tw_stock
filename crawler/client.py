@@ -108,27 +108,36 @@ def fetch_announcements(stock_id: str, year: int, month: int) -> requests.Respon
     })
 
 
-def announcement_ids(body) -> list[tuple[str, str, int]]:
-    """重大訊息回應裡每則公告的 (公司代號, 輸入日期 YYYYMMDD, 序號)，查全文要用。
+# 全文的 API：一般上市公司 t05st01_detail，存託憑證（DR，例如 9103 美德醫療-DR）t59sb01_detail
+DETAIL_APIS = ("t05st01_detail", "t59sb01_detail")
+
+
+def announcement_ids(body) -> list[tuple[str, str, int, str]]:
+    """重大訊息回應裡每則公告的 (公司代號, 輸入日期 YYYYMMDD, 序號, 全文 API)，查全文要用。
 
     取自每列最後一欄「詳細資料」，例如
-    {"parameters": {"marketKind": "sii", "enterDate": "1151102", "serialNumber": "1", "companyId": "9908"}, ...}
+    {"parameters": {"marketKind": "sii", "enterDate": "1151102", "serialNumber": "1", "companyId": "9908"},
+     "apiName": "t05st01_detail"}
     """
     ids = []
     for row in (body.get("result") or {}).get("data") or []:
         params = row[-1]["parameters"]
         roc = params["enterDate"]                                   # "1151102"：民國年＋月日
         enter_yyyymmdd = f"{int(roc[:-4]) + 1911}{roc[-4:]}"        # "20261102"
-        ids.append((params["companyId"].strip(), enter_yyyymmdd, int(params["serialNumber"])))
+        ids.append((params["companyId"].strip(), enter_yyyymmdd, int(params["serialNumber"]), row[-1]["apiName"]))
     return ids
 
 
-def fetch_announcement_detail(stock_id: str, enter_yyyymmdd: str, serial_number: int) -> requests.Response:
+def fetch_announcement_detail(stock_id: str, enter_yyyymmdd: str, serial_number: int,
+                              api_name: str = "t05st01_detail") -> requests.Response:
     """一則重大訊息的全文（主旨、符合條款、事實發生日、說明）。
 
     用輸入日期（民國年月日連寫）＋當天序號指定哪一則；marketKind sii＝上市。
+    api_name 照重大訊息清單上寫的（DR 和一般公司不同支），只接受 DETAIL_APIS 裡的。
     """
+    if api_name not in DETAIL_APIS:
+        raise ValueError(f"不認識的全文 API：{api_name}")
     roc = f"{int(enter_yyyymmdd[:4]) - 1911}{enter_yyyymmdd[4:]}"   # "20261102" → "1151102"
-    return http_post(f"{MOPS_BASE}/t05st01_detail", {
+    return http_post(f"{MOPS_BASE}/{api_name}", {
         "marketKind": "sii", "enterDate": roc, "serialNumber": str(serial_number), "companyId": stock_id,
     })

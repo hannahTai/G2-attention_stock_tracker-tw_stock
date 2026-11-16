@@ -110,10 +110,11 @@ def build_detail_jobs(start: str, end: str, refetch: bool = False) -> list[tuple
     fetched = {} if refetch else repository.raw_fetched_times("announcement_detail")
     jobs = []
     for raw in repository.read_raws("announcements", keys):
-        for stock_id, enter_yyyymmdd, serial_number in client.announcement_ids(raw["body"]):
+        for stock_id, enter_yyyymmdd, serial_number, api_name in client.announcement_ids(raw["body"]):
             if f"{stock_id}_{enter_yyyymmdd}_{serial_number}" not in fetched:
                 jobs.append((task.crawl_announcement_detail,
-                             {"stock_id": stock_id, "enter_yyyymmdd": enter_yyyymmdd, "serial_number": serial_number}))
+                             {"stock_id": stock_id, "enter_yyyymmdd": enter_yyyymmdd, "serial_number": serial_number,
+                              "api_name": api_name}))
     return jobs
 
 

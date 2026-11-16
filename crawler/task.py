@@ -63,13 +63,15 @@ def crawl_announcements(stock_id: str, year: int, month: int) -> str:
     return repository.upsert_raw("announcements", key, client.fetch_announcements(stock_id, year, month))
 
 
-def crawl_announcement_detail(stock_id: str, enter_yyyymmdd: str, serial_number: int) -> str:
+def crawl_announcement_detail(stock_id: str, enter_yyyymmdd: str, serial_number: int,
+                              api_name: str = "t05st01_detail") -> str:
     """重大訊息全文：抓一則、存進 raw_announcement_detail（key 9908_20261102_1＝公司_輸入日期_序號）。
 
+    api_name：一般公司 t05st01_detail、存託憑證（DR）t59sb01_detail，照重大訊息清單上寫的。
     回應裡沒有那則公告（data 是空的）就當失敗，下次再抓。
     """
     key = f"{stock_id}_{enter_yyyymmdd}_{serial_number}"
-    resp = client.fetch_announcement_detail(stock_id, enter_yyyymmdd, serial_number)
+    resp = client.fetch_announcement_detail(stock_id, enter_yyyymmdd, serial_number, api_name)
     body = repository.parse_body(resp.text)
 
     problem = None

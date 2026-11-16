@@ -1,4 +1,6 @@
 """producer 決定要抓哪些重大訊息：用記憶體裡的假 raw 表（raw_store），不連網路、不連資料庫。執行：uv run pytest"""
+import pytest
+
 from common.date_utils import prev_month
 from crawler import client
 from crawler import producer as pc
@@ -62,17 +64,32 @@ def test_holiday_is_fetched_only_once_per_year(raw_store):
     assert holiday_years() == [2027]
 
 
-def announcement_list(*ids):
+def announcement_list(*ids, api_name="t05st01_detail"):
     """做一份重大訊息清單的回應：ids 是 (公司, 民國輸入日期, 序號)。"""
     detail = lambda c, d, n: {"parameters": {"marketKind": "sii", "enterDate": d, "serialNumber": n, "companyId": c},
-                              "apiName": "t05st01_detail"}
+                              "apiName": api_name}
     return {"result": {"data": [[c, "名稱", "115/11/05", "14:39:07", "主旨", detail(c, d, n)] for c, d, n in ids]}}
 
 
 def test_client_announcement_ids_convert_roc_date():
     body = announcement_list(("9908 ", "1151102", "1"), ("9908", "991231", "12"))
-    assert client.announcement_ids(body) == [("9908", "20261102", 1), ("9908", "20101231", 12)]
+    assert client.announcement_ids(body) == [("9908", "20261102", 1, "t05st01_detail"),
+                                             ("9908", "20101231", 12, "t05st01_detail")]
     assert client.announcement_ids({"result": {"data": []}}) == []
+
+
+def test_detail_jobs_use_api_from_list(raw_store):
+    """存託憑證（DR）的全文是另一支 API（t59sb01_detail），照清單上寫的打。"""
+    setup_day(raw_store, day="20261113")
+    raw_store.put("notice", "20261113", {"data": [["1", "9103"]]})
+    raw_store.put("companies", "20261113", [{"公司代號": "9103"}])
+    raw_store.put("announcements", "9103_202611", announcement_list(("9103", "1151102", "1"), api_name="t59sb01_detail"))
+    assert keys(pc.build_detail_jobs("20261113", "20261113")) == [("9103", "20261102", 1, "t59sb01_detail")]
+
+
+def test_fetch_detail_rejects_unknown_api():
+    with pytest.raises(ValueError, match="不認識的全文 API"):
+        client.fetch_announcement_detail("9103", "20261102", 1, "../t05st01")
 
 
 def test_detail_jobs_skip_fetched(raw_store):
@@ -81,7 +98,7 @@ def test_detail_jobs_skip_fetched(raw_store):
     raw_store.put("announcements", "2330_202611", announcement_list(("2330", "1151102", "1"), ("2330", "1151105", "2")))
     raw_store.put("announcements", "2317_202611", announcement_list(("2317", "1151102", "1")))   # 2317 今天沒被關注
     raw_store.put("announcement_detail", "2330_20261102_1", {"result": {"data": [["1"]]}})
-    assert keys(pc.build_detail_jobs("20261113", "20261113")) == [("2330", "20261105", 2)]
+    assert keys(pc.build_detail_jobs("20261113", "20261113")) == [("2330", "20261105", 2, "t05st01_detail")]
 
 
 def twse_keys(jobs, name):
@@ -110,4 +127,4 @@ def test_detail_refetch_includes_fetched(raw_store):
     raw_store.put("announcements", "2330_202611", announcement_list(("2330", "1151102", "1")))
     raw_store.put("announcement_detail", "2330_20261102_1", {"result": {"data": [["1"]]}})
     assert keys(pc.build_detail_jobs("20261113", "20261113")) == []
-    assert keys(pc.build_detail_jobs("20261113", "20261113", refetch=True)) == [("2330", "20261102", 1)]
+    assert keys(pc.build_detail_jobs("20261113", "20261113", refetch=True)) == [("2330", "20261102", 1, "t05st01_detail")]
