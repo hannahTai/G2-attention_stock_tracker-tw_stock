@@ -167,6 +167,8 @@ def main() -> None:
     args = cli.parse_args()   # daily：今天；backfill：--start～--end，--refetch 全部重抓
     start, end, refetch = args.start, args.end, args.refetch
 
+    repository.create_tables()   # 確認資料庫和表都在：不存在就建立（不會刪表）。全新的資料庫第一步就是 crawler
+
     failed = run_jobs(build_twse_jobs(start, end, refetch), SLEEP_SECONDS)
     failed += run_jobs(build_mops_jobs(start, end, refetch), SLEEP_SECONDS_MOPS)   # 要先有第一批的注意股、處置股、公司清單
     failed += run_jobs(build_detail_jobs(start, end, refetch), SLEEP_SECONDS_MOPS)  # 要先有第二批的公告清單

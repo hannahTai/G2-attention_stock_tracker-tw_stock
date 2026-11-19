@@ -1,4 +1,4 @@
-"""transformer.py 的測試：用真實回應的資料列，不連網路、不讀 data/。執行：uv run pytest"""
+"""transform/transformer.py 的測試：用真實回應的資料列，不連網路、不讀 data/。執行：uv run pytest"""
 import datetime
 import math
 import warnings

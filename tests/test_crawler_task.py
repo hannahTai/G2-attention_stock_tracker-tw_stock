@@ -1,4 +1,4 @@
-"""task.py：抓完存進 raw 表前的檢查（用假的回應和記憶體裡的假 raw 表）。"""
+"""crawler/task.py：抓完存進 raw 表前的檢查（用假的回應和記憶體裡的假 raw 表）。"""
 import json
 
 import pytest

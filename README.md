@@ -95,11 +95,11 @@ main.py                     一次跑完：crawler → transform → analyze
 git clone https://github.com/hannahTai/G2-attention_stock_tracker-tw_stock.git
 cd G2-attention_stock_tracker-tw_stock
 cp .env.example .env   # 填入 MySQL 連線資訊
-pip install -r requirements.txt
-python main.py         # 抓今天 → 整理 → 算還差幾次
+uv sync                # 安裝套件（依 uv.lock）
+uv run python main.py  # 建表（第一次）→ 抓今天 → 整理 → 算還差幾次
 ```
 
-回補一段期間：`python main.py backfill --start 20260701`（已經抓完整的跳過，加 `--refetch` 全部重抓）。也可以用 uv：`uv sync` 後 `uv run python main.py`。
+回補一段期間：`uv run python main.py backfill --start 20260701`（已經抓完整的跳過，加 `--refetch` 全部重抓）。
 每一步單獨執行、排程設定見 [`docs/flow.md`](docs/flow.md)；資料表見 [`docs/tables.md`](docs/tables.md)；規則見 [`docs/rules.md`](docs/rules.md)。
 
 ---

@@ -1,4 +1,4 @@
-"""producer 決定要抓哪些重大訊息：用記憶體裡的假 raw 表（raw_store），不連網路、不連資料庫。執行：uv run pytest"""
+"""crawler/producer.py 決定要抓哪些重大訊息：用記憶體裡的假 raw 表（raw_store），不連網路、不連資料庫。執行：uv run pytest"""
 import pytest
 import requests
 

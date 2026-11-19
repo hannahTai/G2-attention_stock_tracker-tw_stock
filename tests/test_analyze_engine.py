@@ -1,4 +1,4 @@
-"""engine.py（規則引擎）的測試：用手做的小例子，不連資料庫。規則見 docs/rules.md。"""
+"""analyze/engine.py（規則引擎）的測試：用手做的小例子，不連資料庫。規則見 docs/rules.md。"""
 import datetime
 
 import pandas as pd
