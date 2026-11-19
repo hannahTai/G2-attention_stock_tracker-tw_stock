@@ -16,6 +16,10 @@ MOPS_BASE = os.environ.get("MOPS_BASE", "https://mops.twse.com.tw/mops/api")
 SLEEP_SECONDS = float(os.environ.get("SLEEP_SECONDS", "1.0"))
 SLEEP_SECONDS_MOPS = float(os.environ.get("SLEEP_SECONDS_MOPS", "0.6"))
 
+# 暫時性的失敗（逾時、連線失敗、5xx、429）重試幾次、每次等幾秒（同課程手冊 04 的 max_retries、default_retry_delay）
+MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
+RETRY_DELAY_SECONDS = float(os.environ.get("RETRY_DELAY_SECONDS", "5"))
+
 # MySQL
 MYSQL_HOST = os.environ.get("MYSQL_HOST", "127.0.0.1")
 MYSQL_PORT = int(os.environ.get("MYSQL_PORT", 3306))

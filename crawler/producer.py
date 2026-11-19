@@ -16,8 +16,10 @@ import calendar
 import datetime
 import time
 
+import requests
+
 from common import cli, repository
-from common.config import SLEEP_SECONDS, SLEEP_SECONDS_MOPS
+from common.config import MAX_RETRIES, RETRY_DELAY_SECONDS, SLEEP_SECONDS, SLEEP_SECONDS_MOPS
 from common.date_utils import dates_between, months_between, prev_month, today_yyyymmdd
 from crawler import client, task
 
@@ -119,8 +121,32 @@ def build_detail_jobs(start: str, end: str, refetch: bool = False) -> list[tuple
 
 
 # ---------- 執行 ----------
+def is_retryable(error: Exception) -> bool:
+    """等一下再試可能會好的失敗：逾時、連線失敗（requests 的錯誤），或 repository 標成可重試的（5xx、429）。
+
+    內容不對、被擋（回 HTML）重試也一樣，不重試；太快重打反而更容易被擋。
+    """
+    return isinstance(error, requests.RequestException) or getattr(error, "retryable", False)
+
+
+def run_with_retry(func, kwargs: dict, name: str) -> str:
+    """執行一個任務；暫時性的失敗等 RETRY_DELAY_SECONDS 秒再試，最多重試 MAX_RETRIES 次，還是失敗就丟出錯誤。
+
+    同課程手冊 04 的 @app.task(max_retries=3, default_retry_delay=5)＋self.retry()；Step 5 接 Celery 時換成那個寫法。
+    每次失敗的回應都會存進 raw 表（只新增），事後查得到試了幾次、各是什麼錯。
+    """
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            return func(**kwargs)
+        except Exception as e:
+            if attempt == MAX_RETRIES or not is_retryable(e):
+                raise
+            print(f"{name} ✗ {e}，{RETRY_DELAY_SECONDS:g} 秒後重試（剩 {MAX_RETRIES - attempt} 次）")
+            time.sleep(RETRY_DELAY_SECONDS)
+
+
 def run_jobs(jobs: list[tuple], sleep: float) -> list[str]:
-    """依序執行，回傳失敗的任務。單一任務失敗不會中斷整批。
+    """依序執行，回傳失敗的任務。單一任務失敗不會中斷整批；暫時性的失敗會先重試（run_with_retry）。
 
     jobs 例如 [(crawl_notice, {"date_yyyymmdd": "20261113"}), (crawl_announcements, {"stock_id": "2330", ...})]
     """
@@ -128,7 +154,7 @@ def run_jobs(jobs: list[tuple], sleep: float) -> list[str]:
     for func, kwargs in jobs:
         name = f"{func.__name__}({', '.join(f'{k}={v!r}' for k, v in kwargs.items())})"   # log 用
         try:
-            where = func(**kwargs)               # 執行任務：打 API、存進 raw 表；Step 5 改成 func.delay(**kwargs)
+            where = run_with_retry(func, kwargs, name)   # 執行任務：打 API、存進 raw 表；Step 5 改成 func.delay(**kwargs)
             print(name, "→", where)              # 印到 log，例如 raw_notice/20261113
         except Exception as e:                   # 被擋、逾時等：記下來，繼續下一個
             print(name, "✗", e)

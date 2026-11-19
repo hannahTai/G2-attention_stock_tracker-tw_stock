@@ -13,12 +13,12 @@
 
 ## raw 層
 
-一個來源一張表，欄位都一樣；一列＝一份 API 回應。
+一個來源一張表，欄位都一樣；一列＝抓一次的 API 回應。
 
 | 欄位 | 型別 | 說明 |
 |---|---|---|
-| raw_key | VARCHAR(30) | 主鍵，例如 `20261113`、`202611`、`2026`、`1303_202611` |
-| fetched_at | DATETIME | 抓取時間（台灣時間） |
+| raw_key | VARCHAR(30) | 主鍵之一，例如 `20261113`、`202611`、`2026`、`1303_202611` |
+| fetched_at | DATETIME(6) | 主鍵之一；抓取時間（台灣時間） |
 | http_status | SMALLINT | HTTP 狀態碼 |
 | ok | BOOLEAN | 成功且內容檢查通過；transform 只讀 ok 的列 |
 | problem | TEXT | 失敗原因；成功為 NULL |
@@ -37,7 +37,7 @@
 | `raw_announcements` | 公司代號_月份 | `stage_announcement` |
 | `raw_announcement_detail` | 公司代號_輸入日期_序號 | `stage_announcement_detail` |
 
-- 同一個 raw_key 重抓：成功就覆蓋；失敗只在還沒有成功的資料時才寫入，不會蓋掉好的資料。
+- 只新增、不修改：主鍵（raw_key, fetched_at），同一個 raw_key 每抓一次多一列，成功、失敗都留。transform 只讀每個 raw_key 最新一份成功的，所以失敗不會蓋掉之前成功的。
 
 ## stage 層
 

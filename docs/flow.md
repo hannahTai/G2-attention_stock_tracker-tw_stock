@@ -12,7 +12,7 @@ analyze    stage_* 表 → app_* 表     規則引擎算進度
 
 | 任務 | 讀 | 寫 |
 |---|---|---|
-| `crawl_notice` | API（`fetch_notice`） | raw 表（`upsert_raw`） |
+| `crawl_notice` | API（`fetch_notice`） | raw 表（`save_raw`） |
 | `transform_notice` | raw 表（`read_raw`） | stage 表（`upsert_stage`） |
 | `analyze_progress` | stage 表（`read_stage`） | app 表（`upsert_app`） |
 
@@ -77,8 +77,8 @@ analyze    stage_* 表 → app_* 表     規則引擎算進度
 - 先抓證交所，再查重大訊息：當天被關注的上市公司，查當月和上個月。
 - 最後查全文：重大訊息清單裡的每則公告查一次；全文不會變，抓過的不再抓。
 - 開休市日期一年只抓一次（年初公布整年）；颱風假不在裡面，是從市場成交看出來的。要重抓：`uv run python -c "from crawler import task; print(task.crawl_holiday(2026))"`。
-- 單一任務失敗不中斷，最後列出失敗清單。
-- 同一個 raw_key 重抓：成功覆蓋；失敗不蓋掉成功的（`ok`＝0、`problem` 寫原因）。
+- 單一任務失敗不中斷，最後列出失敗清單。暫時性的失敗（逾時、連線失敗、HTTP 5xx、429）先等 5 秒重試，最多 3 次（`.env` 的 `MAX_RETRIES`、`RETRY_DELAY_SECONDS`）；內容不對、被擋不重試。
+- raw 只新增、不修改：同一個 raw_key 每抓一次多一列，成功、失敗都留（失敗的 `ok`＝0、`problem` 寫原因）；讀的時候只拿最新一份成功的，所以失敗不會蓋掉之前成功的。
 - 已經抓完整的不再抓（daily、backfill 都是）；加 `--refetch` 就全部重抓。「完整」＝在資料不會再變之後抓的：
   - 注意股、處置股：那天 20:00 以後抓的（17:30～17:45 才公布，見 `data/probe_publish_time.log`）。
   - 市場成交：那個月最後一天 20:00 以後抓的；重大訊息清單：那個月過完以後抓的。當月的照樣抓。

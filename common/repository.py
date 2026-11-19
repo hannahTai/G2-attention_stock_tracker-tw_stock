@@ -2,7 +2,7 @@
 
 不知道資料從哪個 API 來、被整理過什麼。連線設定從 .env 讀（見 config.py）。
   - 連線、建表：get_engine()、create_tables()
-  - raw 表：upsert_raw()、read_raw()、read_raws()、list_raw_keys()、raw_exists()、raw_fetched_times()
+  - raw 表（只新增、不修改）：save_raw()、read_raw()、read_raws()、list_raw_keys()、raw_exists()、raw_fetched_times()
   - stage 表：stage_has_day()（analyze 檢查那天的資料到齊了沒）
   - stage、app 表：upload_data_to_mysql()、upsert_rows()、delete_where_in()
 """
@@ -82,10 +82,17 @@ def parse_body(text: str) -> dict | list | str:
         return text
 
 
-def upsert_raw_row(source: str, raw_key: str, *, fetched_at: datetime.datetime, http_status: int, ok: bool,
-                 problem: str | None, url: str, request_body: str | None, body: str) -> bool:
-    """寫入一份回應。成功一律覆蓋；失敗只在還沒有成功的資料時才寫入。回傳有沒有寫進去。"""
-    table = raw_table_name(source)
+class FetchError(RuntimeError):
+    """抓取失敗（回應已經存進 raw 表）。retryable：等一下再試可能會好（伺服器錯誤 5xx、請求太多 429）。"""
+
+    def __init__(self, message: str, retryable: bool):
+        super().__init__(message)
+        self.retryable = retryable
+
+
+def insert_raw_row(source: str, raw_key: str, *, fetched_at: datetime.datetime, http_status: int, ok: bool,
+                   problem: str | None, url: str, request_body: str | None, body: str) -> None:
+    """新增一份回應。只新增、不修改：同一個 raw_key 重抓就多一列，舊的留著。"""
     row = {
         "raw_key": raw_key,
         "fetched_at": fetched_at.astimezone(date_utils.TAIPEI).replace(tzinfo=None),   # 存台灣時間
@@ -96,27 +103,14 @@ def upsert_raw_row(source: str, raw_key: str, *, fetched_at: datetime.datetime, 
         "request_body": request_body,
         "body": body,
     }
-
+    columns = ", ".join(RAW_COLUMNS)
+    values = ", ".join(f":{c}" for c in RAW_COLUMNS)
     with get_engine().begin() as conn:
-        if not ok:
-            # 已經有成功的資料就不蓋掉（FOR UPDATE：讀的同時鎖住這一列，避免同時寫入）
-            existing_ok = conn.execute(sqlalchemy.text(f"SELECT ok FROM {table} WHERE raw_key = :raw_key FOR UPDATE"),
-                                       {"raw_key": raw_key}).scalar()
-            if existing_ok:
-                return False
-
-        # 新的 key 就新增，已經有就更新（upsert）
-        columns = ", ".join(RAW_COLUMNS)
-        values = ", ".join(f":{c}" for c in RAW_COLUMNS)
-        updates = ", ".join(f"{c} = new.{c}" for c in RAW_COLUMNS if c != "raw_key")
-        conn.execute(sqlalchemy.text(
-            f"INSERT INTO {table} ({columns}) VALUES ({values}) AS new ON DUPLICATE KEY UPDATE {updates}"
-        ), row)
-    return True
+        conn.execute(sqlalchemy.text(f"INSERT INTO {raw_table_name(source)} ({columns}) VALUES ({values})"), row)
 
 
-def upsert_raw(source: str, raw_key: str, resp: requests.Response, problem: str | None = None) -> str:
-    """把 API 回應原樣存進 raw 表；失敗時存完再報錯。回傳存到哪裡，例如 raw_notice/20261113。
+def save_raw(source: str, raw_key: str, resp: requests.Response, problem: str | None = None) -> str:
+    """把 API 回應原樣存進 raw 表；失敗時存完再丟 FetchError。回傳存到哪裡，例如 raw_notice/20261113。
 
     problem：呼叫的人檢查內容後發現的問題（例如回傳的年份不對）；有給就當失敗。
     """
@@ -127,18 +121,28 @@ def upsert_raw(source: str, raw_key: str, resp: requests.Response, problem: str 
     if isinstance(request_body, bytes):
         request_body = request_body.decode("utf-8")
 
-    upsert_raw_row(source, raw_key, fetched_at=date_utils.now(), http_status=resp.status_code, ok=ok,
-                 problem=None if ok else (problem or f"HTTP {resp.status_code}"),
-                 url=resp.url, request_body=request_body, body=resp.text)
+    insert_raw_row(source, raw_key, fetched_at=date_utils.now(), http_status=resp.status_code, ok=ok,
+                   problem=None if ok else (problem or f"HTTP {resp.status_code}"),
+                   url=resp.url, request_body=request_body, body=resp.text)
 
     where = f"{raw_table_name(source)}/{raw_key}"
     if not ok:
         reason = problem or f"HTTP {resp.status_code}"
-        raise RuntimeError(f"{source} {raw_key} 抓取失敗（{reason}），回應已存到 {where}")
+        # 內容不對（年份錯、被擋回 HTML）重試也一樣，不重試；伺服器錯誤、請求太多才值得等一下再試
+        retryable = problem is None and (resp.status_code >= 500 or resp.status_code == 429)
+        raise FetchError(f"{source} {raw_key} 抓取失敗（{reason}），回應已存到 {where}", retryable)
     return where
 
 
-# ---------- raw 表：讀（只讀成功的列）----------
+# ---------- raw 表：讀（每個 raw_key 只讀最新一份成功的）----------
+def latest_ok_sql(table: str, key_filter: str = "") -> str:
+    """每個 raw_key 最新一份成功回應的 SQL。key_filter：加在子查詢的條件，例如 " AND raw_key IN :raw_keys"。
+
+    子查詢找出每個 raw_key 成功的列裡最晚的抓取時間，再用（raw_key, fetched_at）＝主鍵接回那一列。
+    """
+    return (f"SELECT {', '.join(RAW_COLUMNS)} FROM {table} "
+            f"JOIN (SELECT raw_key, MAX(fetched_at) AS fetched_at FROM {table} WHERE ok{key_filter} GROUP BY raw_key) "
+            f"AS latest USING (raw_key, fetched_at)")
 def to_envelope(source: str, row) -> dict:
     """資料庫的一列 → {"meta": {抓取紀錄}, "body": 解析好的 JSON}。"""
     fetched_at = row.fetched_at.replace(tzinfo=date_utils.TAIPEI)
@@ -156,21 +160,21 @@ def to_envelope(source: str, row) -> dict:
 
 
 def read_raw(source: str, raw_key: str) -> dict | None:
-    """讀一份成功的回應；沒有就回傳 None。"""
+    """讀這個 raw_key 最新一份成功的回應；沒有就回傳 None。"""
     raws = read_raws(source, [raw_key])
     return raws[0] if raws else None
 
 
 def read_raws(source: str, raw_keys: list[str] | None = None) -> list[dict]:
-    """讀多份成功的回應，依 raw_key 排序；raw_keys 不給就讀這個來源全部。"""
-    sql = f"SELECT {', '.join(RAW_COLUMNS)} FROM {raw_table_name(source)} WHERE ok"
+    """讀每個 raw_key 最新一份成功的回應，依 raw_key 排序；raw_keys 不給就讀這個來源全部。"""
     params = {}
+    key_filter = ""
     if raw_keys is not None:
         if not raw_keys:
             return []
-        sql += " AND raw_key IN :raw_keys"
+        key_filter = " AND raw_key IN :raw_keys"
         params["raw_keys"] = list(raw_keys)
-    statement = sqlalchemy.text(sql + " ORDER BY raw_key")
+    statement = sqlalchemy.text(latest_ok_sql(raw_table_name(source), key_filter) + " ORDER BY raw_key")
     if raw_keys is not None:
         statement = statement.bindparams(sqlalchemy.bindparam("raw_keys", expanding=True))   # IN 後面放一串值
 
@@ -182,22 +186,25 @@ def read_raws(source: str, raw_keys: list[str] | None = None) -> list[dict]:
 def list_raw_keys(source: str) -> list[str]:
     """這個來源有哪些成功的 raw_key，排序後回傳。"""
     with get_engine().connect() as conn:
-        rows = conn.execute(sqlalchemy.text(f"SELECT raw_key FROM {raw_table_name(source)} WHERE ok ORDER BY raw_key"))
+        rows = conn.execute(sqlalchemy.text(
+            f"SELECT DISTINCT raw_key FROM {raw_table_name(source)} WHERE ok ORDER BY raw_key"))
         return [row.raw_key for row in rows]
 
 
 def raw_exists(source: str, raw_key: str) -> bool:
-    """有沒有這份成功的回應（不讀內容，比 read_raw 快）。"""
+    """有沒有成功的回應（不讀內容，比 read_raw 快）。"""
     with get_engine().connect() as conn:
-        found = conn.execute(sqlalchemy.text(f"SELECT 1 FROM {raw_table_name(source)} WHERE raw_key = :raw_key AND ok"),
-                             {"raw_key": raw_key}).scalar()
+        found = conn.execute(sqlalchemy.text(
+            f"SELECT 1 FROM {raw_table_name(source)} WHERE raw_key = :raw_key AND ok LIMIT 1"),
+            {"raw_key": raw_key}).scalar()
     return found is not None
 
 
 def raw_fetched_times(source: str) -> dict[str, datetime.datetime]:
-    """這個來源每份成功回應的抓取時間（台灣時間），例如 {"20261113": datetime(2026, 11, 13, 21, 0, 5)}。"""
+    """每個 raw_key 最新一份成功回應的抓取時間（台灣時間），例如 {"20261113": datetime(2026, 11, 13, 21, 0, 5)}。"""
     with get_engine().connect() as conn:
-        rows = conn.execute(sqlalchemy.text(f"SELECT raw_key, fetched_at FROM {raw_table_name(source)} WHERE ok"))
+        rows = conn.execute(sqlalchemy.text(
+            f"SELECT raw_key, MAX(fetched_at) AS fetched_at FROM {raw_table_name(source)} WHERE ok GROUP BY raw_key"))
         return {row.raw_key: row.fetched_at for row in rows}
 
 

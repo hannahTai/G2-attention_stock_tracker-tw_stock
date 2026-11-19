@@ -1,6 +1,6 @@
 """task 層：一個任務抓一份資料、存進 raw 表，回傳存到哪裡（例如 raw_notice/20261113）（課程補充 J）。
 
-每個任務串接 client（client.py 的 fetch_xxx）→ repository（upsert_raw）。
+每個任務串接 client（client.py 的 fetch_xxx）→ repository（save_raw）。
 任務的三個條件：輸入都是參數（字串、數字）、不依賴其他任務、結果直接寫進資料庫。
 producer.py 決定要跑哪些任務；Step 5 接 Celery 時，這裡的函式加上 @app.task()。
 
@@ -14,12 +14,12 @@ from common.date_utils import today_yyyymmdd
 # ---------- 證交所 ----------
 def crawl_notice(date_yyyymmdd: str) -> str:
     """注意股：抓一天、存進 raw_notice（key 20261113）。"""
-    return repository.upsert_raw("notice", date_yyyymmdd, client.fetch_notice(date_yyyymmdd))
+    return repository.save_raw("notice", date_yyyymmdd, client.fetch_notice(date_yyyymmdd))
 
 
 def crawl_punish(date_yyyymmdd: str) -> str:
     """處置股：抓一天、存進 raw_punish（key 20261113）。"""
-    return repository.upsert_raw("punish", date_yyyymmdd, client.fetch_punish(date_yyyymmdd))
+    return repository.save_raw("punish", date_yyyymmdd, client.fetch_punish(date_yyyymmdd))
 
 
 def crawl_punish_watchlist() -> str:
@@ -28,7 +28,7 @@ def crawl_punish_watchlist() -> str:
     key = client.watchlist_date(repository.parse_body(resp.text))
     if key is None:   # 找不到日期：用今天，至少把回應存下來查原因
         key = today_yyyymmdd()
-    return repository.upsert_raw("punish_watchlist", key, resp)
+    return repository.save_raw("punish_watchlist", key, resp)
 
 
 def crawl_holiday(year: int) -> str:
@@ -43,24 +43,24 @@ def crawl_holiday(year: int) -> str:
     if isinstance(body, dict) and body.get("queryYear") != year:
         problem = f"要 {year} 年，回傳的是 {body.get('queryYear')} 年"
 
-    return repository.upsert_raw("holiday", str(year), resp, problem)
+    return repository.save_raw("holiday", str(year), resp, problem)
 
 
 def crawl_market_daily(month_yyyymm: str) -> str:
     """每日市場成交：抓一個月、存進 raw_market_daily（key 202611）。"""
-    return repository.upsert_raw("market_daily", month_yyyymm, client.fetch_market_daily(month_yyyymm))
+    return repository.save_raw("market_daily", month_yyyymm, client.fetch_market_daily(month_yyyymm))
 
 
 def crawl_companies() -> str:
     """上市公司清單：抓最新一份，key 用抓取日期（每天一份快照）。"""
-    return repository.upsert_raw("companies", today_yyyymmdd(), client.fetch_companies())
+    return repository.save_raw("companies", today_yyyymmdd(), client.fetch_companies())
 
 
 # ---------- 觀測站 ----------
 def crawl_announcements(stock_id: str, year: int, month: int) -> str:
     """重大訊息：抓一家公司一個月、存進 raw_announcements（key 1303_202611）。"""
     key = f"{stock_id}_{year:04d}{month:02d}"
-    return repository.upsert_raw("announcements", key, client.fetch_announcements(stock_id, year, month))
+    return repository.save_raw("announcements", key, client.fetch_announcements(stock_id, year, month))
 
 
 def crawl_announcement_detail(stock_id: str, enter_yyyymmdd: str, serial_number: int,
@@ -78,4 +78,4 @@ def crawl_announcement_detail(stock_id: str, enter_yyyymmdd: str, serial_number:
     if isinstance(body, dict) and not (body.get("result") or {}).get("data"):
         problem = f"查無這則公告（{body.get('message')}）"
 
-    return repository.upsert_raw("announcement_detail", key, resp, problem)
+    return repository.save_raw("announcement_detail", key, resp, problem)
