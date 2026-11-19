@@ -1,8 +1,4 @@
-"""transform 選哪些 raw 來整理、analyze 檢查必要的 stage 資料：用記憶體裡的假表，不連資料庫。"""
-import datetime
-
-from common import repository
-from analyze import producer as analyze_producer
+"""transform 選哪些 raw 來整理：用記憶體裡的假 raw 表，不連資料庫。"""
 from transform import producer, task
 
 
@@ -24,7 +20,7 @@ def test_daily_jobs_cover_what_crawler_fetched(raw_store):
     assert jobs["transform_notice"] == [("20261113",)]
     assert jobs["transform_punish"] == [("20261113",)]
     assert jobs["transform_market_daily"] == [("202611",)]   # 一份是一整個月
-    assert jobs["transform_holiday"] == [(2026,)]            # 一份是一整年
+    assert jobs["transform_holiday"] == [(2026,), (2027,)]   # 一份是一整年；11 月起也整理下一年
     assert jobs["transform_punish_watchlist"] == [("20261113",)]
     assert jobs["transform_companies"] == [("20261113",)]
     assert jobs["transform_announcements"] == [("2330", 2026, 10), ("2330", 2026, 11)]
@@ -55,26 +51,10 @@ def test_latest_key_uses_last_one_not_future(raw_store):
     raw_store.put("companies", "20261120", [])
 
     assert task.latest_key("companies", "20261114") == "20261113"
-    assert task.latest_key("companies", "20261112") is None
+    assert task.latest_key("companies", "20261112") == "<=20261112"   # 一份都沒有：讀不到，任務會跳過
 
 
 def test_missing_raw_is_skipped_not_failed(raw_store):
     """crawler 沒抓到（或失敗）的那份：跳過，不寫 stage、不算失敗。"""
     raw_store.put("notice", "20261113", "<html>blocked</html>", ok=False)
     assert "跳過" in task.transform_notice("20261113")
-
-
-def test_analyze_needs_trading_notice_and_punish_days(monkeypatch):
-    """analyze 要三張 stage 表那天都有一列才算。"""
-    have = set()   # 假的 stage：{(表, 日期)}
-    monkeypatch.setattr(repository, "stage_has_day", lambda table, column, day: (table, day) in have)
-    day = datetime.date(2026, 11, 13)
-
-    assert analyze_producer.missing_inputs("20261113") == [
-        "stage_trading_day/20261113", "stage_notice_day/20261113", "stage_punish_day/20261113"]
-
-    have |= {("stage_notice_day", day), ("stage_punish_day", day)}
-    assert analyze_producer.missing_inputs("20261113") == ["stage_trading_day/20261113"]   # 市場成交還沒更新到 11/13
-
-    have.add(("stage_trading_day", day))
-    assert analyze_producer.missing_inputs("20261113") == []

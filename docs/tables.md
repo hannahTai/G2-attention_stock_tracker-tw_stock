@@ -41,6 +41,9 @@
 
 ## stage 層
 
+每張表（固定資料的 `stage_announcement_clause` 除外）最後都有兩欄：`loaded_at`（寫入時間）、`source_fetched_at`（DATETIME(6)，
+這列來自哪次抓取，也就是 raw 的 `fetched_at`）。寫入時用主鍵更新，只讓 `source_fetched_at` 比較新（或一樣新）的覆蓋，見 [`flow.md`](flow.md)「去重與冪等」。
+
 | 表 | 一列是 | 主鍵 | 期間 |
 |---|---|---|---|
 | `stage_notice` | 某天某檔的注意股 | trade_date, stock_id | 07/01–11/13 |
@@ -115,6 +118,7 @@ erDiagram
         tinyint match_interval_minutes
         text content
         boolean has_star_mark
+        datetime source_fetched_at
         datetime loaded_at
     }
     stage_punish_watchlist {
@@ -228,8 +232,9 @@ erDiagram
 | match_interval_minutes | TINYINT | 處置內容 | 抓「約每X分鐘」；沒寫為 NULL |
 | content | TEXT | 處置內容 | — |
 | has_star_mark | BOOLEAN | 公布日期 | 是否以 * 開頭（意義未確認） |
+| source_fetched_at | DATETIME(6) | （raw 的 fetched_at） | 這列來自哪次抓取 |
 
-- 同一則公告每天都會查到，依主鍵去重，留最後抓到的。
+- 同一則公告每天都會查到，寫入時用主鍵更新，留最後抓到的（比 `source_fetched_at`）；同一批裡重複的，後面的蓋掉前面的。
 - API 篩的是處置期間，所以公布日期會比抓取期間早；回測要往前多抓幾週。
 
 ### stage_punish_day　處置股（每天一列）

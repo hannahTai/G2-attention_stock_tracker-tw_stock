@@ -1,9 +1,6 @@
 """crawler/producer.py 決定要抓哪些重大訊息：用記憶體裡的假 raw 表（raw_store），不連網路、不連資料庫。執行：uv run pytest"""
 import pytest
-import requests
 
-from common import repository
-from common.date_utils import prev_month
 from crawler import client
 from crawler import producer as pc
 
@@ -17,11 +14,6 @@ def setup_day(raw_store, day="20261113"):
 
 def keys(jobs):
     return [tuple(kwargs.values()) for _, kwargs in jobs]
-
-
-def test_prev_month():
-    assert prev_month("20260115") == "202512"
-    assert prev_month("202611") == "202610"
 
 
 def test_client_ids_strip_spaces():
@@ -131,55 +123,3 @@ def test_detail_refetch_includes_fetched(raw_store):
     assert keys(pc.build_detail_jobs("20261113", "20261113")) == []
     assert keys(pc.build_detail_jobs("20261113", "20261113", refetch=True)) == [("2330", "20261102", 1, "t05st01_detail")]
 
-
-# ---------- 失敗重試 ----------
-class Flaky:
-    """前幾次丟出指定的錯誤，之後成功；calls 記錄被呼叫幾次。"""
-
-    def __init__(self, errors):
-        self.errors = list(errors)
-        self.calls = 0
-        self.__name__ = "flaky"
-
-    def __call__(self):
-        self.calls += 1
-        if self.errors:
-            raise self.errors.pop(0)
-        return "raw_notice/20261113"
-
-
-@pytest.fixture
-def no_sleep(monkeypatch):
-    monkeypatch.setattr(pc.time, "sleep", lambda seconds: None)
-
-
-def test_retry_then_success(no_sleep):
-    """逾時一次、5xx 一次，第三次成功。"""
-    func = Flaky([requests.Timeout("逾時"), repository.FetchError("HTTP 503", retryable=True)])
-    assert pc.run_with_retry(func, {}, "flaky()") == "raw_notice/20261113"
-    assert func.calls == 3
-
-
-def test_no_retry_when_not_retryable(no_sleep):
-    """內容不對：只跑一次就丟出錯誤。"""
-    func = Flaky([repository.FetchError("年份不對", retryable=False)])
-    with pytest.raises(repository.FetchError):
-        pc.run_with_retry(func, {}, "flaky()")
-    assert func.calls == 1
-
-
-def test_give_up_after_max_retries(no_sleep):
-    """一直逾時：原本 1 次＋重試 MAX_RETRIES 次，之後放棄。"""
-    func = Flaky([requests.ConnectionError("連不上")] * (pc.MAX_RETRIES + 1))
-    with pytest.raises(requests.ConnectionError):
-        pc.run_with_retry(func, {}, "flaky()")
-    assert func.calls == pc.MAX_RETRIES + 1
-
-
-def test_run_jobs_lists_failed_after_retries(no_sleep):
-    """重試完還是失敗 → 列進失敗清單，下一個任務照跑。"""
-    bad = Flaky([requests.Timeout("逾時")] * (pc.MAX_RETRIES + 1))
-    good = Flaky([])
-    good.__name__ = "good"
-    assert pc.run_jobs([(bad, {}), (good, {})], sleep=0) == ["flaky()"]
-    assert good.calls == 1

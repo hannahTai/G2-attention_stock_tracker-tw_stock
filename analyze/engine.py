@@ -24,15 +24,14 @@ PUNISH_DAYS = {"new": 5, "old": 10}            # 一般
 PUNISH_DAYS_EXTENDED = {"new": 7, "old": 12}   # 連 3 日、連 5 日且計算期間內有第 13 款
 EXTEND_CLAUSE = 13                             # 當沖占比過高
 
-PROGRESS_COLUMNS = ["trade_date", "stock_id", "count_start", "streak3", "streak5", "in10", "in30",
-                    "streak3_left", "streak5_left", "in10_left", "in30_left", "steps_left", "closest_path",
-                    "punished_by", "has_full_history", "punish_start", "punish_end", "resume_date",
-                    "next_listed_date", "next_punish_round", "next_punish_start", "next_punish_end", "next_resume_date"]
+LEFT_COLUMNS = [f"{path}_left" for path in THRESHOLDS]   # streak3_left、streak5_left、in10_left、in30_left
 NEXT_COLUMNS = ["next_listed_date", "next_punish_round", "next_punish_start", "next_punish_end", "next_resume_date"]
+PROGRESS_COLUMNS = ["trade_date", "stock_id", "count_start", *THRESHOLDS, *LEFT_COLUMNS, "steps_left", "closest_path",
+                    "punished_by", "has_full_history", "punish_start", "punish_end", "resume_date", *NEXT_COLUMNS]
 DATE_COLUMNS = ["trade_date", "stock_id", "path", "counted_date"]
 
 
-# ==================== 準備資料 ====================
+# ---------- 準備資料 ----------
 def listed_days_by_stock(clauses: pd.DataFrame) -> dict[str, dict[datetime.date, set[int]]]:
     """stage_notice_clause → {股票: {日期: {款次, ...}}}，例如 {"2424": {date(2026,10,15): {1, 3}}}。"""
     result = {}
@@ -67,7 +66,7 @@ def next_trading_day(days: list[datetime.date], d: datetime.date) -> datetime.da
     return days[bisect.bisect_right(days, d)]
 
 
-# ==================== 1. 從哪天開始算 ====================
+# ---------- 1. 從哪天開始算 ----------
 def count_start_index(announce_dates: list[datetime.date], days: list[datetime.date], i: int) -> int:
     """今天（days[i]）之前最後一次處置公告的隔一個營業日；沒處置過就從資料第一天算。回傳在 days 的位置。
 
@@ -79,7 +78,7 @@ def count_start_index(announce_dates: list[datetime.date], days: list[datetime.d
     return bisect.bisect_right(days, before[-1])
 
 
-# ==================== 2. 四條路徑各計入哪幾天 ====================
+# ---------- 2. 四條路徑各計入哪幾天 ----------
 def counted_dates(stock_days: dict[datetime.date, set[int]], history: list[datetime.date]) -> dict[str, list]:
     """history：從開始算的那天到今天的營業日。回傳 {"streak3": [日期...], "streak5": [...], "in10": [...], "in30": [...]}。"""
     def has_clause_1(d):
@@ -105,7 +104,7 @@ def counted_dates(stock_days: dict[datetime.date, set[int]], history: list[datet
     }
 
 
-# ==================== 3. 每條還差幾次 ====================
+# ---------- 3. 每條還差幾次 ----------
 def steps_left_each(stock_days: dict[datetime.date, set[int]], history: list[datetime.date],
                     counts: dict[str, int]) -> dict[str, int]:
     """假設之後每個營業日都被列注意，每一條再幾天會達標。回傳 {"streak3_left": 1, ...}。"""
@@ -124,7 +123,7 @@ def steps_left_each(stock_days: dict[datetime.date, set[int]], history: list[dat
     }
 
 
-# ==================== 4. 若下一個營業日再被列注意 ====================
+# ---------- 4. 若下一個營業日再被列注意 ----------
 def next_punishment(closest_path: str, counted: dict, stock_days: dict[datetime.date, set[int]],
                     announce_dates: list[datetime.date], future: list[datetime.date], i: int) -> dict:
     """只差一次的股票：明天（future[i+1]）再被列 → 明天公布處置 → 後天起處置。
@@ -155,7 +154,7 @@ def next_punishment(closest_path: str, counted: dict, stock_days: dict[datetime.
     }
 
 
-# ==================== 5. 處置中、幾號出關 ====================
+# ---------- 5. 處置中、幾號出關 ----------
 def current_punishment(punishments: list[tuple], day: datetime.date, future: list[datetime.date]) -> dict:
     """那天已公布、還沒出關的處置：起迄和出關（恢復正常交易）的日子。
 
@@ -168,7 +167,7 @@ def current_punishment(punishments: list[tuple], day: datetime.date, future: lis
     return {"punish_start": None, "punish_end": None, "resume_date": None}
 
 
-# ==================== 一檔股票一天 ====================
+# ---------- 一檔股票一天 ----------
 def one_stock_one_day(stock: str, stock_days: dict, punishments: list[tuple],
                       days: list[datetime.date], future: list[datetime.date], i: int) -> tuple[dict, dict]:
     """算 stock 在 days[i] 那天的一列 app_progress，和四條路徑計入的日期。"""
@@ -189,8 +188,7 @@ def one_stock_one_day(stock: str, stock_days: dict, punishments: list[tuple],
 
     # 3. 每條還差幾次；今天已經達標的話明天重新算，還差幾次就沒有意義
     if punished_by:
-        row.update(dict.fromkeys(["streak3_left", "streak5_left", "in10_left", "in30_left",
-                                  "steps_left", "closest_path"]))
+        row.update(dict.fromkeys([*LEFT_COLUMNS, "steps_left", "closest_path"]))
     else:
         lefts = steps_left_each(stock_days, history, counts)
         closest_path = min(THRESHOLDS, key=lambda path: lefts[f"{path}_left"])   # 同分取前面的（streak3 優先）
@@ -207,7 +205,7 @@ def one_stock_one_day(stock: str, stock_days: dict, punishments: list[tuple],
     return row, counted
 
 
-# ==================== 主程式 ====================
+# ---------- 主程式 ----------
 def compute_progress(trading_days: list[datetime.date], clauses: pd.DataFrame, punishes: pd.DataFrame,
                      day: datetime.date, holidays: set[datetime.date] = frozenset()) -> tuple[pd.DataFrame, pd.DataFrame]:
     """算 day 那天、每檔最近 30 個營業日被列過注意的股票。不是營業日就回傳空的表。

@@ -59,11 +59,10 @@ flowchart LR
 ### 專案結構
 
 ```
-crawler/                    抓資料：API → raw（課程補充 J：producer → task → client → repository）
+crawler/                    抓資料：API → raw（producer → task → client → repository）
 ├─ producer.py                producer：決定今天要抓哪些任務、依序執行
-├─ task.py                    task：每個 crawl_xxx 任務抓一份、存進 raw（Step 5 加 @app.task 給 Celery）
-├─ client.py                  client：打證交所、觀測站 API（fetch_xxx，不存檔）
-└─ http_utils.py              client 共用的 GET／POST
+├─ task.py                    task：每個 crawl_xxx 任務抓一份、存進 raw（接 Celery 時加 @app.task）
+└─ client.py                  client：打證交所、觀測站 API（fetch_xxx，不存檔）、檢查回應內容
 transform/                  轉換：raw → stage（同樣的 producer → task 寫法）
 ├─ producer.py                producer：產生任務清單（每份 raw 一個任務）並執行
 ├─ task.py                    task：transform_xxx，每個 crawl_xxx 對應一個
@@ -76,15 +75,15 @@ analyze/                    分析：stage → app（同樣的 producer → task
 └─ backtest.py                回測（Observe）：引擎預測的處置 vs 真實處置公告
 common/                     三個資料夾共用（彼此不互相 import，只用 common）
 ├─ repository.py              repository：連線、建表、raw 表讀寫、stage／app 表讀寫
+├─ runner.py                  三個 producer 共用的任務執行：依序執行、暫時性失敗重試、列出失敗
 ├─ cli.py                     三個 producer 共用的指令參數（daily／backfill、--refetch）
 ├─ config.py                  設定（會因環境改變的值，從 .env 讀）
-├─ constant.py                跨資料夾共用的固定值（stage 主鍵）；只有一個檔案用的寫在那個檔案裡
 └─ date_utils.py              日期工具
 schema/                     建表 SQL：raw.sql、stage.sql、app.sql、view.sql（給網頁讀的 VIEW）
 scripts/                    .bat：每日排程（daily）、回補（backfill）、從 raw 重算（rebuild）、備份（backup）
 tests/                      測試
 docs/                       流程說明（flow.md）、資料表（tables.md）、處置規則（rules.md）、提案
-main.py                     一次跑完：crawler → transform → analyze
+main.py                     一次跑完：crawler → transform → analyze（同一時間只跑一輪）
 ```
 
 ---

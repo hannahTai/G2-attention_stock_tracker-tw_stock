@@ -1,11 +1,11 @@
-"""producer 層：決定這一輪要做哪些任務，依序執行（課程補充 J Step 4）。API → raw 表。
+"""producer 層（抓取）：決定這一輪要抓哪些資料。API → raw。
 
     uv run python -m crawler.producer                        # 抓今天（daily ＝ 只有今天的 backfill）
     uv run python -m crawler.producer backfill --start 20261001  # 回補到今天（可加 --end）
     uv run python -m crawler.producer backfill --start 20261001 --refetch  # 已經抓完整的也重抓
 
-任務清單的每一項是 (任務函式, 參數 dict)，例如 (task.crawl_notice, {"date_yyyymmdd": "20261113"})。
-現在用 func(**kwargs) 當場執行；Step 5 接 Celery 時改成 func.delay(**kwargs) 送進 RabbitMQ。
+任務清單的每一項是 (任務函式, 參數 dict)，例如 (task.crawl_notice, {"date_yyyymmdd": "20261113"})，
+交給 common/runner.py 執行（每個任務間隔一下、暫時性的失敗重試）。
 分三批：證交所先跑完，觀測站才能依當天的注意股、處置股決定要查哪些公司；
 有了公告清單，才知道要查哪幾則公告的全文。
 
@@ -14,27 +14,20 @@
 """
 import calendar
 import datetime
-import time
 
-import requests
-
-from common import cli, repository
-from common.config import MAX_RETRIES, RETRY_DELAY_SECONDS, SLEEP_SECONDS, SLEEP_SECONDS_MOPS
-from common.date_utils import dates_between, months_between, prev_month, today_yyyymmdd
+from common import cli, repository, runner
+from common.config import SLEEP_SECONDS, SLEEP_SECONDS_MOPS
+from common.date_utils import dates_between, holiday_years, months_between, parse_yyyymmdd, prev_month, today_yyyymmdd
 from crawler import client, task
 
 
 # ---------- 抓過、而且完整了嗎 ----------
-# 注意股、處置股收盤後 17:30～17:45 才公布（data/probe_publish_time.log），留點緩衝：當天 20:00 以後抓的才算完整
-PUBLISHED_BY = datetime.time(20, 0)
-
-
 def day_ready_at(date_yyyymmdd: str) -> datetime.datetime:
-    """一天的資料：那天 20:00 以後就不會再變。"""
-    return datetime.datetime.combine(datetime.datetime.strptime(date_yyyymmdd, "%Y%m%d").date(), PUBLISHED_BY)
+    """一天的資料：那天公布完整（client.COMPLETE_BY）以後就不會再變。"""
+    return datetime.datetime.combine(parse_yyyymmdd(date_yyyymmdd), client.COMPLETE_BY)
 
 
-def month_ready_at(month_yyyymm: str, at: datetime.time = PUBLISHED_BY) -> datetime.datetime:
+def month_ready_at(month_yyyymm: str, at: datetime.time = client.COMPLETE_BY) -> datetime.datetime:
     """一個月的資料：那個月最後一天的 at 以後就不會再變。"""
     year, month = int(month_yyyymm[:4]), int(month_yyyymm[4:])
     last_day = calendar.monthrange(year, month)[1]          # monthrange 回傳 (星期幾, 天數)
@@ -58,20 +51,19 @@ def build_twse_jobs(start: str, end: str, refetch: bool = False) -> list[tuple]:
     """產生證交所的任務清單：[(任務函式, 參數 dict), ...]。refetch＝True 就不跳過已經完整的。"""
     days = dates_between(start, end)
     months = months_between(start, end)
-    years = sorted({int(m[:4]) for m in months})
-    fetched = {s: {} if refetch else repository.raw_fetched_times(s) for s in ("holiday", "market_daily", "notice", "punish")}
+    fetched = {s: {} if refetch else repository.raw_fetched_times(s) for s in ("notice", "punish", "market_daily", "holiday")}
 
-    # 開休市日期年初就公布整年，抓過就不再抓（颱風假不在這份裡，是從市場成交看出來的）
-    jobs = [(task.crawl_holiday, {"year": y}) for y in years if str(y) not in fetched["holiday"]]
-    jobs += [(task.crawl_market_daily, {"month_yyyymm": m}) for m in months
-             if not is_complete(fetched["market_daily"], m, month_ready_at(m))]
-    jobs += [(task.crawl_notice, {"date_yyyymmdd": d}) for d in days
-             if not is_complete(fetched["notice"], d, day_ready_at(d))]
+    # 開休市日期一年一份（11 月起也抓下一年），抓過就不再抓；颱風假不在這份裡，是從市場成交看出來的
+    jobs = [(task.crawl_notice, {"date_yyyymmdd": d}) for d in days
+            if not is_complete(fetched["notice"], d, day_ready_at(d))]
     jobs += [(task.crawl_punish, {"date_yyyymmdd": d}) for d in days
              if not is_complete(fetched["punish"], d, day_ready_at(d))]
-    jobs += [(task.crawl_companies, {})]              # 查重大訊息前要先有公司清單
     if end == today_yyyymmdd():
         jobs += [(task.crawl_punish_watchlist, {})]   # 只有最新一天，回補時抓不到舊的
+    jobs += [(task.crawl_market_daily, {"month_yyyymm": m}) for m in months
+             if not is_complete(fetched["market_daily"], m, month_ready_at(m))]
+    jobs += [(task.crawl_holiday, {"year": y}) for y in holiday_years(start, end) if str(y) not in fetched["holiday"]]
+    jobs += [(task.crawl_companies, {})]              # 查重大訊息前要先有公司清單
     return jobs
 
 
@@ -87,8 +79,10 @@ def watched_stocks(date_yyyymmdd: str) -> set[str]:
 
 def announcement_targets(start: str, end: str) -> list[tuple[str, str]]:
     """區間內每天被關注的上市公司，要查哪些 (公司, 月份)：那天的當月和上個月（重複的只算一次）。"""
-    latest = repository.list_raw_keys("companies")[-1]
-    companies = client.company_ids(repository.read_raw("companies", latest)["body"])
+    company_keys = repository.list_raw_keys("companies")
+    if not company_keys:   # 還沒抓到過公司清單（例如全新的資料庫、證交所擋掉）：這輪先不查
+        return []
+    companies = client.company_ids(repository.read_raw("companies", company_keys[-1])["body"])
     targets = set()
     for date_yyyymmdd in dates_between(start, end):
         for stock_id in watched_stocks(date_yyyymmdd) & companies:   # 權證、ETF 不是上市公司，沒有重大訊息
@@ -121,61 +115,14 @@ def build_detail_jobs(start: str, end: str, refetch: bool = False) -> list[tuple
 
 
 # ---------- 執行 ----------
-def is_retryable(error: Exception) -> bool:
-    """等一下再試可能會好的失敗：逾時、連線失敗（requests 的錯誤），或 repository 標成可重試的（5xx、429）。
-
-    內容不對、被擋（回 HTML）重試也一樣，不重試；太快重打反而更容易被擋。
-    """
-    return isinstance(error, requests.RequestException) or getattr(error, "retryable", False)
-
-
-def run_with_retry(func, kwargs: dict, name: str) -> str:
-    """執行一個任務；暫時性的失敗等 RETRY_DELAY_SECONDS 秒再試，最多重試 MAX_RETRIES 次，還是失敗就丟出錯誤。
-
-    同課程手冊 04 的 @app.task(max_retries=3, default_retry_delay=5)＋self.retry()；Step 5 接 Celery 時換成那個寫法。
-    每次失敗的回應都會存進 raw 表（只新增），事後查得到試了幾次、各是什麼錯。
-    """
-    for attempt in range(MAX_RETRIES + 1):
-        try:
-            return func(**kwargs)
-        except Exception as e:
-            if attempt == MAX_RETRIES or not is_retryable(e):
-                raise
-            print(f"{name} ✗ {e}，{RETRY_DELAY_SECONDS:g} 秒後重試（剩 {MAX_RETRIES - attempt} 次）")
-            time.sleep(RETRY_DELAY_SECONDS)
-
-
-def run_jobs(jobs: list[tuple], sleep: float) -> list[str]:
-    """依序執行，回傳失敗的任務。單一任務失敗不會中斷整批；暫時性的失敗會先重試（run_with_retry）。
-
-    jobs 例如 [(crawl_notice, {"date_yyyymmdd": "20261113"}), (crawl_announcements, {"stock_id": "2330", ...})]
-    """
-    failed = []
-    for func, kwargs in jobs:
-        name = f"{func.__name__}({', '.join(f'{k}={v!r}' for k, v in kwargs.items())})"   # log 用
-        try:
-            where = run_with_retry(func, kwargs, name)   # 執行任務：打 API、存進 raw 表；Step 5 改成 func.delay(**kwargs)
-            print(name, "→", where)              # 印到 log，例如 raw_notice/20261113
-        except Exception as e:                   # 被擋、逾時等：記下來，繼續下一個
-            print(name, "✗", e)
-            failed.append(name)
-        time.sleep(sleep)                        # 間隔一下，避免被擋
-    return failed
-
-
 def main() -> None:
     args = cli.parse_args()   # daily：今天；backfill：--start～--end，--refetch 全部重抓
-    start, end, refetch = args.start, args.end, args.refetch
+    repository.create_tables()   # 建表（已經有就跳過）；全新的資料庫第一步就是 crawler
 
-    repository.create_tables()   # 確認資料庫和表都在：不存在就建立（不會刪表）。全新的資料庫第一步就是 crawler
-
-    failed = run_jobs(build_twse_jobs(start, end, refetch), SLEEP_SECONDS)
-    failed += run_jobs(build_mops_jobs(start, end, refetch), SLEEP_SECONDS_MOPS)   # 要先有第一批的注意股、處置股、公司清單
-    failed += run_jobs(build_detail_jobs(start, end, refetch), SLEEP_SECONDS_MOPS)  # 要先有第二批的公告清單
-
-    print("\n失敗：", failed or "無")
-    if failed:
-        raise SystemExit(1)
+    failed = runner.run_jobs(build_twse_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS)
+    failed += runner.run_jobs(build_mops_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_MOPS)
+    failed += runner.run_jobs(build_detail_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_MOPS)
+    runner.finish(failed)
 
 
 if __name__ == "__main__":

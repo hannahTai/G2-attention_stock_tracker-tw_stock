@@ -10,8 +10,8 @@ from common.date_utils import roc_to_date, roc_to_dates
 from transform.parsing import chinese_number, strip_html, to_number
 from transform.transformer import (
     announcement_detail_to_frame, announcement_to_frame, clean_announcement_detail, holiday_to_frame, market_daily_to_frame, notice_to_frame, punish_to_frame,
-    punish_watchlist_to_frame, clean_announcement, clean_company, clean_holiday, clean_notice,
-    clean_punish, clean_punish_watchlist, clean_trading_day, covered_through,
+    punish_watchlist_to_frame, clean_announcement, clean_company, company_to_frame, clean_holiday, clean_notice,
+    clean_punish, clean_punish_watchlist, clean_trading_day,
 )
 
 
@@ -40,7 +40,7 @@ ROW_TENGHUI = [1, "6672", "騰輝電子-KY", "38",
 
 
 def run(*rows, fields=NOTICE_API_FIELDS):
-    return clean_notice(notice_to_frame([envelope(list(rows), fields)]))
+    return clean_notice(notice_to_frame(envelope(list(rows), fields)))
 
 
 def test_clean_helpers():
@@ -73,11 +73,12 @@ def test_html_stripped_and_multiple_clauses():
     assert clauses["clause"].tolist() == [6, 10]
 
 
-def test_duplicate_clause_in_one_row_counted_once():
+def test_duplicate_clause_in_one_row_kept_for_database():
+    """同一段文字寫兩次第三款：兩列都留著；寫進資料庫時主鍵相同，只會剩一列（tests/test_integration.py）。"""
     row = ROW_ANDES.copy()
     row[4] = "﹝第三款﹞﹝第一款﹞﹝第三款﹞"
     _, clauses = run(row)
-    assert clauses["clause"].tolist() == [1, 3]
+    assert clauses["clause"].tolist() == [1, 3, 3]
 
 
 def test_many_rows_keep_their_own_clauses():
@@ -97,7 +98,7 @@ def test_missing_used_field_raises():
     fields = [f for f in NOTICE_API_FIELDS if f != "收盤價"]
     row = [v for f, v in zip(NOTICE_API_FIELDS, ROW_ANDES) if f != "收盤價"]
     with pytest.raises(ValueError, match="收盤價"):
-        notice_to_frame([envelope([row], fields=fields)])
+        notice_to_frame(envelope([row], fields=fields))
 
 
 def test_added_field_is_ignored():
@@ -123,7 +124,7 @@ def test_company_missing_field_raises():
     raw = {"meta": {"key": "20261109"}, "body": [{"公司名稱": "台灣水泥", "公司簡稱": "台泥", "產業別": "01",
                                                   "上市日期": "19620209"}]}
     with pytest.raises(ValueError, match="公司代號"):
-        clean_company(raw)
+        company_to_frame(raw)
 
 
 def test_missing_clause_raises():
@@ -139,47 +140,34 @@ PUNISH_ROW = [1, "115/11/06", "2360", "致茂", 3, "連續三次", "115/11/09～
 
 
 def test_punish_parses_period_and_minutes():
-    df = clean_punish(punish_to_frame([envelope([PUNISH_ROW], PUNISH_API_FIELDS)]))
+    df = clean_punish(punish_to_frame(envelope([PUNISH_ROW], PUNISH_API_FIELDS)))
     row = df.iloc[0]
     assert (row["announce_date"], row["period_start"], row["period_end"]) == (
         datetime.date(2026, 11, 6), datetime.date(2026, 11, 9), datetime.date(2026, 11, 13))
     assert row["match_interval_minutes"] == 2 and row["measure_type"] == "第一次處置" and not row["has_star_mark"]
 
 
-def test_punish_dedup_keeps_latest_fetch():
-    """同一筆公告出現在好幾天的 raw 裡 → 只留一筆，而且是最後抓到的版本。"""
-    newer = PUNISH_ROW.copy()
-    newer[3] = "致茂（新）"
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")   # 不同份 raw 的新舊版本是正常情況，不該警告
-        df = clean_punish(punish_to_frame([
-            envelope([newer], PUNISH_API_FIELDS, fetched_at="2026-11-09T22:00:00+08:00"),
-            envelope([PUNISH_ROW], PUNISH_API_FIELDS, fetched_at="2026-11-09T21:00:00+08:00"),
-        ]))
-    assert len(df) == 1 and df.iloc[0]["stock_name"] == "致茂（新）"
-
-
 def test_punish_two_in_one_raw_warns():
-    """同一份 raw 裡同一檔同一天有兩則不同的處置 → 警告（去重只會留一則）。"""
+    """同一份 raw 裡同一檔同一天有兩則不同的處置 → 警告（主鍵只能留一則）；只檢查、不刪。"""
     other = PUNISH_ROW.copy()
     other[7] = "第二次處置"
     with pytest.warns(UserWarning, match="同一天同一檔有多則處置"):
-        df = clean_punish(punish_to_frame([envelope([PUNISH_ROW, other], PUNISH_API_FIELDS)]))
-    assert len(df) == 1
+        df = clean_punish(punish_to_frame(envelope([PUNISH_ROW, other], PUNISH_API_FIELDS)))
+    assert len(df) == 2
 
 
 def test_punish_identical_rows_in_one_raw_no_warning():
     """同一份 raw 裡完全相同的兩列只是重複，不警告。"""
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        df = clean_punish(punish_to_frame([envelope([PUNISH_ROW, PUNISH_ROW], PUNISH_API_FIELDS)]))
-    assert len(df) == 1
+        df = clean_punish(punish_to_frame(envelope([PUNISH_ROW, PUNISH_ROW], PUNISH_API_FIELDS)))
+    assert len(df) == 2   # 兩列都留著，資料庫只會存一列
 
 
 def test_punish_star_kept_as_flag():
     row = PUNISH_ROW.copy()
     row[1] = "*115/11/09"
-    df = clean_punish(punish_to_frame([envelope([row], PUNISH_API_FIELDS)]))
+    df = clean_punish(punish_to_frame(envelope([row], PUNISH_API_FIELDS)))
     assert df.iloc[0]["has_star_mark"] and df.iloc[0]["announce_date"] == datetime.date(2026, 11, 9)
 
 
@@ -187,16 +175,15 @@ def test_punish_star_kept_as_flag():
 def test_punish_watchlist_date_from_title_and_br_split():
     raw = envelope([[1, "2455", "全新", "連續二次<br>九個營業日已有五次"]], WATCHLIST_API_FIELDS,
                    title="115年11月06日 公布注意累計次數可能達處置標準之有價證券一覽表")
-    df = clean_punish_watchlist(punish_watchlist_to_frame([raw]))
+    df = clean_punish_watchlist(punish_watchlist_to_frame(raw))
     assert df.iloc[0]["data_date"] == datetime.date(2026, 11, 6)
     assert df.iloc[0]["progress_text"] == "連續二次\n九個營業日已有五次"
 
 
 # ---------- 交易日、休市 ----------
-def test_trading_day_numbers_and_dedup():
+def test_trading_day_numbers():
     rows = [["115/11/02", "10,422,514,115", "799,687,507,911", "4,104,242", "44,920.14", "-291.69"]]
-    df = clean_trading_day(market_daily_to_frame([envelope(rows, MARKET_API_FIELDS)] * 2),   # 同月抓兩次
-                           "202611", datetime.date(2026, 11, 2))
+    df = clean_trading_day(market_daily_to_frame(envelope(rows, MARKET_API_FIELDS)), "202611", datetime.date(2026, 11, 2), set())
     trading = df[df["is_trading"]]
     assert len(trading) == 1
     assert trading.iloc[0]["volume_shares"] == 10422514115 and trading.iloc[0]["taiex_change_points"] == -291.69
@@ -205,19 +192,14 @@ def test_trading_day_numbers_and_dedup():
 def test_trading_day_calendar_until_covered_day():
     """11/02（一）、11/03（二）有交易，抓到 11/04：11/01（日）、11/04（颱風假）沒交易；11/05 之後不寫（還不知道）。"""
     rows = [["115/11/02", "1", "1", "1", "1", "1"], ["115/11/03", "1", "1", "1", "1", "1"]]
-    df = clean_trading_day(market_daily_to_frame([envelope(rows, MARKET_API_FIELDS)]), "202611", datetime.date(2026, 11, 4))
+    df = clean_trading_day(market_daily_to_frame(envelope(rows, MARKET_API_FIELDS)), "202611", datetime.date(2026, 11, 4), set())
     assert df["trade_date"].tolist() == [datetime.date(2026, 11, d) for d in (1, 2, 3, 4)]
     assert df["is_trading"].tolist() == [False, True, True, False]
     assert df["volume_shares"].isna().tolist() == [True, False, False, True]
 
 
-def test_covered_through_depends_on_fetch_time():
-    assert covered_through("2026-11-13T21:00:00+08:00") == datetime.date(2026, 11, 13)   # 收盤後抓：含當天
-    assert covered_through("2026-11-13T10:00:00+08:00") == datetime.date(2026, 11, 12)   # 盤中抓：只到前一天
-
-
 def test_holiday_is_western_date():
-    df = clean_holiday(holiday_to_frame([envelope([["2026-10-09", "國慶日", "補假"]], HOLIDAY_API_FIELDS)]))
+    df = clean_holiday(holiday_to_frame(envelope([["2026-10-09", "國慶日", "補假"]], HOLIDAY_API_FIELDS)))
     assert df.iloc[0]["holiday_date"] == datetime.date(2026, 10, 9)
 
 
@@ -225,7 +207,7 @@ def test_holiday_is_western_date():
 def test_company_snapshot():
     raw = {"meta": {"key": "20261109"},
            "body": [{"公司代號": "1101", "公司簡稱": "台泥", "公司名稱": "臺灣水泥", "產業別": "01", "上市日期": "19620209"}]}
-    row = clean_company(raw).iloc[0]
+    row = clean_company(company_to_frame(raw)).iloc[0]
     assert (row["company_id"], row["listed_date"], row["snapshot_date"]) == ("1101", datetime.date(1962, 2, 9), datetime.date(2026, 11, 9))
 
 
@@ -239,7 +221,7 @@ def announcement_raw(data: list) -> dict:
 def test_announcement_serial_and_joined_subject():
     data = [["1303", "南亞", "115/09/01", "15:42:35", "因本公司有價證券達標準，\r\n故公布重大訊息",
              {"parameters": {"enterDate": "1150901", "serialNumber": "2"}}]]
-    row = clean_announcement(announcement_to_frame([announcement_raw(data)])).iloc[0]
+    row = clean_announcement(announcement_to_frame(announcement_raw(data))).iloc[0]
     assert (row["announce_date"], row["enter_date"], row["serial_number"]) == (
         datetime.date(2026, 9, 1), datetime.date(2026, 9, 1), 2)
     assert row["subject"] == "因本公司有價證券達標準，故公布重大訊息"
@@ -251,7 +233,7 @@ def test_announcement_same_day_same_serial_both_kept():
              {"parameters": {"enterDate": "1151109", "serialNumber": "1"}}],
             ["1709", "和益", "115/11/11", "15:42:24", "公告本公司向關係人取得不動產使用權資產",
              {"parameters": {"enterDate": "1151111", "serialNumber": "1"}}]]
-    out = clean_announcement(announcement_to_frame([announcement_raw(data)]))
+    out = clean_announcement(announcement_to_frame(announcement_raw(data)))
     assert len(out) == 2
     assert out["enter_date"].tolist() == [datetime.date(2026, 11, 9), datetime.date(2026, 11, 11)]
 
@@ -259,14 +241,14 @@ def test_announcement_same_day_same_serial_both_kept():
 def test_announcement_no_data_is_empty():
     """code 406「查無相符資料」：那個月沒有公告，result 是 null。"""
     raw = {"meta": {}, "body": {"code": 406, "message": "查無相符資料", "result": None}}
-    assert clean_announcement(announcement_to_frame([raw])).empty
+    assert clean_announcement(announcement_to_frame(raw)).empty
 
 
 def test_trading_day_not_updated_if_notices_exist():
     """11/04 市場成交裡沒有，但那天有人被列注意 → 其實有交易，是資料還沒更新：不寫這列（不是颱風假）。"""
     rows = [["115/11/02", "1", "1", "1", "1", "1"], ["115/11/03", "1", "1", "1", "1", "1"]]
     with pytest.warns(UserWarning, match="還沒有"):
-        df = clean_trading_day(market_daily_to_frame([envelope(rows, MARKET_API_FIELDS)]), "202611",
+        df = clean_trading_day(market_daily_to_frame(envelope(rows, MARKET_API_FIELDS)), "202611",
                                datetime.date(2026, 11, 4), notice_days={datetime.date(2026, 11, 4)})
     assert df["trade_date"].tolist() == [datetime.date(2026, 11, d) for d in (1, 2, 3)]
 
@@ -280,7 +262,7 @@ def test_announcement_detail_keys_from_raw_key_and_no_spokesperson():
     data = [["1", "115/11/05", "14:39:07", "王小明      ", "協理    ", "02-1234-5678   ", "公告第三季財報   ",
              "第31款", "115/11/05", "1.提報董事會日期:115/11/05\r\n2.其他應敘明事項:無\n"]]
     raw = {"meta": {"key": "9908_20261102_1"}, "body": {"code": 200, "result": {"titles": DETAIL_TITLES, "data": data}}}
-    out = clean_announcement_detail(announcement_detail_to_frame([raw]))
+    out = clean_announcement_detail(announcement_detail_to_frame(raw))
     assert list(out.columns) == ["company_id", "enter_date", "serial_number", "clause", "fact_date", "content"]
     row = out.iloc[0]
     assert (row["company_id"], row["enter_date"], row["serial_number"]) == ("9908", datetime.date(2026, 11, 2), 1)
@@ -290,7 +272,7 @@ def test_announcement_detail_keys_from_raw_key_and_no_spokesperson():
 
 def test_announcement_detail_no_data_is_empty():
     raw = {"meta": {"key": "9908_20261102_1"}, "body": {"code": 200, "result": {"data": []}}}
-    assert clean_announcement_detail(announcement_detail_to_frame([raw])).empty
+    assert clean_announcement_detail(announcement_detail_to_frame(raw)).empty
 
 
 DR_TITLES = [{"main": m, "sub": []} for m in
@@ -302,6 +284,6 @@ def test_announcement_detail_dr_format():
     """存託憑證（9103 美德醫療-DR）：內容在「重大情事」＋「其他」兩欄，日期寫「民國115年6月9日」，條款是第五條。"""
     data = [["9103", 1, "民國115年6月9日", "美德向邦醫療", "主旨", "第五條第28款", "營業收入 42,528\n", "補充說明"]]
     raw = {"meta": {"key": "9103_20260609_1"}, "body": {"code": 200, "result": {"titles": DR_TITLES, "data": data}}}
-    row = clean_announcement_detail(announcement_detail_to_frame([raw])).iloc[0]
+    row = clean_announcement_detail(announcement_detail_to_frame(raw)).iloc[0]
     assert (row["clause"], row["fact_date"]) == ("第五條第28款", datetime.date(2026, 6, 9))
     assert row["content"] == "營業收入 42,528\n\n其他：\n補充說明"

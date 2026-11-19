@@ -8,13 +8,13 @@ analyze    stage_* 表 → app_* 表     規則引擎算進度
 
 ## 每天怎麼跑
 
-排程每天 21:00 執行 `main.py`，依序做三件事。以注意股為例。表只有一張，前一步寫入、下一步讀取；讀寫都透過函式：
+排程每天 21:00 執行 `main.py`，依序做三件事（期間在 `main.py` 算一次再傳給三步，跑過午夜也是同一段）。以注意股為例。表只有一張，前一步寫入、下一步讀取；讀寫都透過函式：
 
 | 任務 | 讀 | 寫 |
 |---|---|---|
 | `crawl_notice` | API（`fetch_notice`） | raw 表（`save_raw`） |
 | `transform_notice` | raw 表（`read_raw`） | stage 表（`upsert_stage`） |
-| `analyze_progress` | stage 表（`read_stage`） | app 表（`upsert_app`） |
+| `analyze_progress` | stage 表（`read_stage`） | app 表（`replace_app`） |
 
 **1. crawler：抓資料**
 
@@ -76,11 +76,11 @@ analyze    stage_* 表 → app_* 表     規則引擎算進度
 
 - 先抓證交所，再查重大訊息：當天被關注的上市公司，查當月和上個月。
 - 最後查全文：重大訊息清單裡的每則公告查一次；全文不會變，抓過的不再抓。
-- 開休市日期一年只抓一次（年初公布整年）；颱風假不在裡面，是從市場成交看出來的。要重抓：`uv run python -c "from crawler import task; print(task.crawl_holiday(2026))"`。
+- 開休市日期一年一份，抓過就不再抓；期間到了 11 月以後也抓下一年（證交所 11 月起公布）。颱風假不在裡面，是從市場成交看出來的。要重抓：`uv run python -c "from crawler import task; print(task.crawl_holiday(2026))"`。
 - 單一任務失敗不中斷，最後列出失敗清單。暫時性的失敗（逾時、連線失敗、HTTP 5xx、429）先等 5 秒重試，最多 3 次（`.env` 的 `MAX_RETRIES`、`RETRY_DELAY_SECONDS`）；內容不對、被擋不重試。
 - raw 只新增、不修改：同一個 raw_key 每抓一次多一列，成功、失敗都留（失敗的 `ok`＝0、`problem` 寫原因）；讀的時候只拿最新一份成功的，所以失敗不會蓋掉之前成功的。
 - 已經抓完整的不再抓（daily、backfill 都是）；加 `--refetch` 就全部重抓。「完整」＝在資料不會再變之後抓的：
-  - 注意股、處置股：那天 20:00 以後抓的（17:30～17:45 才公布，見 `data/probe_publish_time.log`）。
+  - 注意股、處置股：那天 20:00 以後抓的（實測收盤後 17:30～17:45 才公布，留點緩衝）。20:00 以前抓的存成失敗（`還沒公布完整`）：那時回傳的空名單不是「沒人被列」。
   - 市場成交：那個月最後一天 20:00 以後抓的；重大訊息清單：那個月過完以後抓的。當月的照樣抓。
   - 開休市日期、重大訊息全文：抓過就算。注意累計名單、上市公司清單只有當下一份，每次都抓。
 
@@ -92,9 +92,56 @@ analyze    stage_* 表 → app_* 表     規則引擎算進度
 - 重大訊息全文：一則一個任務 `transform_announcement_detail(stock_id, enter_yyyymmdd, serial_number)`，整理輸入日期在當月、上個月和再前一個月的（輸入日期可能比發言日期早，例如 5/29 輸入、6/1 發言）。
 - 重大訊息條款對照表（`stage_announcement_clause`，第 1～51 款的名稱）是固定資料，不用爬：寫在 `schema/stage.sql`，transform 開始建表時一併寫入。條文修正時改那裡。
 
+## 去重與冪等
+
+同一段期間重跑幾次，結果都一樣（冪等）；分到多個 worker 同時跑、不照順序，結果也一樣。
+
+| 層 | 去重 | 重跑 |
+|---|---|---|
+| raw | 不去重：只新增，每抓一次一列（保留證據） | 讀的時候只拿每個 raw_key 最新一份成功的；抓完整的不再抓 |
+| stage | 交給資料庫的主鍵：同一批裡主鍵重複的列，寫入時後面的蓋掉前面的 | 用主鍵更新（整批 `INSERT … ON DUPLICATE KEY UPDATE`），只讓比較新的覆蓋；注意股先清掉那天，官方拿掉的列也會消失 |
+| app | 主鍵（trade_date, stock_id） | 同一個交易裡先刪那天、再寫入 |
+
+stage 的寫法是 `ON DUPLICATE KEY UPDATE`（upsert），用 `to_sql(method=...)` 讓 pandas 每 1000 列組成一句送出，不是一列一句。
+兩種寫入方式依資料分：
+- 累積的事實（處置公告、公司、重大訊息、休市日、交易日）：用主鍵更新，這批沒有的列不動。
+- 某個範圍的完整名單（某天的注意股、某天的 app）：先清掉那個範圍、再寫入。upsert 不會刪掉這批沒有的列，官方拿掉的、滑出 30 日的要靠先清掉。
+
+同一筆只能有一列、重複時留哪一筆，都由資料庫的主鍵決定：
+- 同一批裡主鍵相同的列，MySQL 依 VALUES 的順序處理，後面的撞到前面的就更新，結果是最後一列（等於 `keep="last"`）。
+  所以 transformer 排序用 `kind="stable"`，主鍵相同的列保持原本的先後。
+- 處置股「同一份 raw 裡同一檔同一天有兩則不同的處置」只檢查、發出警告，不刪資料（主鍵只能留一則，要人確認）。
+
+raw 是有主鍵又只新增：主鍵含 `fetched_at`（精確到微秒），每次抓都是新的一列，不會撞主鍵。
+
+多個 worker、好幾輪同時跑，分兩層處理：
+
+1. **同一時間只跑一輪**（`main.py`）：開始前鎖住 `data/pipeline.lock` 這個檔案（作業系統的檔案鎖，不鎖資料庫，資料表照常讀寫）。
+   上一輪（例如還沒跑完的回補）還鎖著就排隊等，最多等 `PIPELINE_LOCK_WAIT_SECONDS`（預設 2 小時），等太久就放棄、結束代碼 1。
+   程式跑完、當掉或被關掉，作業系統都會自動放掉鎖。只管得到同一台電腦。
+   鎖只管「輪」，一輪裡面的任務照樣可以分到好幾個 worker。直接跑單一步驟（`python -m transform.producer`）不經過鎖。
+   接 Airflow 後改用 DAG 的 `max_active_runs=1`（多台機器也管得到），回補也用同一條 DAG 跑。
+2. **就算真的重疊，也是新的贏**（`transform/task.py` 的 `upsert_stage`）：每張 stage 表都有 `source_fetched_at`
+   （這列來自哪次抓取，raw 的 `fetched_at`），寫入時只讓比較新（或一樣新）的覆蓋：
+   - 寫法：`ON DUPLICATE KEY UPDATE 欄位 = CASE WHEN 資料庫裡是 NULL 或 新版本 >= 舊版本 THEN 新值 ELSE 舊值 END`。
+     比較在資料庫裡、同一句完成，不會兩邊都以為自己比較新；版本欄放在更新清單最後（MySQL 依序更新）。
+   - 用 `>=`：一樣新也更新，手動改壞的資料重跑會被修回來。
+   - 注意股「先清掉那天再寫入」：清之前先比那天現有的版本（`SELECT … FOR UPDATE` 鎖住那天），資料庫裡比較新就整批不寫，
+     免得舊的名單把新的清掉。
+   - 兩個交易互相等鎖時，MySQL 會讓其中一個失敗（deadlock）。失敗的交易已經整個復原，`common/runner.py` 把它當成暫時性的失敗，整個任務重做（任務是冪等的），最多 3 次。
+
+每個 transform 任務都是同樣四步（`transform/task.py`）：`key` → `read_raw`（沒有就跳過）→ `tables = {表名: clean_xxx(xxx_to_frame(raw))}` → `save(raw, tables)`。
+版本在 `save` 統一加上，transformer 不用管。
+
+驗證：`uv run pytest -m integration`（`tests/test_integration.py`：另建 `<資料庫>_test` 測試用資料庫，測完刪掉）。
+跑兩次筆數不變、值會更新、沒有重複、同批重複留最後一列；比較舊的不會蓋掉比較新的（舊的注意股名單也不會清掉新的）；
+8 個執行緒同時寫同一則處置公告的不同版本，最後一定是最新的。鎖：`tests/test_main.py`（第二輪會等第一輪放掉鎖才開始）。
+
 ## analyze：stage → app
 
-- 算之前先檢查 `stage_trading_day`、`stage_notice_day`、`stage_punish_day` 那天都有一列（每天一列；沒人被列也有，0 檔）。缺了就不算。
+- 每一天算之前先檢查往前 30 個營業日（資料開始那天以後）都有資料（`analyze/task.py` 的 `missing_inputs`）：
+  每一天都有 `stage_trading_day`，其中的營業日都有 `stage_notice_day`、`stage_punish_day`（沒人被列也有一列，0 檔）。
+  缺一天，那天會被當成「沒被列」，進度就算錯，所以那天不算、列進失敗清單；其他天照算。
   重大訊息、公司清單等只給卡片顯示，缺了不影響進度。
 - 讀 stage（往前 30 個營業日），算每檔每天離處置還差幾次，規則見 [`rules.md`](rules.md)。
 - 每個交易日每檔一列；重跑只換掉那天，`process_date` 記哪天算的。
@@ -108,10 +155,13 @@ uv run python main.py backfill --start 20260701             # 三步一次跑完
 uv run python main.py backfill --start 20260701 --refetch   # 同上，但全部重抓（只影響 crawler）
 uv run python -m crawler.producer [backfill --start ...]    # 只跑一步，transform、analyze 同樣
 uv run python -m analyze.backtest                       # 回測
-uv run pytest                                           # 測試
+uv run pytest                                           # 測試（含整合測試；連不到 MySQL 會自動跳過）
+uv run pytest -m "not integration"                      # 只跑不連資料庫的測試
 ```
 
 漏跑：`main.py backfill --start <漏跑那天>`。注意累計名單只有最新一份，要在下一個交易日收盤前補。
+
+過去的資料有更正（例如官方事後改了注意股、補了處置公告）：`main.py backfill --start <更正的那天>`。每天的排程只算今天，但「還差幾次」要往回看 30 個營業日，所以更正那天之後每一天的 app 都要重算，回補會一起重算到今天。（接 Airflow 時再改成自動從「stage 有變動的最早那天」算起。）
 
 改了 `schema/` 的欄位：程式不會刪表重建，要自己對資料庫下 `ALTER TABLE`。
 

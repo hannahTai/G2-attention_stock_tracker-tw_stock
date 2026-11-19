@@ -18,8 +18,9 @@ if "%START%"=="" (
     echo No start date given.
     exit /b 1
 )
-set END_ARG=
-if not "%END%"=="" set END_ARG=--end %END%
+rem No end date: today, worked out once so transform and analyze use the same range even past midnight
+if "%END%"=="" for /f %%d in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd"') do set END=%%d
+set END_ARG=--end %END%
 
 if not exist data mkdir data
 echo ===== %date% %time% rebuild %START% %END% >> data\rebuild.log

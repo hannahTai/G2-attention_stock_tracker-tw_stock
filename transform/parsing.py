@@ -1,4 +1,4 @@
-"""解析工具：去 HTML、文字轉數字、中文數字、把 raw 的資料列變成表、檢查欄位。給 transformer.py 用。"""
+"""解析工具：去 HTML、文字轉數字、中文數字、檢查欄位、把一份 raw 的資料列變成表。給 transformer.py 用。"""
 import datetime
 
 import pandas as pd
@@ -33,7 +33,7 @@ def chinese_number(text: str) -> int:
 def require_columns(df: pd.DataFrame, needed: list[str], name: str) -> pd.DataFrame:
     """只留 needed 這幾欄；少了任何一欄就報錯（上游改版，不能默默變成空值）。
 
-    官方多加欄位、調整順序都不影響，因為是用欄名取，不是用位置。
+    用欄名取，不是用位置：官方多加欄位、調整順序都不影響。
     """
     missing = [col for col in needed if col not in df.columns]
     if missing:
@@ -41,27 +41,26 @@ def require_columns(df: pd.DataFrame, needed: list[str], name: str) -> pd.DataFr
     return df[needed]
 
 
-def rows_to_frame(raws: list[dict], fields: list[str], name: str, extra: dict | None = None) -> pd.DataFrame:
-    """把多份 raw 的 data 合成一個 DataFrame，只留用得到的欄位。
+def twse_rows_to_frame(raw: dict, fields: list[str], name: str) -> pd.DataFrame:
+    """證交所的回應 {"fields": [...], "data": [[...], ...]} → 只留 fields 這幾欄的表；沒有資料就是空表。"""
+    body = raw["body"]
+    if not body.get("data"):
+        return pd.DataFrame(columns=fields)
+    return require_columns(pd.DataFrame(body["data"], columns=body.get("fields")), fields, name)
 
-    fields：用得到的官方欄位。每份 raw 依它自己的 fields 對應欄名，再取出這幾欄。
-    extra：每份 raw 額外加的欄位，{欄名: 函式(raw)}。
+
+def mops_rows_to_frame(raw: dict, titles: list[str], name: str, prepare=None) -> pd.DataFrame:
+    """觀測站的回應 {"result": {"titles": [...], "data": [[...], ...]}} → 只留 titles 這幾欄的表；沒有資料就是空表。
+
+    欄名在 titles（依位置對應）。prepare：取欄位之前先調整欄位，例如把存託憑證的欄位換成一般公司的。
     """
-    extra = extra or {}
-    frames = []
-    for raw in raws:
-        body = raw["body"]
-        if not body.get("data"):
-            continue
-        df = pd.DataFrame(body["data"], columns=body.get("fields"))   # 證交所的資料列是陣列，欄名在 fields
-        df = require_columns(df, fields, name)
-        for col, func in extra.items():
-            df[col] = func(raw)
-        frames.append(df)
-
-    if not frames:
-        return pd.DataFrame(columns=fields + list(extra))
-    return pd.concat(frames, ignore_index=True)
+    result = raw["body"].get("result") or {}
+    if not result.get("data"):
+        return pd.DataFrame(columns=titles)
+    df = pd.DataFrame(result["data"], columns=[t["main"] for t in result["titles"]])
+    if prepare is not None:
+        df = prepare(df)
+    return require_columns(df, titles, name)
 
 
 def fetched_at(raw: dict) -> datetime.datetime:

@@ -16,9 +16,12 @@ MOPS_BASE = os.environ.get("MOPS_BASE", "https://mops.twse.com.tw/mops/api")
 SLEEP_SECONDS = float(os.environ.get("SLEEP_SECONDS", "1.0"))
 SLEEP_SECONDS_MOPS = float(os.environ.get("SLEEP_SECONDS_MOPS", "0.6"))
 
-# 暫時性的失敗（逾時、連線失敗、5xx、429）重試幾次、每次等幾秒（同課程手冊 04 的 max_retries、default_retry_delay）
+# 暫時性的失敗（逾時、連線失敗、5xx、429）重試幾次、每次等幾秒
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
 RETRY_DELAY_SECONDS = float(os.environ.get("RETRY_DELAY_SECONDS", "5"))
+
+# 同一時間只跑一輪（main.py 的檔案鎖 data/pipeline.lock）：上一輪還沒跑完，最多等幾秒（預設 2 小時，回補可能跑很久）
+PIPELINE_LOCK_WAIT_SECONDS = float(os.environ.get("PIPELINE_LOCK_WAIT_SECONDS", str(2 * 60 * 60)))
 
 # MySQL
 MYSQL_HOST = os.environ.get("MYSQL_HOST", "127.0.0.1")

@@ -46,9 +46,6 @@ class FakeRaw:
     def raw_fetched_times(self, source):
         return {k: r.fetched_at for k, r in self.latest_ok(source).items()}
 
-    def raw_exists(self, source, raw_key):
-        return raw_key in self.latest_ok(source)
-
     def put(self, source, raw_key, body, fetched_at="2026-11-13T21:00:00+08:00", ok=True):
         """測試用：直接放一份回應進去。body 給 dict/list 會轉成 JSON 字串。"""
         self.insert_raw_row(source, raw_key, fetched_at=datetime.datetime.fromisoformat(fetched_at), http_status=200,
@@ -60,6 +57,6 @@ class FakeRaw:
 def raw_store(monkeypatch):
     """把 repository 的 raw 表換成記憶體版；回傳 FakeRaw，測試可以用 put() 放資料、用 last()／history() 檢查結果。"""
     fake = FakeRaw()
-    for name in ("insert_raw_row", "read_raws", "list_raw_keys", "raw_exists", "raw_fetched_times"):
+    for name in ("insert_raw_row", "read_raws", "list_raw_keys", "raw_fetched_times"):
         monkeypatch.setattr(repository, name, getattr(fake, name))
     return fake

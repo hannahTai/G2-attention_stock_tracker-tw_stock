@@ -1,36 +1,48 @@
-"""transformer 層：只負責把 raw 的原始資料整理成 stage 表的樣子（課程補充 J）。
+"""transformer 層：只負責把一份 raw 的原始資料整理成 stage 表的樣子，不知道資料怎麼抓來、存到哪裡。
 
-不知道資料怎麼抓來的、整理完存到哪裡（存的是 task.py）。每個資料集兩步：
-  xxx_to_frame：把多份 raw 的資料列攤平成一張表
-  clean_xxx：清理、轉型別、去重複（民國轉西元、去 HTML、文字轉數字）
+每個資料集兩步：
+  xxx_to_frame(raw)：把回應裡的資料列變成一張表，只留用得到的官方欄位
+  clean_xxx(df)：清理、轉型別（民國轉西元、去 HTML、文字轉數字），欄位換成 stage 表的名字
 只做清洗與型別轉換，不做判斷：官方公告了什麼就留什麼。
+同一個主鍵出現好幾列時，寫進資料庫是後面的蓋掉前面的，所以排序用 kind="stable"，保持原本的先後。
 """
 import datetime
-import re
 import warnings
 
 import pandas as pd
 
-from common.date_utils import roc_compact_to_dates, roc_to_date, roc_to_dates
-from transform.parsing import chinese_number, fetched_at, require_columns, rows_to_frame, strip_html, to_number
+from common.date_utils import DATE_FMT, roc_compact_to_dates, roc_date_in, roc_to_dates
+from transform.parsing import (
+    chinese_number, mops_rows_to_frame, require_columns, strip_html, to_number, twse_rows_to_frame,
+)
+
+# 每張 stage 表的主鍵（寫入時用主鍵更新，見 transform/task.py）
+STAGE_KEYS = {
+    "stage_notice": ["trade_date", "stock_id"],
+    "stage_notice_clause": ["trade_date", "stock_id", "clause"],
+    "stage_notice_day": ["trade_date"],
+    "stage_punish": ["announce_date", "stock_id"],
+    "stage_punish_day": ["query_date"],
+    "stage_punish_watchlist": ["data_date", "stock_id"],
+    "stage_trading_day": ["trade_date"],
+    "stage_holiday": ["holiday_date"],
+    "stage_company": ["company_id"],
+    "stage_announcement": ["company_id", "enter_date", "serial_number"],
+    "stage_announcement_detail": ["company_id", "enter_date", "serial_number"],
+}
 
 
 # ---------- 注意股 → stage_notice、stage_notice_clause ----------
 # 用得到的官方欄位（沒用到：編號＝全部是 1、累計次數＝查詢回傳的筆數，不是個股累計）
 NOTICE_FIELDS = ["證券代號", "證券名稱", "注意交易資訊", "日期", "收盤價", "本益比"]
-NOTICE_COLUMNS = ["trade_date", "stock_id", "stock_name", "reason_text", "close_price", "pe_ratio"]
-NOTICE_CLAUSE_COLUMNS = ["trade_date", "stock_id", "clause"]
 
 
-def notice_to_frame(raws: list[dict]) -> pd.DataFrame:
-    return rows_to_frame(raws, NOTICE_FIELDS, "注意股")
+def notice_to_frame(raw: dict) -> pd.DataFrame:
+    return twse_rows_to_frame(raw, NOTICE_FIELDS, "注意股")
 
 
 def clean_notice(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """→ (stage_notice, stage_notice_clause)"""
-    if df.empty:
-        return pd.DataFrame(columns=NOTICE_COLUMNS), pd.DataFrame(columns=NOTICE_CLAUSE_COLUMNS)
-
     notices = pd.DataFrame({
         "trade_date": roc_to_dates(df["日期"]),
         "stock_id": df["證券代號"].str.strip(),
@@ -46,23 +58,19 @@ def clean_notice(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     if row_ids.nunique() < len(notices):
         raise ValueError("有注意股找不到款次，格式可能改了")
 
-    clauses = notices.loc[row_ids, ["trade_date", "stock_id"]].copy()
-    clauses["clause"] = found.map(chinese_number).to_numpy()
-    clauses = clauses.drop_duplicates().sort_values(NOTICE_CLAUSE_COLUMNS).reset_index(drop=True)
+    clauses = notices.loc[row_ids, ["trade_date", "stock_id"]].assign(clause=found.map(chinese_number).to_numpy())
+    clauses = clauses.sort_values(STAGE_KEYS["stage_notice_clause"], kind="stable").reset_index(drop=True)
     return notices, clauses
 
 
 # ---------- 處置股 → stage_punish ----------
-# 同一筆公告會出現在好幾天的 raw → 依（公布日期, 代號）去重，留最後抓到的
-# 同一份 raw 裡（公布日期, 代號）重複且內容不同 → 同一天有兩則處置，去重只會留一則，所以發出警告
-# 用得到的官方欄位（沒用到：編號、累計＝隨查詢區間變動、備註＝只有連結）
-# 公布日期偶爾帶 *（意義未確認），存成 has_star_mark
+# 同一則公告會出現在好幾天的 raw 裡：寫入時用主鍵（公布日期, 代號）更新，留最後抓到的（transform/task.py）
+# 用得到的官方欄位（沒用到：編號、累計＝隨查詢區間變動、備註＝只有連結）；公布日期偶爾帶 *（意義未確認），存成 has_star_mark
 PUNISH_FIELDS = ["公布日期", "證券代號", "證券名稱", "處置條件", "處置起迄時間", "處置措施", "處置內容"]
 
 
-def punish_to_frame(raws: list[dict]) -> pd.DataFrame:
-    raws = sorted(raws, key=fetched_at)   # 舊 → 新
-    return rows_to_frame(raws, PUNISH_FIELDS, "處置股", extra={"fetched_at": fetched_at})   # 用來分辨每列來自哪份 raw
+def punish_to_frame(raw: dict) -> pd.DataFrame:
+    return twse_rows_to_frame(raw, PUNISH_FIELDS, "處置股")
 
 
 def clean_punish(df: pd.DataFrame) -> pd.DataFrame:
@@ -81,13 +89,13 @@ def clean_punish(df: pd.DataFrame) -> pd.DataFrame:
         "content": df["處置內容"].str.strip(),
         "has_star_mark": df["公布日期"].str.startswith("*"),
     })
-    same_raw = out.assign(fetched_at=df["fetched_at"]).drop_duplicates()   # 完全相同的列不算
-    conflicts = same_raw[same_raw.duplicated(["fetched_at", "announce_date", "stock_id"], keep=False)]
+    # 只檢查、不刪：同一檔同一天有兩則不同的處置（完全相同的列不算），主鍵只能留一則，要人確認
+    keys = STAGE_KEYS["stage_punish"]
+    conflicts = out[out.duplicated(keys, keep=False) & ~out.duplicated(keep=False)]
     if not conflicts.empty:
-        listed = conflicts[["announce_date", "stock_id", "measure_type"]].drop_duplicates().to_string(index=False)
+        listed = conflicts[keys + ["measure_type"]].to_string(index=False)
         warnings.warn(f"處置股：同一天同一檔有多則處置，只會留下一則，請確認：\n{listed}")
-    out = out.drop_duplicates(["announce_date", "stock_id"], keep="last")
-    return out.sort_values(["announce_date", "stock_id"]).reset_index(drop=True)
+    return out.sort_values(keys, kind="stable").reset_index(drop=True)
 
 
 # ---------- 注意累計可能達處置標準名單 → stage_punish_watchlist ----------
@@ -95,36 +103,30 @@ WATCHLIST_PROGRESS = "近期達本公司「公布注意交易資訊」標準之�
 PUNISH_WATCHLIST_FIELDS = ["證券代號", "證券名稱", WATCHLIST_PROGRESS]   # 沒用到：編號
 
 
-def title_date(raw: dict):
-    """從 title（例如「115年11月06日 公布…」）取出資料日期。"""
-    return roc_to_date(re.search(r"\d+年\d+月\d+日", raw["body"]["title"]).group())
-
-
-def punish_watchlist_to_frame(raws: list[dict]) -> pd.DataFrame:
-    return rows_to_frame(raws, PUNISH_WATCHLIST_FIELDS, "注意累計名單", extra={"data_date": title_date})
+def punish_watchlist_to_frame(raw: dict) -> pd.DataFrame:
+    """資料日期在標題裡（例如「115年11月06日 公布…」），每列都記上。"""
+    return twse_rows_to_frame(raw, PUNISH_WATCHLIST_FIELDS, "注意累計名單").assign(
+        data_date=roc_date_in(raw["body"].get("title", "")))
 
 
 def clean_punish_watchlist(df: pd.DataFrame) -> pd.DataFrame:
     """→ stage_punish_watchlist"""
     progress = df[WATCHLIST_PROGRESS].str.replace("<br>", "\n")   # 多行情形換成換行
-    out = pd.DataFrame({
+    return pd.DataFrame({
         "data_date": df["data_date"],
         "stock_id": df["證券代號"].str.strip(),
         "stock_name": df["證券名稱"].str.strip(),
         "progress_text": strip_html(progress),
     })
-    return out.drop_duplicates(["data_date", "stock_id"], keep="last").reset_index(drop=True)
 
 
 # ---------- 每日市場成交 → stage_trading_day ----------
-# 證交所收盤後才公布當天的市場成交；這個時間以後抓的才含當天
-MARKET_DATA_READY = datetime.time(15, 0)
-
+MARKET_DATA_READY = datetime.time(15, 0)   # 證交所收盤後才公布當天的市場成交；這個時間以後抓的才含當天
 MARKET_DAILY_FIELDS = ["日期", "成交股數", "成交金額", "成交筆數", "發行量加權股價指數", "漲跌點數"]
 
 
-def market_daily_to_frame(raws: list[dict]) -> pd.DataFrame:
-    return rows_to_frame(raws, MARKET_DAILY_FIELDS, "市場成交資訊")
+def market_daily_to_frame(raw: dict) -> pd.DataFrame:
+    return twse_rows_to_frame(raw, MARKET_DAILY_FIELDS, "市場成交資訊")
 
 
 def covered_through(fetched_time: str) -> datetime.date:
@@ -140,7 +142,7 @@ def covered_through(fetched_time: str) -> datetime.date:
 
 
 def clean_trading_day(df: pd.DataFrame, month_yyyymm: str, through: datetime.date,
-                      notice_days: set[datetime.date] = frozenset()) -> pd.DataFrame:
+                      notice_days: set[datetime.date]) -> pd.DataFrame:
     """→ stage_trading_day：這個月 1 號到 through（資料涵蓋到的那天）的每一天，一天一列。
 
     資料裡有的那天＝有交易（is_trading=1）；涵蓋範圍內但資料裡沒有＝沒交易（週末、休市、颱風假，is_trading=0）。
@@ -148,22 +150,7 @@ def clean_trading_day(df: pd.DataFrame, month_yyyymm: str, through: datetime.dat
     notice_days：有人被列注意的日子。資料裡沒有、但那天有人被列注意 → 那天其實有交易，是市場成交還沒更新，
     不寫這列（當作還不知道），免得把交易日當成沒交易。
     """
-    trading = clean_trading_rows(df)
-    first = pd.Period(month_yyyymm, "M").start_time.date()
-    last = min(pd.Period(month_yyyymm, "M").end_time.date(), through)
-    calendar = pd.DataFrame({"trade_date": pd.date_range(first, last).date}) if first <= last else trading[["trade_date"]]
-
-    out = calendar.merge(trading, on="trade_date", how="outer")   # outer：資料比 through 新的那天也留著
-    out.insert(1, "is_trading", out["trade_date"].isin(set(trading["trade_date"])))
-    not_updated = ~out["is_trading"] & out["trade_date"].isin(set(notice_days))
-    if not_updated.any():
-        warnings.warn(f"市場成交還沒有 {sorted(out.loc[not_updated, 'trade_date'])}，但那天有注意股：先不寫，等下次抓")
-    return out[~not_updated].sort_values("trade_date").reset_index(drop=True)
-
-
-def clean_trading_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """市場成交的每一列（每列是一個有交易的日子），轉型、去重。"""
-    out = pd.DataFrame({
+    trading = pd.DataFrame({
         "trade_date": roc_to_dates(df["日期"]),
         "volume_shares": to_number(df["成交股數"]).astype("Int64"),
         "amount_twd": to_number(df["成交金額"]).astype("Int64"),
@@ -171,15 +158,24 @@ def clean_trading_rows(df: pd.DataFrame) -> pd.DataFrame:
         "taiex_index": to_number(df["發行量加權股價指數"]),
         "taiex_change_points": to_number(df["漲跌點數"]),
     })
-    return out.drop_duplicates("trade_date", keep="last").sort_values("trade_date").reset_index(drop=True)
+    first = pd.Period(month_yyyymm, "M").start_time.date()
+    last = min(pd.Period(month_yyyymm, "M").end_time.date(), through)
+    calendar = pd.DataFrame({"trade_date": pd.date_range(first, last).date}) if first <= last else trading[["trade_date"]]
+
+    out = calendar.merge(trading, on="trade_date", how="outer")   # outer：資料比 through 新的那天也留著
+    out.insert(1, "is_trading", out["trade_date"].isin(set(trading["trade_date"])))
+    not_updated = ~out["is_trading"] & out["trade_date"].isin(notice_days)
+    if not_updated.any():
+        warnings.warn(f"市場成交還沒有 {sorted(out.loc[not_updated, 'trade_date'])}，但那天有注意股：先不寫，等下次抓")
+    return out[~not_updated].sort_values("trade_date", kind="stable").reset_index(drop=True)
 
 
 # ---------- 開休市日期 → stage_holiday ----------
 HOLIDAY_FIELDS = ["日期", "名稱", "說明"]
 
 
-def holiday_to_frame(raws: list[dict]) -> pd.DataFrame:
-    return rows_to_frame(raws, HOLIDAY_FIELDS, "開休市日期")
+def holiday_to_frame(raw: dict) -> pd.DataFrame:
+    return twse_rows_to_frame(raw, HOLIDAY_FIELDS, "開休市日期")
 
 
 def clean_holiday(df: pd.DataFrame) -> pd.DataFrame:
@@ -189,47 +185,38 @@ def clean_holiday(df: pd.DataFrame) -> pd.DataFrame:
         "holiday_name": df["名稱"].str.strip(),
         "description": df["說明"].str.strip(),
     })
-    return out.drop_duplicates("holiday_date", keep="last").sort_values("holiday_date").reset_index(drop=True)
+    return out.sort_values("holiday_date", kind="stable").reset_index(drop=True)
 
 
 # ---------- 上市公司 → stage_company ----------
 COMPANY_FIELDS = ["公司代號", "公司簡稱", "公司名稱", "產業別", "上市日期"]   # 其餘 28 個欄位沒用到
 
 
-def clean_company(raw: dict | None) -> pd.DataFrame:
-    """最新一份公司清單 → stage_company"""
-    if raw and raw["body"]:
-        df = require_columns(pd.DataFrame(raw["body"]), COMPANY_FIELDS, "上市公司")   # 每筆是 dict，欄名就是 key
-    else:
-        df = pd.DataFrame(columns=COMPANY_FIELDS)   # 還沒抓過：空表
+def company_to_frame(raw: dict) -> pd.DataFrame:
+    """這支 OpenAPI 的格式不同：每筆是 dict（欄名就是 key），沒有 fields。快照日期取自 raw_key（抓取日期）。"""
+    df = require_columns(pd.DataFrame(raw["body"], columns=None if raw["body"] else COMPANY_FIELDS),
+                         COMPANY_FIELDS, "上市公司")
+    return df.assign(snapshot_date=pd.to_datetime(raw["meta"]["key"], format=DATE_FMT).date())
+
+
+def clean_company(df: pd.DataFrame) -> pd.DataFrame:
+    """→ stage_company"""
     return pd.DataFrame({
         "company_id": df["公司代號"].str.strip(),
         "short_name": df["公司簡稱"].str.strip(),
         "full_name": df["公司名稱"].str.strip(),
         "industry_code": df["產業別"].str.strip(),
-        "listed_date": pd.to_datetime(df["上市日期"], format="%Y%m%d").dt.date,
-        "snapshot_date": pd.to_datetime(raw["meta"]["key"]).date() if raw else None,
+        "listed_date": pd.to_datetime(df["上市日期"], format=DATE_FMT).dt.date,
+        "snapshot_date": df["snapshot_date"],
     })
 
 
 # ---------- 公司重大訊息 → stage_announcement ----------
-# 格式和其他來源不同：{"code", "result": {"titles", "data"}}；code 406 = 那個月沒有公告
 ANNOUNCEMENT_TITLES = ["公司代號", "公司名稱", "發言日期", "發言時間", "主旨", "詳細資料"]
 
 
-def announcement_to_frame(raws: list[dict]) -> pd.DataFrame:
-    frames = []
-    for raw in raws:
-        result = raw["body"].get("result") or {}
-        if not result.get("data"):
-            continue
-        titles = [t["main"] for t in result["titles"]]   # 欄名在 titles，依位置對應
-        df = pd.DataFrame(result["data"], columns=titles)
-        frames.append(require_columns(df, ANNOUNCEMENT_TITLES, "重大訊息"))
-
-    if not frames:
-        return pd.DataFrame(columns=ANNOUNCEMENT_TITLES)
-    return pd.concat(frames, ignore_index=True)
+def announcement_to_frame(raw: dict) -> pd.DataFrame:
+    return mops_rows_to_frame(raw, ANNOUNCEMENT_TITLES, "重大訊息")   # code 406＝那個月沒有公告，data 是空的
 
 
 def clean_announcement(df: pd.DataFrame) -> pd.DataFrame:
@@ -238,7 +225,6 @@ def clean_announcement(df: pd.DataFrame) -> pd.DataFrame:
     序號是依「輸入日期」（enterDate）編的，不是依發言日期：
     同一天發言的兩則公告可能序號相同，所以主鍵用（公司, 輸入日期, 序號）。
     """
-    keys = ["company_id", "enter_date", "serial_number"]
     params = df["詳細資料"].str["parameters"]
     out = pd.DataFrame({
         "company_id": df["公司代號"].str.strip(),
@@ -249,13 +235,12 @@ def clean_announcement(df: pd.DataFrame) -> pd.DataFrame:
         "company_name": df["公司名稱"].str.strip(),
         "subject": df["主旨"].str.replace(r"\s*\n\s*", "", regex=True).str.strip(),  # 接回被換行切斷的主旨
     })
-    return out.drop_duplicates(keys, keep="last").sort_values(keys).reset_index(drop=True)
+    return out.sort_values(STAGE_KEYS["stage_announcement"], kind="stable").reset_index(drop=True)
 
 
 # ---------- 重大訊息全文 → stage_announcement_detail ----------
 # 一份 raw 是一則公告。主旨、發言日期已經在 stage_announcement；發言人姓名、電話是個資，不放進 stage。
 ANNOUNCEMENT_DETAIL_TITLES = ["符合條款", "事實發生日", "說明"]
-ANNOUNCEMENT_DETAIL_COLUMNS = ["company_id", "enter_date", "serial_number", "clause", "fact_date", "content"]
 # 存託憑證（DR，t59sb01_detail）沒有「說明」，內容放在這兩欄；符合條款是另一份規定的「第五條第N款」
 DR_CONTENT_TITLE = "發生依外國發行人所屬國及上市地國法令規定應即申報之重大情事"
 DR_OTHER_TITLE = "其他"
@@ -270,36 +255,21 @@ def dr_to_common(df: pd.DataFrame) -> pd.DataFrame:
     return df.assign(說明=content.where(other == "", content + "\n\n其他：\n" + other))
 
 
-def announcement_detail_to_frame(raws: list[dict]) -> pd.DataFrame:
+def announcement_detail_to_frame(raw: dict) -> pd.DataFrame:
     """主鍵（公司, 輸入日期, 序號）從 raw_key 取，例如 9908_20261102_1；回應裡沒有輸入日期。"""
-    frames = []
-    for raw in raws:
-        result = raw["body"].get("result") or {}
-        if not result.get("data"):
-            continue
-        titles = [t["main"] for t in result["titles"]]   # 欄名在 titles，依位置對應
-        df = dr_to_common(pd.DataFrame(result["data"], columns=titles))
-        df = require_columns(df, ANNOUNCEMENT_DETAIL_TITLES, "重大訊息全文")
-        company_id, enter_yyyymmdd, serial_number = raw["meta"]["key"].split("_")
-        frames.append(df[ANNOUNCEMENT_DETAIL_TITLES].assign(
-            company_id=company_id, enter_date=enter_yyyymmdd, serial_number=serial_number))
-
-    if not frames:
-        return pd.DataFrame(columns=["company_id", "enter_date", "serial_number"] + ANNOUNCEMENT_DETAIL_TITLES)
-    return pd.concat(frames, ignore_index=True)
+    df = mops_rows_to_frame(raw, ANNOUNCEMENT_DETAIL_TITLES, "重大訊息全文", prepare=dr_to_common)
+    company_id, enter_yyyymmdd, serial_number = raw["meta"]["key"].split("_")
+    return df.assign(company_id=company_id, enter_date=enter_yyyymmdd, serial_number=serial_number)
 
 
 def clean_announcement_detail(df: pd.DataFrame) -> pd.DataFrame:
     """→ stage_announcement_detail（主鍵和 stage_announcement 相同，可以直接 JOIN）"""
-    if df.empty:
-        return pd.DataFrame(columns=ANNOUNCEMENT_DETAIL_COLUMNS)
-    keys = ["company_id", "enter_date", "serial_number"]
     out = pd.DataFrame({
         "company_id": df["company_id"],
-        "enter_date": pd.to_datetime(df["enter_date"], format="%Y%m%d").dt.date,
+        "enter_date": pd.to_datetime(df["enter_date"], format=DATE_FMT).dt.date,
         "serial_number": df["serial_number"].astype(int),
         "clause": df["符合條款"].str.strip(),                               # 例如 "第31款"
         "fact_date": roc_to_dates(df["事實發生日"].str.strip()),             # 例如 "115/11/05"
         "content": df["說明"].str.replace("\r\n", "\n").str.strip(),         # 說明全文
     })
-    return out.drop_duplicates(keys, keep="last").sort_values(keys).reset_index(drop=True)
+    return out.sort_values(STAGE_KEYS["stage_announcement_detail"], kind="stable").reset_index(drop=True)

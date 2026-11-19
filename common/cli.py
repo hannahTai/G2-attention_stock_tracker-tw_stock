@@ -4,6 +4,8 @@
     python -m xxx.producer backfill --start 20261001              # 回補 20261001 到今天
     python -m xxx.producer backfill --start 20261001 --end 20261031
     python -m crawler.producer backfill --start 20261001 --refetch  # crawler：已經抓完整的也重抓
+
+main.py 也用這裡讀參數：期間在 main.py 算一次，再明確傳給三個 producer。
 """
 import argparse
 
@@ -27,8 +29,3 @@ def parse_args() -> argparse.Namespace:
         args.refetch = False
     return args
 
-
-def date_range() -> tuple[str, str]:
-    """要處理的期間 (start, end)，都是 YYYYMMDD。"""
-    args = parse_args()
-    return args.start, args.end
