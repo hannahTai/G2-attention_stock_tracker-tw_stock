@@ -33,8 +33,8 @@
 | `raw_punish_watchlist` | 名單上的資料日期 | `stage_punish_watchlist` |
 | `raw_market_daily` | 月份 | `stage_trading_day` |
 | `raw_holiday` | 西元年 | `stage_holiday` |
-| `raw_companies` | 抓取日期 | `stage_company` |
-| `raw_announcements` | 公司代號_月份 | `stage_announcement` |
+| `raw_company` | 抓取日期 | `stage_company` |
+| `raw_announcement` | 公司代號_月份 | `stage_announcement` |
 | `raw_announcement_detail` | 公司代號_輸入日期_序號 | `stage_announcement_detail` |
 
 - 只新增、不修改：主鍵（raw_key, fetched_at），同一個 raw_key 每抓一次多一列，成功、失敗都留。transform 只讀每個 raw_key 最新一份成功的，所以失敗不會蓋掉之前成功的。
@@ -48,7 +48,7 @@
 |---|---|---|---|
 | `stage_notice` | 某天某檔的注意股 | trade_date, stock_id | 07/01–11/13 |
 | `stage_notice_clause` | 某天某檔的一個款次 | trade_date, stock_id, clause | 07/01–11/13 |
-| `stage_notice_day` | 一天的注意股抓到了（幾檔） | trade_date | 07/01–11/14 |
+| `stage_notice_day` | 一天的注意股查過了（幾檔；休市日也有一列） | query_date | 07/01–11/14 |
 | `stage_punish` | 一則處置公告 | announce_date, stock_id | 06/16–11/10（含 07/01 仍在處置中的；11/11 後無新公告） |
 | `stage_punish_day` | 一天的處置股抓到了（幾則） | query_date | 07/01–11/14 |
 | `stage_punish_watchlist` | 官方注意累計名單的一檔 | data_date, stock_id | 11/09–11/13（API 只有最新一天，11/09 開始每天抓） |
@@ -57,7 +57,7 @@
 | `stage_company` | 一家上市公司 | company_id | 11/14 快照 |
 | `stage_announcement` | 一則重大訊息 | company_id, enter_date, serial_number | 09/01–11/13 |
 | `stage_announcement_detail` | 一則重大訊息的全文 | company_id, enter_date, serial_number | 回補後同上 |
-| `stage_announcement_clause` | 一個符合條款（固定資料，51 列） | clause | — |
+| `stage_announcement_clause` | 一個符合條款（固定資料，51 列） | announce_clause | — |
 
 ## 關聯圖
 
@@ -68,10 +68,10 @@ erDiagram
     stage_company |o--o{ stage_punish_watchlist : "stock_id"
     stage_company ||--o{ stage_announcement : "company_id"
     stage_announcement ||--o| stage_announcement_detail : "company_id + enter_date + serial_number"
-    stage_announcement_clause ||--o{ stage_announcement_detail : "clause"
+    stage_announcement_clause ||--o{ stage_announcement_detail : "announce_clause"
     stage_notice ||--|{ stage_notice_clause : "trade_date + stock_id"
     stage_trading_day ||--o{ stage_notice : "trade_date"
-    stage_notice_day ||--o{ stage_notice : "trade_date"
+    stage_notice_day ||--o{ stage_notice : "query_date = trade_date"
 
     stage_company {
         varchar company_id PK
@@ -98,7 +98,7 @@ erDiagram
         datetime loaded_at
     }
     stage_notice_day {
-        date trade_date PK
+        date query_date PK
         int notice_count
         datetime loaded_at
     }
@@ -142,13 +142,13 @@ erDiagram
         varchar company_id PK, FK
         date enter_date PK, FK
         int serial_number PK, FK
-        varchar clause FK
+        varchar announce_clause FK
         date fact_date
         mediumtext content
         datetime loaded_at
     }
     stage_announcement_clause {
-        varchar clause PK
+        varchar announce_clause PK
         tinyint clause_no
         varchar short_name
         varchar description
@@ -204,16 +204,17 @@ erDiagram
 
 - 第 1–8 款會累計，第 9–14 款不累計。找不到款次時 transform 會報錯。
 
-### stage_notice_day　注意股（每天一列）
+### stage_notice_day　注意股（每個查詢日一列）
 
 - 來源：`raw_notice`（和 `stage_notice` 一起產生）
 
 | 欄位 | 型別 | 說明 |
 |---|---|---|
-| trade_date | DATE | 查詢的那天 |
-| notice_count | INT | 那天幾檔被列注意；0＝沒人被列 |
+| query_date | DATE | 查詢的那天（休市日也會查，所以不一定是交易日） |
+| notice_count | INT | 那天幾檔被列注意；0＝沒人被列（休市日一定是 0） |
 
 - 用來分辨「那天沒人被列」（有這列，0 檔）和「還沒抓到」（沒有這列）。analyze 算之前會檢查。
+- 跟 `stage_punish_day` 一樣用 `query_date`：兩張都是「這天查過了」的標記表，日期是查詢日，不是交易日。
 
 ### stage_punish　處置股
 
@@ -296,7 +297,7 @@ erDiagram
 
 ### stage_company　上市公司
 
-- 來源：`raw_companies`（證交所 OpenAPI `GET /v1/opendata/t187ap03_L` → 整個清單），只讀最新一份，依 company_id 更新（新的新增；下市的公司留著，snapshot_date 停在最後出現那天）
+- 來源：`raw_company`（證交所 OpenAPI `GET /v1/opendata/t187ap03_L` → 整個清單），只讀最新一份，依 company_id 更新（新的新增；下市的公司留著，snapshot_date 停在最後出現那天）
 - 沒用到：其餘 28 個欄位
 
 | 欄位 | 型別 | API 欄位 | 轉換／說明 |
@@ -313,7 +314,7 @@ erDiagram
 
 ### stage_announcement　重大訊息
 
-- 來源：`raw_announcements`（觀測站 `POST /mops/api/t05st01`，一家公司一個月 → `result.data`）
+- 來源：`raw_announcement`（觀測站 `POST /mops/api/t05st01`，一家公司一個月 → `result.data`）
 - `code` 406＝那個月沒有公告
 
 | 欄位 | 型別 | API 欄位 | 轉換／說明 |
@@ -334,14 +335,14 @@ erDiagram
 - 來源：`raw_announcement_detail`（觀測站 `POST /mops/api/t05st01_detail`，一則公告 → `result.data`）
 - 主鍵和 `stage_announcement` 相同，一則公告一列；主鍵從 raw_key（`9908_20261102_1`）取，回應裡沒有輸入日期。
 - 發言人姓名、職稱、電話是個資，只留在 raw，不放進 stage。
-- 存託憑證（DR，`t59sb01_detail`）格式不同：沒有「說明」，`content` 取「發生依外國發行人…應即申報之重大情事」＋「其他」；`clause` 是另一份規定的 `第五條第N款`，對不到 `stage_announcement_clause`（`clause_name` 為 NULL）。
+- 存託憑證（DR，`t59sb01_detail`）格式不同：沒有「說明」，`content` 取「發生依外國發行人…應即申報之重大情事」＋「其他」；`announce_clause` 是另一份規定的 `第五條第N款`，對不到 `stage_announcement_clause`（`clause_name` 為 NULL）。
 
 | 欄位 | 型別 | API 欄位 | 轉換／說明 |
 |---|---|---|---|
 | company_id | VARCHAR(10) | （raw_key） | — |
 | enter_date | DATE | （raw_key） | `20261102` → 日期 |
 | serial_number | INT | （raw_key） | 輸入日期當天第幾則 |
-| clause | VARCHAR(20) | 符合條款 | 例如 `第31款`（觀測站的公告分類） |
+| announce_clause | VARCHAR(20) | 符合條款 | 例如 `第31款`（觀測站的公告分類；和注意股的款次 `stage_notice_clause.clause` 是不同東西） |
 | fact_date | DATE | 事實發生日 | 民國 → 西元 |
 | content | MEDIUMTEXT | 說明 | 全文；換行統一成 `\n` |
 
@@ -353,7 +354,7 @@ erDiagram
 
 | 欄位 | 型別 | 說明 |
 |---|---|---|
-| clause | VARCHAR(20) | 主鍵，例如 `第31款`（和 `stage_announcement_detail.clause` 一樣） |
+| announce_clause | VARCHAR(20) | 主鍵，例如 `第31款`（和 `stage_announcement_detail.announce_clause` 一樣） |
 | clause_no | TINYINT | 款次數字，排序用 |
 | short_name | VARCHAR(20) | 簡短名稱（卡片標籤），例如 `財務報告`、`法人說明會`、`其他重大事項` |
 | description | VARCHAR(200) | 條文摘要 |
@@ -385,13 +386,13 @@ erDiagram
 | closest_path | VARCHAR(10) | 最快達標的那條（同分依 streak3、streak5、in10、in30 的順序） |
 | punished_by | VARCHAR(40) | 今天達到哪幾條，例如 `streak3`；沒有為 NULL |
 | has_full_history | BOOLEAN | 前面有沒有 30 個營業日的資料；沒有時 in30 可能偏少 |
-| punish_start | DATE | 處置起日（來自 `stage_punish`）；公布當天到出關當天都有值，其他為 NULL，下兩欄同 |
-| punish_end | DATE | 處置迄日 |
+| period_start | DATE | 處置起日（來自 `stage_punish`）；公布當天到出關當天都有值，其他為 NULL，下兩欄同 |
+| period_end | DATE | 處置迄日 |
 | resume_date | DATE | 出關：迄日的下一個營業日，恢復正常交易 |
 | next_listed_date | DATE | 只差一次時：假設再被列注意的那天（下一個營業日）；其他為 NULL，下同 |
 | next_punish_round | TINYINT | 那次會是第幾次處置（最近 30 個營業日內已有處置公告 → 2） |
-| next_punish_start | DATE | 那次的處置起日（再列那天的下一個營業日） |
-| next_punish_end | DATE | 那次的處置迄日（5 個營業日；連 3／連 5 日含第 13 款 7 個；8/10 前舊制 10／12 個） |
+| next_period_start | DATE | 那次的處置起日（再列那天的下一個營業日） |
+| next_period_end | DATE | 那次的處置迄日（5 個營業日；連 3／連 5 日含第 13 款 7 個；8/10 前舊制 10／12 個） |
 | next_resume_date | DATE | 那次的出關日 |
 | process_date | DATE | 哪一天算的（台灣日期；重跑會更新） |
 
@@ -399,7 +400,7 @@ erDiagram
 - 今天達標（`punished_by` 有值）時，`*_left`、`steps_left` 都是 NULL：隔天重新算。
 - 未來的營業日依開休市日期推算（週一～五、扣掉休市日）；臨時休市要隔天重算才會反映。
 - 第 13 款若在再列的那天才出現，會延長為 7 天，事前算不出來（回測 129 筆中 5 筆是這種）。
-- 卡片牆分頁：聽牌＝`steps_left = 1`；處置股＝`punish_start ≤ trade_date ≤ punish_end`；明日出關＝`punish_end = trade_date`；今日出關＝`resume_date = trade_date`；注意股＝`app_card.is_listed_today`。卡片牆只放 `app_card.is_company = 1`（不放權證、ETF）。
+- 卡片牆分頁：聽牌＝`steps_left = 1`；處置股＝`period_start ≤ trade_date ≤ period_end`；明日出關＝`period_end = trade_date`；今日出關＝`resume_date = trade_date`；注意股＝`app_card.is_listed_today`。卡片牆只放 `app_card.is_company = 1`（不放權證、ETF）。
 
 ### app_progress_date　計入的日期
 
@@ -422,4 +423,4 @@ VIEW 是存起來的查詢，不複製資料；網頁查的時候 MySQL 才去�
 | `app_card` | 卡片牆、個股卡片上半部 | `app_progress` 每一列，加上 `stock_name`、`is_listed_today`、`is_company`（上市公司；卡片牆只放這些，不放權證、ETF）、`close_price`、`reason_text`、`clauses`（今天被列第幾款，例如 `1,2`）、`is_counted_today`、處置中那次的 `punish_measure`／`punish_condition`／`punish_match_minutes`、`announcement_count`（近 30 個營業日公告則數） |
 | `app_notice_history` | 注意紀錄格子 | 每檔每個被列注意的交易日：`clauses`、`is_counted`（1＝累計）。沒被列的日子沒有列；早於 `count_start` 的是「已計入前次處置」 |
 | `app_punish_history` | 處置紀錄 | `stage_punish` 的欄位 |
-| `app_announcement` | 公司公告 | `stage_announcement`，加上 `is_during_session`（14:30 前＝交易時段內）、`is_correction`（更正）、`is_explanation`（說明、澄清；排除法人說明會）；LEFT JOIN `stage_announcement_detail` 帶出 `clause`、`fact_date`、`content`（還沒抓到全文的為 NULL），再 JOIN `stage_announcement_clause` 帶出 `clause_name`（例如 財務報告） |
+| `app_announcement` | 公司公告 | `stage_announcement`，加上 `is_during_session`（14:30 前＝交易時段內）、`is_correction`（更正）、`is_explanation`（說明、澄清；排除法人說明會）；LEFT JOIN `stage_announcement_detail` 帶出 `announce_clause`、`fact_date`、`content`（還沒抓到全文的為 NULL），再 JOIN `stage_announcement_clause` 帶出 `clause_name`（例如 財務報告） |

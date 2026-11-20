@@ -20,7 +20,7 @@ from transform.parsing import (
 STAGE_KEYS = {
     "stage_notice": ["trade_date", "stock_id"],
     "stage_notice_clause": ["trade_date", "stock_id", "clause"],
-    "stage_notice_day": ["trade_date"],
+    "stage_notice_day": ["query_date"],
     "stage_punish": ["announce_date", "stock_id"],
     "stage_punish_day": ["query_date"],
     "stage_punish_watchlist": ["data_date", "stock_id"],
@@ -268,7 +268,7 @@ def clean_announcement_detail(df: pd.DataFrame) -> pd.DataFrame:
         "company_id": df["company_id"],
         "enter_date": pd.to_datetime(df["enter_date"], format=DATE_FMT).dt.date,
         "serial_number": df["serial_number"].astype(int),
-        "clause": df["符合條款"].str.strip(),                               # 例如 "第31款"
+        "announce_clause": df["符合條款"].str.strip(),                      # 例如 "第31款"
         "fact_date": roc_to_dates(df["事實發生日"].str.strip()),             # 例如 "115/11/05"
         "content": df["說明"].str.replace("\r\n", "\n").str.strip(),         # 說明全文
     })

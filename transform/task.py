@@ -25,18 +25,20 @@ def upsert_stage(tables: dict[str, pd.DataFrame], version, clear_day=None) -> in
 
     version：這批資料來自哪次抓取（raw 的 fetched_at，台灣時間）。每列記在 source_fetched_at，
     寫入時用主鍵更新，只讓比較新（或一樣新）的覆蓋：好幾個 worker、好幾輪同時整理，誰先寫完都一樣。
-    clear_day：先把這天（trade_date）的列清掉再寫入，官方拿掉的列也會跟著消失（注意股用）。
+    clear_day：先把這天的列清掉再寫入，官方拿掉的列也會跟著消失（注意股用）。每張表用自己主鍵的第一欄當日期
+    （stage_notice、stage_notice_clause 是 trade_date，stage_notice_day 是 query_date）。
     清之前先比那天現有的版本，資料庫裡比較新就整批不寫，免得舊的名單把新的清掉。
     """
     tables = {name: df.assign(**{STAGE_VERSION_COLUMN: version}) for name, df in tables.items()}
 
     with repository.get_engine().begin() as conn:
         if clear_day is not None:
-            if any(repository.has_newer_rows(conn, name, "trade_date", clear_day, STAGE_VERSION_COLUMN, version)
+            day_column = {name: STAGE_KEYS[name][0] for name in tables}
+            if any(repository.has_newer_rows(conn, name, day_column[name], clear_day, STAGE_VERSION_COLUMN, version)
                    for name in tables):
                 return None
             for name in tables:
-                repository.delete_where_in(conn, name, "trade_date", [clear_day])
+                repository.delete_where_in(conn, name, day_column[name], [clear_day])
         for name, df in tables.items():
             repository.upsert_rows(conn, name, df, STAGE_KEYS[name], STAGE_VERSION_COLUMN)   # 空的就不動
     return sum(len(df) for df in tables.values())
@@ -71,7 +73,7 @@ def transform_notice(date_yyyymmdd: str) -> str:
         return skipped("notice", key)
     day = parse_yyyymmdd(key)
     notices, clauses = transformer.clean_notice(transformer.notice_to_frame(raw))
-    notice_day = pd.DataFrame({"trade_date": [day], "notice_count": [len(notices)]})   # 0 檔也寫：表示抓到了、沒人被列
+    notice_day = pd.DataFrame({"query_date": [day], "notice_count": [len(notices)]})   # 0 檔也寫：表示抓到了、沒人被列
     tables = {"stage_notice": notices, "stage_notice_clause": clauses, "stage_notice_day": notice_day}
     return save(raw, tables, clear_day=day)
 
@@ -128,23 +130,23 @@ def transform_holiday(year: int) -> str:
     return save(raw, tables)
 
 
-def transform_companies(date_yyyymmdd: str) -> str:
+def transform_company(date_yyyymmdd: str) -> str:
     """那天以前最新的上市公司清單 → stage_company（依 company_id 更新，下市的留著）。"""
-    key = latest_key("companies", date_yyyymmdd)
-    raw = repository.read_raw("companies", key)
+    key = latest_key("company", date_yyyymmdd)
+    raw = repository.read_raw("company", key)
     if raw is None:
-        return skipped("companies", key)
+        return skipped("company", key)
     tables = {"stage_company": transformer.clean_company(transformer.company_to_frame(raw))}
     return save(raw, tables)
 
 
 # ---------- 公開資訊觀測站 ----------
-def transform_announcements(stock_id: str, year: int, month: int) -> str:
+def transform_announcement(stock_id: str, year: int, month: int) -> str:
     """一家公司一個月的重大訊息 → stage_announcement。"""
     key = f"{stock_id}_{year:04d}{month:02d}"
-    raw = repository.read_raw("announcements", key)
+    raw = repository.read_raw("announcement", key)
     if raw is None:
-        return skipped("announcements", key)
+        return skipped("announcement", key)
     tables = {"stage_announcement": transformer.clean_announcement(transformer.announcement_to_frame(raw))}
     return save(raw, tables)
 

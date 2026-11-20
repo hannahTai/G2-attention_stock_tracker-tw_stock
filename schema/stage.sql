@@ -10,16 +10,17 @@ CREATE TABLE IF NOT EXISTS stage_notice (
     pe_ratio          DECIMAL(12, 4)          COMMENT '本益比；無本益比為 NULL',
     loaded_at         DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '寫入時間（台灣時間）',
     source_fetched_at DATETIME(6)             COMMENT '來自哪次抓取（raw 的 fetched_at）；寫入時只讓比較新的覆蓋',
-    PRIMARY KEY (trade_date, stock_id)
+    PRIMARY KEY (trade_date, stock_id),
+    KEY idx_stock_trade_date (stock_id, trade_date)   -- 用代號查某檔的紀錄（app_card 找最近一次的名稱）；主鍵是日期在前，用代號查不到
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='注意股（每日）';
 
 CREATE TABLE IF NOT EXISTS stage_notice_day (
-    trade_date        DATE        NOT NULL COMMENT '日期（有這列＝那天的注意股抓到也整理好了）',
-    notice_count      INT         NOT NULL COMMENT '那天幾檔被列注意；0＝沒人被列',
+    query_date        DATE        NOT NULL COMMENT '查詢日期（有這列＝那天的注意股查過也整理好了；休市日也會查、也有一列）',
+    notice_count      INT         NOT NULL COMMENT '那天幾檔被列注意；0＝沒人被列（休市日一定是 0）',
     loaded_at         DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '寫入時間（台灣時間）',
     source_fetched_at DATETIME(6)          COMMENT '來自哪次抓取（raw 的 fetched_at）；寫入時只讓比較新的覆蓋',
-    PRIMARY KEY (trade_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='注意股：每天一列（分辨「沒人被列」和「還沒抓到」）';
+    PRIMARY KEY (query_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='注意股：每個查詢日一列（分辨「沒人被列」和「還沒抓到」）';
 
 CREATE TABLE IF NOT EXISTS stage_notice_clause (
     trade_date        DATE        NOT NULL,
@@ -115,7 +116,7 @@ CREATE TABLE IF NOT EXISTS stage_announcement_detail (
     company_id        VARCHAR(10) NOT NULL,
     enter_date        DATE        NOT NULL COMMENT '輸入日期（和 stage_announcement 同一個主鍵）',
     serial_number     INT         NOT NULL COMMENT '輸入日期當天的序號',
-    clause            VARCHAR(20) NOT NULL COMMENT '符合條款，例如 第31款（觀測站的公告分類）',
+    announce_clause   VARCHAR(20) NOT NULL COMMENT '符合條款，例如 第31款（觀測站的公告分類；和注意股的款次 stage_notice_clause.clause 是不同東西）',
     fact_date         DATE                 COMMENT '事實發生日',
     content           MEDIUMTEXT  NOT NULL COMMENT '說明全文（不含發言人姓名、電話）',
     loaded_at         DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '寫入時間（台灣時間）',
@@ -128,15 +129,15 @@ CREATE TABLE IF NOT EXISTS stage_announcement_detail (
 --       twse-regulation.twse.com.tw/m/LawContent.aspx?FID=FL007111
 -- short_name、description 是整理後的摘要，不是條文原文
 CREATE TABLE IF NOT EXISTS stage_announcement_clause (
-    clause      VARCHAR(20)  NOT NULL COMMENT '符合條款，例如 第31款（和 stage_announcement_detail.clause 一樣）',
+    announce_clause VARCHAR(20) NOT NULL COMMENT '符合條款，例如 第31款（和 stage_announcement_detail.announce_clause 一樣）',
     clause_no   TINYINT      NOT NULL COMMENT '款次數字，排序用',
     short_name  VARCHAR(20)  NOT NULL COMMENT '簡短名稱（卡片上的標籤），例如 財務報告',
     description VARCHAR(200) NOT NULL COMMENT '條文摘要',
     loaded_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '寫入時間（台灣時間）',
-    PRIMARY KEY (clause)
+    PRIMARY KEY (announce_clause)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='重大訊息符合條款對照表（固定資料）';
 
-INSERT INTO stage_announcement_clause (clause, clause_no, short_name, description) VALUES
+INSERT INTO stage_announcement_clause (announce_clause, clause_no, short_name, description) VALUES
     ('第1款', 1, '退票、信用異常', '公司、負責人、母子公司存款不足退票、拒絕往來或其他喪失債信'),
     ('第2款', 2, '訴訟、行政處分', '公司或負責人涉及訴訟、非訟、行政處分、行政爭訟，對財務業務有重大影響'),
     ('第3款', 3, '減產、停工', '嚴重減產、全部或部分停工，廠房或主要設備出租、質押'),

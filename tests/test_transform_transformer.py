@@ -263,10 +263,10 @@ def test_announcement_detail_keys_from_raw_key_and_no_spokesperson():
              "第31款", "115/11/05", "1.提報董事會日期:115/11/05\r\n2.其他應敘明事項:無\n"]]
     raw = {"meta": {"key": "9908_20261102_1"}, "body": {"code": 200, "result": {"titles": DETAIL_TITLES, "data": data}}}
     out = clean_announcement_detail(announcement_detail_to_frame(raw))
-    assert list(out.columns) == ["company_id", "enter_date", "serial_number", "clause", "fact_date", "content"]
+    assert list(out.columns) == ["company_id", "enter_date", "serial_number", "announce_clause", "fact_date", "content"]
     row = out.iloc[0]
     assert (row["company_id"], row["enter_date"], row["serial_number"]) == ("9908", datetime.date(2026, 11, 2), 1)
-    assert (row["clause"], row["fact_date"]) == ("第31款", datetime.date(2026, 11, 5))
+    assert (row["announce_clause"], row["fact_date"]) == ("第31款", datetime.date(2026, 11, 5))
     assert row["content"] == "1.提報董事會日期:115/11/05\n2.其他應敘明事項:無"
 
 
@@ -285,5 +285,5 @@ def test_announcement_detail_dr_format():
     data = [["9103", 1, "民國115年6月9日", "美德向邦醫療", "主旨", "第五條第28款", "營業收入 42,528\n", "補充說明"]]
     raw = {"meta": {"key": "9103_20260609_1"}, "body": {"code": 200, "result": {"titles": DR_TITLES, "data": data}}}
     row = clean_announcement_detail(announcement_detail_to_frame(raw)).iloc[0]
-    assert (row["clause"], row["fact_date"]) == ("第五條第28款", datetime.date(2026, 6, 9))
+    assert (row["announce_clause"], row["fact_date"]) == ("第五條第28款", datetime.date(2026, 6, 9))
     assert row["content"] == "營業收入 42,528\n\n其他：\n補充說明"

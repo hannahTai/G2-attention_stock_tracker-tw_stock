@@ -25,7 +25,7 @@ from common.config import MYSQL_ACCOUNT, MYSQL_DATABASE, MYSQL_HOST, MYSQL_PASSW
 SQL_FILES = sorted((PROJECT_ROOT / "schema").glob("*.sql"))
 
 # raw 表：一個來源一張，表名 raw_<來源>
-SOURCES = ("notice", "punish", "punish_watchlist", "market_daily", "holiday", "companies", "announcements",
+SOURCES = ("notice", "punish", "punish_watchlist", "market_daily", "holiday", "company", "announcement",
            "announcement_detail")
 RAW_COLUMNS = ["raw_key", "fetched_at", "http_status", "ok", "problem", "url", "request_body", "body"]
 

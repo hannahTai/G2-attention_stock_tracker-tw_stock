@@ -51,19 +51,19 @@ def crawl_holiday(year: int) -> str:
     return repository.save_raw("holiday", key, resp, problem)
 
 
-def crawl_companies() -> str:
-    """上市公司清單：只有最新一份 → raw_companies（key 抓取日期，每天一份快照）。"""
+def crawl_company() -> str:
+    """上市公司清單：只有最新一份 → raw_company（key 抓取日期，每天一份快照）。"""
     resp = client.fetch_companies()
     key = today_yyyymmdd()
-    return repository.save_raw("companies", key, resp)
+    return repository.save_raw("company", key, resp)
 
 
 # ---------- 公開資訊觀測站 ----------
-def crawl_announcements(stock_id: str, year: int, month: int) -> str:
-    """重大訊息：一家公司一個月 → raw_announcements（key 1303_202611）。"""
+def crawl_announcement(stock_id: str, year: int, month: int) -> str:
+    """重大訊息：一家公司一個月 → raw_announcement（key 1303_202611）。"""
     resp = client.fetch_announcements(stock_id, year, month)
     key = f"{stock_id}_{year:04d}{month:02d}"
-    return repository.save_raw("announcements", key, resp)
+    return repository.save_raw("announcement", key, resp)
 
 
 def crawl_announcement_detail(stock_id: str, enter_yyyymmdd: str, serial_number: int, api_name: str) -> str:

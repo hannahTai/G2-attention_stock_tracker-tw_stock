@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS raw_holiday (
     PRIMARY KEY (raw_key, fetched_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='證交所 開休市日期（一次一年）';
 
-CREATE TABLE IF NOT EXISTS raw_companies (
+CREATE TABLE IF NOT EXISTS raw_company (
     raw_key      VARCHAR(30) NOT NULL COMMENT '抓取日期，例如 20261113（每天一份快照）',
     fetched_at   DATETIME(6) NOT NULL COMMENT '抓取時間（台灣時間）',
     http_status  SMALLINT    NOT NULL COMMENT 'HTTP 狀態碼',
@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS raw_companies (
     PRIMARY KEY (raw_key, fetched_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='證交所 OpenAPI 上市公司清單';
 
-CREATE TABLE IF NOT EXISTS raw_announcements (
+CREATE TABLE IF NOT EXISTS raw_announcement (
     raw_key      VARCHAR(30) NOT NULL COMMENT '公司代號_月份，例如 1303_202611',
     fetched_at   DATETIME(6) NOT NULL COMMENT '抓取時間（台灣時間）',
     http_status  SMALLINT    NOT NULL COMMENT 'HTTP 狀態碼',

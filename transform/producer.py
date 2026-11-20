@@ -24,11 +24,11 @@ def build_jobs(start: str, end: str) -> list[tuple]:
     jobs += [(task.transform_punish_watchlist, {"date_yyyymmdd": d}) for d in days]
     jobs += [(task.transform_market_daily, {"month_yyyymm": m}) for m in months]
     jobs += [(task.transform_holiday, {"year": y}) for y in holiday_years(start, end)]   # 11 月起也整理下一年
-    jobs += [(task.transform_companies, {"date_yyyymmdd": end})]                    # 只用最新一份
-    for key in repository.list_raw_keys("announcements"):                    # 例如 1303_202611
+    jobs += [(task.transform_company, {"date_yyyymmdd": end})]                    # 只用最新一份
+    for key in repository.list_raw_keys("announcement"):                    # 例如 1303_202611
         stock_id, month_yyyymm = key.split("_")
         if month_yyyymm in announcement_months:
-            jobs.append((task.transform_announcements,
+            jobs.append((task.transform_announcement,
                          {"stock_id": stock_id, "year": int(month_yyyymm[:4]), "month": int(month_yyyymm[4:])}))
     # 全文用輸入日期找：輸入日期可能比發言日期早（5/29 輸入、6/1 發言），所以再往前多看一個月
     detail_months = announcement_months | {prev_month(m) for m in announcement_months}

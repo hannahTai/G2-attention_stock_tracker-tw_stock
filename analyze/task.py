@@ -38,7 +38,7 @@ def missing_inputs(day: datetime.date) -> list[str]:
         def dates(sql: str, **params) -> list:
             return [row[0] for row in conn.execute(sqlalchemy.text(sql), {"day": day, **params})]
 
-        first_day = conn.execute(sqlalchemy.text("SELECT MIN(trade_date) FROM stage_notice_day")).scalar()
+        first_day = conn.execute(sqlalchemy.text("SELECT MIN(query_date) FROM stage_notice_day")).scalar()
         if first_day is None or day < first_day:   # 資料還沒開始
             return [f"stage_notice_day/{day:%Y%m%d}"]
         window = dates("SELECT trade_date FROM stage_trading_day WHERE is_trading AND trade_date <= :day "
@@ -47,7 +47,7 @@ def missing_inputs(day: datetime.date) -> list[str]:
         rows = conn.execute(sqlalchemy.text(
             "SELECT trade_date, is_trading FROM stage_trading_day WHERE trade_date BETWEEN :start AND :day"),
             {"start": start, "day": day}).fetchall()
-        notice_days = set(dates("SELECT trade_date FROM stage_notice_day WHERE trade_date BETWEEN :start AND :day", start=start))
+        notice_days = set(dates("SELECT query_date FROM stage_notice_day WHERE query_date BETWEEN :start AND :day", start=start))
         punish_days = set(dates("SELECT query_date FROM stage_punish_day WHERE query_date BETWEEN :start AND :day", start=start))
 
     known = {d for d, _ in rows}

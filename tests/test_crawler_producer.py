@@ -7,7 +7,7 @@ from crawler import producer as pc
 
 def setup_day(raw_store, day="20261113"):
     """今天：2330 被列注意、0050 處置（ETF，不在公司清單）。"""
-    raw_store.put("companies", day, [{"公司代號": "2330 "}, {"公司代號": "2317"}])
+    raw_store.put("company", day, [{"公司代號": "2330 "}, {"公司代號": "2317"}])
     raw_store.put("notice", day, {"data": [["1", "2330"]]})
     raw_store.put("punish", day, {"data": [["1", "x", "0050"]]})
 
@@ -33,9 +33,9 @@ def test_range_dedupes_and_skips_finished_months(raw_store):
     setup_day(raw_store)
     raw_store.put("notice", "20261020", {"data": [["1", "2317"], ["2", "030039"]]})   # 10/20：2317、權證
     raw_store.put("punish", "20261027", {"data": [["1", "x", "2330"]]})               # 10/27：2330 處置中
-    raw_store.put("announcements", "2330_202610", {}, fetched_at="2026-11-13T21:00:00+08:00")   # 10 月過完才抓：完整
-    raw_store.put("announcements", "2317_202610", {}, fetched_at="2026-10-20T21:00:00+08:00")   # 10 月還沒過完：要重抓
-    raw_store.put("announcements", "2330_202611", {}, fetched_at="2026-11-13T21:00:00+08:00")   # 當月：照樣抓
+    raw_store.put("announcement", "2330_202610", {}, fetched_at="2026-11-13T21:00:00+08:00")   # 10 月過完才抓：完整
+    raw_store.put("announcement", "2317_202610", {}, fetched_at="2026-10-20T21:00:00+08:00")   # 10 月還沒過完：要重抓
+    raw_store.put("announcement", "2330_202611", {}, fetched_at="2026-11-13T21:00:00+08:00")   # 當月：照樣抓
     assert keys(pc.build_mops_jobs("20261020", "20261113")) == [
         ("2317", 2026, 9), ("2317", 2026, 10),
         ("2330", 2026, 9), ("2330", 2026, 11),
@@ -76,8 +76,8 @@ def test_detail_jobs_use_api_from_list(raw_store):
     """存託憑證（DR）的全文是另一支 API（t59sb01_detail），照清單上寫的打。"""
     setup_day(raw_store, day="20261113")
     raw_store.put("notice", "20261113", {"data": [["1", "9103"]]})
-    raw_store.put("companies", "20261113", [{"公司代號": "9103"}])
-    raw_store.put("announcements", "9103_202611", announcement_list(("9103", "1151102", "1"), api_name="t59sb01_detail"))
+    raw_store.put("company", "20261113", [{"公司代號": "9103"}])
+    raw_store.put("announcement", "9103_202611", announcement_list(("9103", "1151102", "1"), api_name="t59sb01_detail"))
     assert keys(pc.build_detail_jobs("20261113", "20261113")) == [("9103", "20261102", 1, "t59sb01_detail")]
 
 
@@ -89,8 +89,8 @@ def test_fetch_detail_rejects_unknown_api():
 def test_detail_jobs_skip_fetched(raw_store):
     """第二批清單裡的每則公告查全文；已經抓過全文的不再抓。"""
     setup_day(raw_store)
-    raw_store.put("announcements", "2330_202611", announcement_list(("2330", "1151102", "1"), ("2330", "1151105", "2")))
-    raw_store.put("announcements", "2317_202611", announcement_list(("2317", "1151102", "1")))   # 2317 今天沒被關注
+    raw_store.put("announcement", "2330_202611", announcement_list(("2330", "1151102", "1"), ("2330", "1151105", "2")))
+    raw_store.put("announcement", "2317_202611", announcement_list(("2317", "1151102", "1")))   # 2317 今天沒被關注
     raw_store.put("announcement_detail", "2330_20261102_1", {"result": {"data": [["1"]]}})
     assert keys(pc.build_detail_jobs("20261113", "20261113")) == [("2330", "20261105", 2, "t05st01_detail")]
 
@@ -118,7 +118,7 @@ def test_twse_skips_finished_months(raw_store):
 
 def test_detail_refetch_includes_fetched(raw_store):
     setup_day(raw_store)
-    raw_store.put("announcements", "2330_202611", announcement_list(("2330", "1151102", "1")))
+    raw_store.put("announcement", "2330_202611", announcement_list(("2330", "1151102", "1")))
     raw_store.put("announcement_detail", "2330_20261102_1", {"result": {"data": [["1"]]}})
     assert keys(pc.build_detail_jobs("20261113", "20261113")) == []
     assert keys(pc.build_detail_jobs("20261113", "20261113", refetch=True)) == [("2330", "20261102", 1, "t05st01_detail")]

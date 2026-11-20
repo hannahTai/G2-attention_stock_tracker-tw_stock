@@ -25,9 +25,9 @@ PUNISH_DAYS_EXTENDED = {"new": 7, "old": 12}   # 連 3 日、連 5 日且計算�
 EXTEND_CLAUSE = 13                             # 當沖占比過高
 
 LEFT_COLUMNS = [f"{path}_left" for path in THRESHOLDS]   # streak3_left、streak5_left、in10_left、in30_left
-NEXT_COLUMNS = ["next_listed_date", "next_punish_round", "next_punish_start", "next_punish_end", "next_resume_date"]
+NEXT_COLUMNS = ["next_listed_date", "next_punish_round", "next_period_start", "next_period_end", "next_resume_date"]
 PROGRESS_COLUMNS = ["trade_date", "stock_id", "count_start", *THRESHOLDS, *LEFT_COLUMNS, "steps_left", "closest_path",
-                    "punished_by", "has_full_history", "punish_start", "punish_end", "resume_date", *NEXT_COLUMNS]
+                    "punished_by", "has_full_history", "period_start", "period_end", "resume_date", *NEXT_COLUMNS]
 DATE_COLUMNS = ["trade_date", "stock_id", "path", "counted_date"]
 
 
@@ -148,8 +148,8 @@ def next_punishment(closest_path: str, counted: dict, stock_days: dict[datetime.
     return {
         "next_listed_date": listed,
         "next_punish_round": 2 if punished_recently else 1,
-        "next_punish_start": start,
-        "next_punish_end": end,
+        "next_period_start": start,
+        "next_period_end": end,
         "next_resume_date": next_trading_day(future, end),
     }
 
@@ -163,8 +163,8 @@ def current_punishment(punishments: list[tuple], day: datetime.date, future: lis
     for announce, start, end in reversed(punishments):
         resume = next_trading_day(future, end)
         if announce <= day <= resume:
-            return {"punish_start": start, "punish_end": end, "resume_date": resume}
-    return {"punish_start": None, "punish_end": None, "resume_date": None}
+            return {"period_start": start, "period_end": end, "resume_date": resume}
+    return {"period_start": None, "period_end": None, "resume_date": None}
 
 
 # ---------- 一檔股票一天 ----------

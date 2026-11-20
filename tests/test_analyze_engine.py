@@ -144,7 +144,7 @@ def test_next_punishment_first_time():
     """10/02（五）只差一次 → 10/05（一）再列 → 10/06 起 5 個營業日，10/13 恢復。"""
     row, _ = progress(clauses(("2424", 0, [1]), ("2424", 1, [1])), punishes(), 1)
     assert row["next_listed_date"] == DAYS[2] and row["next_punish_round"] == 1
-    assert (row["next_punish_start"], row["next_punish_end"], row["next_resume_date"]) == (DAYS[3], DAYS[7], DAYS[8])
+    assert (row["next_period_start"], row["next_period_end"], row["next_resume_date"]) == (DAYS[3], DAYS[7], DAYS[8])
 
 
 def test_next_punishment_second_time():
@@ -157,7 +157,7 @@ def test_next_punishment_second_time():
 def test_next_punishment_extended_by_clause_13():
     """連 3 日湊成的日子裡有第 13 款 → 7 個營業日。"""
     row, _ = progress(clauses(("2424", 1, [1, 13]), ("2424", 2, [1])), punishes(), 2)
-    assert (row["next_punish_start"], row["next_punish_end"]) == (DAYS[4], DAYS[10])
+    assert (row["next_period_start"], row["next_period_end"]) == (DAYS[4], DAYS[10])
 
 
 def test_future_trading_days_skip_holidays():
@@ -166,8 +166,8 @@ def test_future_trading_days_skip_holidays():
                                       DAYS[1], holidays={datetime.date(2026, 10, 9)})
     row = rows.iloc[0]
     assert row["next_listed_date"] == datetime.date(2026, 10, 5)
-    assert row["next_punish_start"] == datetime.date(2026, 10, 6)
-    assert row["next_punish_end"] == datetime.date(2026, 10, 13)    # 6、7、8、12、13
+    assert row["next_period_start"] == datetime.date(2026, 10, 6)
+    assert row["next_period_end"] == datetime.date(2026, 10, 13)    # 6、7、8、12、13
     assert row["next_resume_date"] == datetime.date(2026, 10, 14)
 
 
@@ -176,17 +176,17 @@ def test_old_rule_before_aug_10_is_10_days():
     c = pd.DataFrame([("2424", old[0], 1), ("2424", old[1], 1)], columns=["stock_id", "trade_date", "clause"])
     rows, _ = engine.compute_progress(old[:2], c, punishes(), old[1])
     row = rows.iloc[0]
-    assert (row["next_punish_start"], row["next_punish_end"], row["next_resume_date"]) == (old[3], old[12], old[13])
+    assert (row["next_period_start"], row["next_period_end"], row["next_resume_date"]) == (old[3], old[12], old[13])
 
 
-def test_rule_follows_punish_start_date():
+def test_rule_follows_period_start_date():
     """8/07（五）再列 → 8/10 起處置，用新制 5 天。"""
     days = [d.date() for d in pd.bdate_range("2026-08-05", periods=20)]   # 8/05（三）起
     c = pd.DataFrame([("2424", days[0], 1), ("2424", days[1], 1)], columns=["stock_id", "trade_date", "clause"])
     rows, _ = engine.compute_progress(days[:2], c, punishes(), days[1])
     row = rows.iloc[0]
     assert row["next_listed_date"] == datetime.date(2026, 8, 7)
-    assert (row["next_punish_start"], row["next_punish_end"]) == (datetime.date(2026, 8, 10), datetime.date(2026, 8, 14))
+    assert (row["next_period_start"], row["next_period_end"]) == (datetime.date(2026, 8, 10), datetime.date(2026, 8, 14))
 
 
 def test_extension_only_looks_at_the_cited_path():
@@ -194,7 +194,7 @@ def test_extension_only_looks_at_the_cited_path():
     c = clauses(("2424", 0, [5, 13]), ("2424", 1, [3]), ("2424", 2, [1]), ("2424", 3, [1]))
     row, _ = progress(c, punishes(), 3)
     assert row["closest_path"] == "streak3"
-    assert row["next_punish_end"] == DAYS[4 + 5]
+    assert row["next_period_end"] == DAYS[4 + 5]
 
 
 def test_current_punishment_and_resume_date():
@@ -203,8 +203,8 @@ def test_current_punishment_and_resume_date():
     p = pd.DataFrame([("2424", DAYS[2], DAYS[3], DAYS[7])], columns=["stock_id", "announce_date", "period_start", "period_end"])
     for i in (2, 5, 7, 8):
         row, _ = progress(c, p, i)
-        assert (row["punish_start"], row["punish_end"], row["resume_date"]) == (DAYS[3], DAYS[7], DAYS[8])
+        assert (row["period_start"], row["period_end"], row["resume_date"]) == (DAYS[3], DAYS[7], DAYS[8])
     row, _ = progress(c, p, 9)
-    assert pd.isna(row["punish_end"]) and pd.isna(row["resume_date"])
+    assert pd.isna(row["period_end"]) and pd.isna(row["resume_date"])
     row, _ = progress(c, p, 1)
-    assert pd.isna(row["punish_end"])   # 還沒公布
+    assert pd.isna(row["period_end"])   # 還沒公布

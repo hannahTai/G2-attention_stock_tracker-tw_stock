@@ -4,7 +4,7 @@
     uv run python scripts/backup_db.py --keep 30    # 留最近 30 份（預設 14）
 
 還原（會整個蓋掉同名資料庫，先確認）：
-    gzip -dc data/backup/tw_stock_20261114_2330.sql.gz | mysql -u root -p
+    gzip -dc data/backup/tw_stock_20261114_233000.sql.gz | mysql -u root -p
 
 連線設定從 .env 讀（common/config.py）。密碼寫進暫存的設定檔交給 mysqldump，不放在命令列上（命令列別人看得到）。
 """
@@ -72,7 +72,7 @@ def main() -> None:
     args = parser.parse_args()
 
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = BACKUP_DIR / f"{MYSQL_DATABASE}_{datetime.datetime.now():%Y%m%d_%H%M}.sql.gz"
+    out_path = BACKUP_DIR / f"{MYSQL_DATABASE}_{datetime.datetime.now():%Y%m%d_%H%M%S}.sql.gz"
     dump(out_path)
     print(f"備份完成：{out_path}（{out_path.stat().st_size / 1024 / 1024:.1f} MB）")
     for path in remove_old(args.keep):

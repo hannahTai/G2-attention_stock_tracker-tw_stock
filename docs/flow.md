@@ -175,7 +175,7 @@ uv run pytest -m "not integration"                      # 只跑不連資料庫�
 還原（會蓋掉整個 tw_stock）：
 
 ```bash
-gzip -dc data/backup/tw_stock_20261114_2330.sql.gz | mysql -u root -p
+gzip -dc data/backup/tw_stock_20261114_233000.sql.gz | mysql -u root -p
 ```
 
 ## 排程（Windows 工作排程器）

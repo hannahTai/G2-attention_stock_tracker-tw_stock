@@ -11,9 +11,9 @@ def jobs_by_task(jobs):
 
 
 def test_daily_jobs_cover_what_crawler_fetched(raw_store):
-    raw_store.put("announcements", "2330_202609", {})   # 上上個月：不處理
-    raw_store.put("announcements", "2330_202610", {})   # 上個月：處理
-    raw_store.put("announcements", "2330_202611", {})   # 這個月：處理
+    raw_store.put("announcement", "2330_202609", {})   # 上上個月：不處理
+    raw_store.put("announcement", "2330_202610", {})   # 上個月：處理
+    raw_store.put("announcement", "2330_202611", {})   # 這個月：處理
 
     jobs = jobs_by_task(producer.build_jobs("20261113", "20261113"))
 
@@ -22,8 +22,8 @@ def test_daily_jobs_cover_what_crawler_fetched(raw_store):
     assert jobs["transform_market_daily"] == [("202611",)]   # 一份是一整個月
     assert jobs["transform_holiday"] == [(2026,), (2027,)]   # 一份是一整年；11 月起也整理下一年
     assert jobs["transform_punish_watchlist"] == [("20261113",)]
-    assert jobs["transform_companies"] == [("20261113",)]
-    assert jobs["transform_announcements"] == [("2330", 2026, 10), ("2330", 2026, 11)]
+    assert jobs["transform_company"] == [("20261113",)]
+    assert jobs["transform_announcement"] == [("2330", 2026, 10), ("2330", 2026, 11)]
 
 
 def test_detail_jobs_by_enter_month(raw_store):
@@ -47,11 +47,11 @@ def test_range_covers_every_month_and_year(raw_store):
 
 def test_latest_key_uses_last_one_not_future(raw_store):
     """週六沒有新名單：用週五的；不會拿到之後的快照。"""
-    raw_store.put("companies", "20261113", [])
-    raw_store.put("companies", "20261120", [])
+    raw_store.put("company", "20261113", [])
+    raw_store.put("company", "20261120", [])
 
-    assert task.latest_key("companies", "20261114") == "20261113"
-    assert task.latest_key("companies", "20261112") == "<=20261112"   # 一份都沒有：讀不到，任務會跳過
+    assert task.latest_key("company", "20261114") == "20261113"
+    assert task.latest_key("company", "20261112") == "<=20261112"   # 一份都沒有：讀不到，任務會跳過
 
 
 def test_missing_raw_is_skipped_not_failed(raw_store):

@@ -136,7 +136,7 @@ def test_older_notice_list_does_not_clear_newer(db):
 
     def tables(notices, clauses):
         return {"stage_notice": notices, "stage_notice_clause": clauses,
-                "stage_notice_day": pd.DataFrame({"trade_date": [day], "notice_count": [len(notices)]})}
+                "stage_notice_day": pd.DataFrame({"query_date": [day], "notice_count": [len(notices)]})}
 
     assert transform_task.upsert_stage(tables(newer, newer_clauses), V2, clear_day=day) == 3
     assert transform_task.upsert_stage(tables(older, older_clauses), V1, clear_day=day) is None   # 較舊：不寫
@@ -223,8 +223,8 @@ def test_analyze_rerun_same_result(db):
     with db.begin() as conn:
         conn.execute(sqlalchemy.text("INSERT INTO stage_trading_day (trade_date, is_trading) VALUES (:d, 1)"),
                      [{"d": d} for d in days])
-        for table, column in [("stage_notice_day", "trade_date"), ("stage_punish_day", "query_date")]:
-            conn.execute(sqlalchemy.text(f"INSERT INTO {table} ({column}, {table.split('_')[1]}_count) VALUES (:d, 0)"),
+        for table in ["stage_notice_day", "stage_punish_day"]:
+            conn.execute(sqlalchemy.text(f"INSERT INTO {table} (query_date, {table.split('_')[1]}_count) VALUES (:d, 0)"),
                          [{"d": d} for d in days])
         conn.execute(sqlalchemy.text("INSERT INTO stage_notice_clause (trade_date, stock_id, clause) VALUES (:d, '6533', 1)"),
                      [{"d": d} for d in days[-2:]])   # 最後兩天被列第一款 → 連 3 日還差 1 次
@@ -246,7 +246,7 @@ def test_analyze_needs_every_day_in_window(db):
     with db.begin() as conn:
         conn.execute(sqlalchemy.text("INSERT INTO stage_trading_day (trade_date, is_trading) VALUES (:d, :t)"),
                      [{"d": d, "t": 1} for d in days] + [{"d": d, "t": 0} for d in weekend])
-        conn.execute(sqlalchemy.text("INSERT INTO stage_notice_day (trade_date, notice_count) VALUES (:d, 0)"),
+        conn.execute(sqlalchemy.text("INSERT INTO stage_notice_day (query_date, notice_count) VALUES (:d, 0)"),
                      [{"d": d} for d in days if d != datetime.date(2026, 11, 4)])   # 11/04 的注意股沒抓到
         conn.execute(sqlalchemy.text("INSERT INTO stage_punish_day (query_date, punish_count) VALUES (:d, 0)"),
                      [{"d": d} for d in days])

@@ -63,7 +63,7 @@ def build_twse_jobs(start: str, end: str, refetch: bool = False) -> list[tuple]:
     jobs += [(task.crawl_market_daily, {"month_yyyymm": m}) for m in months
              if not is_complete(fetched["market_daily"], m, month_ready_at(m))]
     jobs += [(task.crawl_holiday, {"year": y}) for y in holiday_years(start, end) if str(y) not in fetched["holiday"]]
-    jobs += [(task.crawl_companies, {})]              # 查重大訊息前要先有公司清單
+    jobs += [(task.crawl_company, {})]              # 查重大訊息前要先有公司清單
     return jobs
 
 
@@ -79,10 +79,10 @@ def watched_stocks(date_yyyymmdd: str) -> set[str]:
 
 def announcement_targets(start: str, end: str) -> list[tuple[str, str]]:
     """區間內每天被關注的上市公司，要查哪些 (公司, 月份)：那天的當月和上個月（重複的只算一次）。"""
-    company_keys = repository.list_raw_keys("companies")
+    company_keys = repository.list_raw_keys("company")
     if not company_keys:   # 還沒抓到過公司清單（例如全新的資料庫、證交所擋掉）：這輪先不查
         return []
-    companies = client.company_ids(repository.read_raw("companies", company_keys[-1])["body"])
+    companies = client.company_ids(repository.read_raw("company", company_keys[-1])["body"])
     targets = set()
     for date_yyyymmdd in dates_between(start, end):
         for stock_id in watched_stocks(date_yyyymmdd) & companies:   # 權證、ETF 不是上市公司，沒有重大訊息
@@ -92,9 +92,9 @@ def announcement_targets(start: str, end: str) -> list[tuple[str, str]]:
 
 def build_mops_jobs(start: str, end: str, refetch: bool = False) -> list[tuple]:
     """重大訊息清單：每個 (公司, 月份) 一個任務；那個月過完以後抓的就不再抓（當月會有新公告，照樣抓）。"""
-    fetched = {} if refetch else repository.raw_fetched_times("announcements")
+    fetched = {} if refetch else repository.raw_fetched_times("announcement")
     end_of_day = datetime.time(23, 59, 59)                  # 公告晚上也會發，月底當天整天都可能有
-    return [(task.crawl_announcements, {"stock_id": s, "year": int(m[:4]), "month": int(m[4:])})
+    return [(task.crawl_announcement, {"stock_id": s, "year": int(m[:4]), "month": int(m[4:])})
             for s, m in announcement_targets(start, end)
             if not is_complete(fetched, f"{s}_{m}", month_ready_at(m, end_of_day))]
 
@@ -105,7 +105,7 @@ def build_detail_jobs(start: str, end: str, refetch: bool = False) -> list[tuple
     keys = [f"{s}_{m}" for s, m in announcement_targets(start, end)]   # 例如 1303_202611
     fetched = {} if refetch else repository.raw_fetched_times("announcement_detail")
     jobs = []
-    for raw in repository.read_raws("announcements", keys):
+    for raw in repository.read_raws("announcement", keys):
         for stock_id, enter_yyyymmdd, serial_number, api_name in client.announcement_ids(raw["body"]):
             if f"{stock_id}_{enter_yyyymmdd}_{serial_number}" not in fetched:
                 jobs.append((task.crawl_announcement_detail,
