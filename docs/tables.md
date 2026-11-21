@@ -400,7 +400,9 @@ erDiagram
 - 今天達標（`punished_by` 有值）時，`*_left`、`steps_left` 都是 NULL：隔天重新算。
 - 未來的營業日依開休市日期推算（週一～五、扣掉休市日）；臨時休市要隔天重算才會反映。
 - 第 13 款若在再列的那天才出現，會延長為 7 天，事前算不出來（回測 129 筆中 5 筆是這種）。
-- 卡片牆分頁：聽牌＝`steps_left = 1`；處置股＝`period_start ≤ trade_date ≤ period_end`；明日出關＝`period_end = trade_date`；今日出關＝`resume_date = trade_date`；注意股＝`app_card.is_listed_today`。卡片牆只放 `app_card.is_company = 1`（不放權證、ETF）。
+- 總覽的分頁（分區，每檔只在一區，加起來＝全部；依序判斷）：即將處置＝`punished_by` 有值，或 `period_start` 有值且 `> trade_date`（處置已公布、還沒開始）；處置中＝`period_start ≤ trade_date ≤ period_end`；聽牌＝`steps_left = 1`；其他＝剩下的。
+- 總覽的「只看」篩選（一檔可以同時符合好幾個）：今天被列注意＝`app_card.is_listed_today`；明日出關＝處置中且 `period_end = trade_date`；今日出關＝`resume_date = trade_date`。
+- 總覽只放 `app_card.is_company = 1`（不放權證、ETF），也不放近 30 個營業日沒有會累計紀錄、今天沒被列、沒有處置的股票（四條路徑都是 0）。
 
 ### app_progress_date　計入的日期
 
@@ -416,11 +418,12 @@ erDiagram
 
 ### VIEW（給網頁讀）
 
-VIEW 是存起來的查詢，不複製資料；網頁查的時候 MySQL 才去讀 stage 表。網頁的 SQL 只寫 `app_*`，stage 欄位改了只要改 VIEW。
+VIEW 是存起來的查詢，不複製資料；網頁查的時候資料庫才去讀 stage 表。網頁的 SQL 只寫 `app_*`，stage 欄位改了只要改 VIEW。
 
 | VIEW | 給哪個畫面 | 內容 |
 |---|---|---|
 | `app_card` | 卡片牆、個股卡片上半部 | `app_progress` 每一列，加上 `stock_name`、`is_listed_today`、`is_company`（上市公司；卡片牆只放這些，不放權證、ETF）、`close_price`、`reason_text`、`clauses`（今天被列第幾款，例如 `1,2`）、`is_counted_today`、處置中那次的 `punish_measure`／`punish_condition`／`punish_match_minutes`、`announcement_count`（近 30 個營業日公告則數） |
+| `app_trading_day` | 注意紀錄格子、公告和處置紀錄的起日 | `stage_trading_day` 裡有交易的日子（`trade_date`） |
 | `app_notice_history` | 注意紀錄格子 | 每檔每個被列注意的交易日：`clauses`、`is_counted`（1＝累計）。沒被列的日子沒有列；早於 `count_start` 的是「已計入前次處置」 |
 | `app_punish_history` | 處置紀錄 | `stage_punish` 的欄位 |
 | `app_announcement` | 公司公告 | `stage_announcement`，加上 `is_during_session`（14:30 前＝交易時段內）、`is_correction`（更正）、`is_explanation`（說明、澄清；排除法人說明會）；LEFT JOIN `stage_announcement_detail` 帶出 `announce_clause`、`fact_date`、`content`（還沒抓到全文的為 NULL），再 JOIN `stage_announcement_clause` 帶出 `clause_name`（例如 財務報告） |

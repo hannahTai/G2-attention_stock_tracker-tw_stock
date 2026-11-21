@@ -99,17 +99,17 @@ analyze    stage_* 表 → app_* 表     規則引擎算進度
 | 層 | 去重 | 重跑 |
 |---|---|---|
 | raw | 不去重：只新增，每抓一次一列（保留證據） | 讀的時候只拿每個 raw_key 最新一份成功的；抓完整的不再抓 |
-| stage | 交給資料庫的主鍵：同一批裡主鍵重複的列，寫入時後面的蓋掉前面的 | 用主鍵更新（整批 `INSERT … ON DUPLICATE KEY UPDATE`），只讓比較新的覆蓋；注意股先清掉那天，官方拿掉的列也會消失 |
+| stage | 主鍵：同一批裡主鍵重複的列，寫入前只留一列（版本最新的，一樣新留後面的） | 用主鍵更新（整批 `INSERT … ON CONFLICT DO UPDATE`），只讓比較新的覆蓋；注意股先清掉那天，官方拿掉的列也會消失 |
 | app | 主鍵（trade_date, stock_id） | 同一個交易裡先刪那天、再寫入 |
 
-stage 的寫法是 `ON DUPLICATE KEY UPDATE`（upsert），用 `to_sql(method=...)` 讓 pandas 每 1000 列組成一句送出，不是一列一句。
+stage 的寫法是 `ON CONFLICT (主鍵) DO UPDATE`（upsert），用 `to_sql(method=...)` 讓 pandas 每 1000 列組成一句送出，不是一列一句。
 兩種寫入方式依資料分：
 - 累積的事實（處置公告、公司、重大訊息、休市日、交易日）：用主鍵更新，這批沒有的列不動。
 - 某個範圍的完整名單（某天的注意股、某天的 app）：先清掉那個範圍、再寫入。upsert 不會刪掉這批沒有的列，官方拿掉的、滑出 30 日的要靠先清掉。
 
 同一筆只能有一列、重複時留哪一筆，都由資料庫的主鍵決定：
-- 同一批裡主鍵相同的列，MySQL 依 VALUES 的順序處理，後面的撞到前面的就更新，結果是最後一列（等於 `keep="last"`）。
-  所以 transformer 排序用 `kind="stable"`，主鍵相同的列保持原本的先後。
+- 同一批裡主鍵相同的列，寫入前先只留一列（`repository.upsert_rows`）：版本最新的，一樣新就留最後一列（`keep="last"`）。
+  PostgreSQL 一句 INSERT 不能改同一列兩次，所以要先去重。transformer 排序用 `kind="stable"`，主鍵相同的列保持原本的先後。
 - 處置股「同一份 raw 裡同一檔同一天有兩則不同的處置」只檢查、發出警告，不刪資料（主鍵只能留一則，要人確認）。
 
 raw 是有主鍵又只新增：主鍵含 `fetched_at`（精確到微秒），每次抓都是新的一列，不會撞主鍵。
@@ -123,12 +123,12 @@ raw 是有主鍵又只新增：主鍵含 `fetched_at`（精確到微秒），每
    接 Airflow 後改用 DAG 的 `max_active_runs=1`（多台機器也管得到），回補也用同一條 DAG 跑。
 2. **就算真的重疊，也是新的贏**（`transform/task.py` 的 `upsert_stage`）：每張 stage 表都有 `source_fetched_at`
    （這列來自哪次抓取，raw 的 `fetched_at`），寫入時只讓比較新（或一樣新）的覆蓋：
-   - 寫法：`ON DUPLICATE KEY UPDATE 欄位 = CASE WHEN 資料庫裡是 NULL 或 新版本 >= 舊版本 THEN 新值 ELSE 舊值 END`。
-     比較在資料庫裡、同一句完成，不會兩邊都以為自己比較新；版本欄放在更新清單最後（MySQL 依序更新）。
+   - 寫法：`ON CONFLICT (主鍵) DO UPDATE SET 欄位 = EXCLUDED.欄位 … WHERE 資料庫裡是 NULL OR 新版本 >= 舊版本`。
+     比較在資料庫裡、同一句完成，不會兩邊都以為自己比較新。
    - 用 `>=`：一樣新也更新，手動改壞的資料重跑會被修回來。
-   - 注意股「先清掉那天再寫入」：清之前先比那天現有的版本（`SELECT … FOR UPDATE` 鎖住那天），資料庫裡比較新就整批不寫，
+   - 注意股「先清掉那天再寫入」：清之前先比那天現有的版本（子查詢 `SELECT … FOR UPDATE` 鎖住那天，外面再取 `MAX`），資料庫裡比較新就整批不寫，
      免得舊的名單把新的清掉。
-   - 兩個交易互相等鎖時，MySQL 會讓其中一個失敗（deadlock）。失敗的交易已經整個復原，`common/runner.py` 把它當成暫時性的失敗，整個任務重做（任務是冪等的），最多 3 次。
+   - 兩個交易互相等鎖時，PostgreSQL 會讓其中一個失敗（deadlock，SQLSTATE 40P01）。失敗的交易已經整個復原，`common/runner.py` 把它當成暫時性的失敗，整個任務重做（任務是冪等的），最多 3 次。
 
 每個 transform 任務都是同樣四步（`transform/task.py`）：`key` → `read_raw`（沒有就跳過）→ `tables = {表名: clean_xxx(xxx_to_frame(raw))}` → `save(raw, tables)`。
 版本在 `save` 統一加上，transformer 不用管。
@@ -155,7 +155,7 @@ uv run python main.py backfill --start 20260701             # 三步一次跑完
 uv run python main.py backfill --start 20260701 --refetch   # 同上，但全部重抓（只影響 crawler）
 uv run python -m crawler.producer [backfill --start ...]    # 只跑一步，transform、analyze 同樣
 uv run python -m analyze.backtest                       # 回測
-uv run pytest                                           # 測試（含整合測試；連不到 MySQL 會自動跳過）
+uv run pytest                                           # 測試（含整合測試；連不到 PostgreSQL 會自動跳過）
 uv run pytest -m "not integration"                      # 只跑不連資料庫的測試
 ```
 
@@ -167,15 +167,16 @@ uv run pytest -m "not integration"                      # 只跑不連資料庫�
 
 ## 備份
 
-`scripts/backup_db.py`：mysqldump 整個資料庫 → `data/backup/tw_stock_<日期>_<時間>.sql.gz`，留最近 14 份。
+`scripts/backup_db.py`：pg_dump 整個資料庫 → `data/backup/tw_stock_<日期>_<時間>.sql.gz`，留最近 14 份。
 
 - 不鎖表，跟每日排程同時跑也沒關係；密碼不出現在命令列。
-- `.env` 可設 `BACKUP_DIR`（存到別顆硬碟）、`MYSQLDUMP`（mysqldump 路徑）。
+- Windows 沒裝 PostgreSQL 時，用 WSL 裡 Docker 容器內建的 pg_dump。
+- `.env` 可設 `BACKUP_DIR`（存到別顆硬碟）、`PG_DUMP`（pg_dump 路徑）、`PG_CONTAINER`（容器名稱，預設 postgres）。
 
 還原（會蓋掉整個 tw_stock）：
 
 ```bash
-gzip -dc data/backup/tw_stock_20261114_233000.sql.gz | mysql -u root -p
+gzip -dc data/backup/tw_stock_20261114_233000.sql.gz | wsl docker exec -i postgres psql -U postgres -d postgres
 ```
 
 ## 排程（Windows 工作排程器）
