@@ -6,16 +6,18 @@
 
 任務清單的每一項是 (任務函式, 參數 dict)，例如 (task.crawl_notice, {"date_yyyymmdd": "20261113"})。
 一個任務失敗不會中斷整批：記下來，繼續下一個。暫時性的失敗整個任務重做（任務是冪等的，重做沒有副作用）。
+USE_CELERY=1 時，同一批任務改成送進 RabbitMQ 給 worker 做（queue 決定哪一種 worker），等全部做完才回傳；見 common/worker.py。
 """
 import time
 
 import requests
 import sqlalchemy
 
-from common.config import MAX_RETRIES, RETRY_DELAY_SECONDS
+from common.config import MAX_RETRIES, RETRY_DELAY_SECONDS, USE_CELERY
 
-# MySQL 的鎖衝突：1213＝deadlock（兩個交易互等，MySQL 讓其中一個失敗、整個復原）、1205＝等鎖等太久
-LOCK_ERRORS = (1213, 1205)
+# PostgreSQL 的鎖衝突（SQLSTATE）：40P01＝deadlock（兩個交易互等，資料庫讓其中一個失敗、整個復原）、
+# 40001＝序列化失敗、55P03＝等不到鎖
+LOCK_ERRORS = ("40P01", "40001", "55P03")
 
 
 def job_name(func, kwargs: dict) -> str:
@@ -34,7 +36,7 @@ def is_retryable(error: Exception) -> bool:
     if isinstance(error, requests.RequestException):
         return True
     if isinstance(error, sqlalchemy.exc.OperationalError):
-        return bool(error.orig and error.orig.args) and error.orig.args[0] in LOCK_ERRORS
+        return getattr(error.orig, "sqlstate", None) in LOCK_ERRORS
     return getattr(error, "retryable", False)
 
 
@@ -50,11 +52,14 @@ def run_with_retry(func, kwargs: dict, retries: int) -> str:
             time.sleep(RETRY_DELAY_SECONDS)
 
 
-def run_jobs(jobs: list[tuple], sleep: float = 0.0, retries: int = MAX_RETRIES) -> list[str]:
-    """依序執行任務，回傳失敗的任務名稱。
+def run_jobs(jobs: list[tuple], sleep: float = 0.0, retries: int = MAX_RETRIES, queue: str = "default") -> list[str]:
+    """執行一批任務，回傳失敗的任務名稱。
 
     sleep：每個任務之後等幾秒（打 API 太快會被擋）。retries：暫時性的失敗重試幾次（見 is_retryable）。
+    queue：USE_CELERY=1 時送到哪個佇列（twse、mops、default，見 common/worker.py）；沒開就在這裡依序執行。
     """
+    if USE_CELERY:
+        return run_jobs_on_workers(jobs, sleep, retries, queue)
     failed = []
     for func, kwargs in jobs:
         name = job_name(func, kwargs)
@@ -65,6 +70,23 @@ def run_jobs(jobs: list[tuple], sleep: float = 0.0, retries: int = MAX_RETRIES) 
             failed.append(name)
         if sleep:
             time.sleep(sleep)
+    return failed
+
+
+def run_jobs_on_workers(jobs: list[tuple], sleep: float, retries: int, queue: str) -> list[str]:
+    """把整批任務送進佇列，再照送出的順序等每個結果，回傳失敗的任務名稱。重試、間隔都在 worker 那邊做。"""
+    from common import worker   # 有開 Celery 才載入（沒裝、沒開 RabbitMQ 也能依序執行）
+
+    sent = [(job_name(func, kwargs), worker.run_job.apply_async((worker.func_path(func), kwargs, retries, sleep), queue=queue))
+            for func, kwargs in jobs]
+    print(f"送出 {len(sent)} 個任務到佇列 {queue}")
+    failed = []
+    for name, result in sent:
+        try:
+            print(name, "→", result.get())
+        except Exception as e:
+            print(name, "✗", e)
+            failed.append(name)
     return failed
 
 

@@ -23,9 +23,21 @@ RETRY_DELAY_SECONDS = float(os.environ.get("RETRY_DELAY_SECONDS", "5"))
 # 同一時間只跑一輪（main.py 的檔案鎖 data/pipeline.lock）：上一輪還沒跑完，最多等幾秒（預設 2 小時，回補可能跑很久）
 PIPELINE_LOCK_WAIT_SECONDS = float(os.environ.get("PIPELINE_LOCK_WAIT_SECONDS", str(2 * 60 * 60)))
 
-# MySQL
-MYSQL_HOST = os.environ.get("MYSQL_HOST", "127.0.0.1")
-MYSQL_PORT = int(os.environ.get("MYSQL_PORT", 3306))
-MYSQL_ACCOUNT = os.environ.get("MYSQL_ACCOUNT", "root")
-MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "")
-MYSQL_DATABASE = os.environ.get("MYSQL_DATABASE", "tw_stock")
+# PostgreSQL（資料庫 DB_NAME 裡的 schema 也叫 DB_NAME，SQL 寫 tw_stock.<表名> 或直接寫表名都可以）
+DB_HOST = os.environ.get("DB_HOST", "127.0.0.1")
+DB_PORT = int(os.environ.get("DB_PORT", 5432))
+DB_USER = os.environ.get("DB_USER", "postgres")
+DB_PASSWORD = os.environ.get("DB_PASSWORD", "")
+DB_NAME = os.environ.get("DB_NAME", "tw_stock")
+
+# 網頁（dashboard/，Streamlit）呼叫的資料 API（api/，FastAPI）
+# 寫 127.0.0.1 不寫 localhost：Windows 會先試 IPv6（::1），uvicorn 只開在 IPv4，每次要多等約 2 秒
+API_URL = os.environ.get("API_URL", "http://127.0.0.1:8001")
+
+# Celery 任務佇列：USE_CELERY=1 時，producer 把任務送進 RabbitMQ，由 worker 執行（common/worker.py）；
+# 0（預設）就在這台電腦依序執行，不需要 RabbitMQ
+USE_CELERY = os.environ.get("USE_CELERY", "0") == "1"
+RABBITMQ_HOST = os.environ.get("RABBITMQ_HOST", "127.0.0.1")
+RABBITMQ_PORT = int(os.environ.get("RABBITMQ_PORT", 5672))
+RABBITMQ_USER = os.environ.get("RABBITMQ_USER", "worker")
+RABBITMQ_PASSWORD = os.environ.get("RABBITMQ_PASSWORD", "worker")

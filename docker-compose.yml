@@ -1,0 +1,166 @@
+# 注意股，還差幾步？一鍵啟動：PostgreSQL、RabbitMQ、Celery worker、Flower、資料 API、網頁
+#
+#   docker compose up -d --build        # 啟動（第一次或改了程式碼、套件都加 --build）
+#   docker compose ps                   # 看狀態
+#   docker compose logs -f worker       # 看 log（服務名稱見下面）
+#   docker compose down                 # 停掉（資料留在 volume pgdata）
+#   docker compose run --rm producer python main.py                       # 跑一次每日資料線（抓 → 整理 → 計算）
+#   docker compose run --rm producer python main.py backfill --start 20261101   # 回補
+#
+# 網址（本機）：
+#   網頁      http://localhost:8502
+#   資料 API  http://localhost:8001/docs
+#   Flower    http://localhost:5556     看 worker、任務的執行狀況
+#   RabbitMQ  http://localhost:15673    管理介面（帳密 .env 的 RABBITMQ_USER／RABBITMQ_PASSWORD）
+#   資料庫    localhost:5432
+# RabbitMQ、Flower 的埠號故意不用預設的 5672、15672、5555：課程的容器已經佔用了。
+#
+# 連線設定（密碼等）從 .env 讀；容器之間用服務名稱連（db、rabbitmq、api），所以 x-app 會蓋掉 .env 的主機和埠號。
+# 不要用 docker compose down -v：-v 會連 volume 一起刪，資料庫就沒了。
+
+# 專案程式的共同設定：setup、api、web、producer、worker 都用同一個 image（Dockerfile），只是指令不同
+x-app: &app
+  build: .
+  image: attention-stock-tracker
+  env_file: .env
+  environment:
+    DB_HOST: db
+    DB_PORT: "5432"
+    RABBITMQ_HOST: rabbitmq
+    RABBITMQ_PORT: "5672"
+    USE_CELERY: "1"                     # 容器裡的 producer 把任務送進 RabbitMQ，給 worker 做
+    API_URL: http://api:8001
+
+# worker 共同的：RabbitMQ 和資料表都準備好才啟動
+x-worker: &worker
+  <<: *app
+  depends_on:
+    rabbitmq:
+      condition: service_healthy
+    setup:
+      condition: service_completed_successfully
+  restart: unless-stopped
+
+services:
+  # ---------- 儲存、佇列 ----------
+  # PostgreSQL 17（含 pgvector，之後要用向量直接 CREATE EXTENSION vector）
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: postgres            # scripts/backup_db.py 用這個名字跑 pg_dump（PG_CONTAINER）
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?在 .env 設 DB_PASSWORD}
+      TZ: Asia/Taipei
+      PGTZ: Asia/Taipei
+    ports:
+      - "5432:5432"                     # 本機的程式（main.py、排程、pytest）也連得到
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:                        # 資料庫真的能連了，才啟動後面的服務
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # RabbitMQ：任務佇列（producer 送任務進來，worker 拿去做）
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-worker}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-worker}
+    ports:
+      - "5673:5672"                     # 本機的 producer 要送任務進來時用（.env 設 USE_CELERY=1、RABBITMQ_PORT=5673）
+      - "15673:15672"                   # 管理介面
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # 建資料庫、建表、重建 VIEW（已經存在的表跳過），做完就結束
+  setup:
+    <<: *app
+    command: ["python", "-c", "from common import repository; repository.create_tables(); print('tables ready')"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  # ---------- Celery worker（佇列的分法見 common/worker.py）----------
+  # 證交所：一次只做一個，每個任務後等 SLEEP_SECONDS 秒，太快會被擋
+  worker-twse:
+    <<: *worker
+    command: ["celery", "-A", "common.worker", "worker", "-Q", "twse", "--concurrency", "1",
+              "--hostname", "twse@%h", "--loglevel", "INFO"]
+
+  # 觀測站：一次只做一個，每個任務後等 SLEEP_SECONDS_MOPS 秒
+  worker-mops:
+    <<: *worker
+    command: ["celery", "-A", "common.worker", "worker", "-Q", "mops", "--concurrency", "1",
+              "--hostname", "mops@%h", "--loglevel", "INFO"]
+
+  # transform、analyze：只讀寫自己的資料庫，同時做 4 個
+  worker:
+    <<: *worker
+    command: ["celery", "-A", "common.worker", "worker", "-Q", "default", "--concurrency", "4",
+              "--hostname", "default@%h", "--loglevel", "INFO"]
+
+  # Flower：網頁上看 worker、任務的執行狀況
+  flower:
+    image: mher/flower:2.0.1
+    restart: unless-stopped
+    command: ["celery", "--broker=amqp://${RABBITMQ_USER:-worker}:${RABBITMQ_PASSWORD:-worker}@rabbitmq:5672//",
+              "flower", "--port=5555"]
+    ports:
+      - "5556:5555"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  # producer：決定要做哪些任務、送進佇列（main.py 或 python -m crawler.producer…）。平常不啟動，用 run 執行一次：
+  #   docker compose run --rm producer python main.py
+  producer:
+    <<: *app
+    profiles: ["manual"]                # docker compose up 不會啟動它
+    command: ["python", "main.py"]
+    volumes:
+      - ./data:/app/data                # main.py 的檔案鎖（同一時間只跑一輪）放在本機的 data/
+    depends_on:
+      worker-twse:
+        condition: service_started
+      worker-mops:
+        condition: service_started
+      worker:
+        condition: service_started
+
+  # ---------- 網站 ----------
+  # 資料 API（FastAPI）：網頁只打這個，不直接連資料庫
+  api:
+    <<: *app
+    command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8001"]
+    ports:
+      - "8001:8001"
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # 網頁（Streamlit）：埠號、headless 等設定在 .streamlit/config.toml
+  web:
+    <<: *app
+    command: ["streamlit", "run", "dashboard/app.py", "--server.address=0.0.0.0", "--server.runOnSave=false"]
+    ports:
+      - "8502:8502"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  # 資料庫的檔案。name 固定成 pgdata：已經有這個 volume 就直接用（保留現有資料），沒有就新建
+  pgdata:
+    name: pgdata
+  rabbitmq-data:

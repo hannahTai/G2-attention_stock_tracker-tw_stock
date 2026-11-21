@@ -1,0 +1,24 @@
+# 不放進 image 的檔案：機密、本機環境、資料、跟執行無關的東西
+
+# 機密（連線設定由 docker-compose.yml 的 env_file 在執行時給，不包進 image）
+.env
+.env.*
+!.env.example
+
+# 本機環境（image 裡自己用 uv 裝）
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# 資料、備份、log（放在 volume 或本機，不進 image）
+data/
+
+# 跟執行無關
+.git/
+.claude/
+.vscode/
+.idea/
+survey/
+docs/
+tests/
