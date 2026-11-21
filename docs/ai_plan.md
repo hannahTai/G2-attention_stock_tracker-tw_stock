@@ -133,7 +133,7 @@ AI 四個項目（只讀 stage、app 表，結果寫進 ai_* 表，各自獨立�
 
 FinMind（台股資料平台）有四種 AI 整合：給網頁版 AI 讀的 `llms.txt`、Claude Code 的指令檔（Agent Skill）、MCP server（[FinMind-MCP](https://github.com/FinMind/FinMind-MCP)，開源）、ChatGPT 的 Custom GPT。它的使用情境是讓外部使用者的 AI 查資料，跟這個專題（每天批次跑、結果存表給網站讀）不同，但有幾個做法可以借。
 
-**整體架構**：FinMind 網站的分析結果由排程預先算好，網站只讀結果，跟這個專題一樣。它的 `knowledge/` 資料夾把資料集說明、錯誤訊息、範例寫成 markdown，MCP 和 Custom GPT 共用同一份；這裡對應 `ai/knowledge/`，規則和款次說明寫一份，所有項目共用。
+**整體架構**：FinMind 網站的分析結果由排程預先算好，網站只讀結果，跟這個專題一樣。它的 `knowledge/` 資料夾把資料集說明、錯誤訊息、範例寫成 markdown，MCP 和 Custom GPT 共用同一份。這個專題可以照做：之後開始做 AI 項目時新增 `knowledge/` 資料夾，規則條文和款次說明寫成一份 markdown，四個項目都讀這一份。
 
 逐項對照：
 
