@@ -32,6 +32,7 @@
 | `raw_punish` | 查詢日期 | `stage_punish`、`stage_punish_day` |
 | `raw_punish_watchlist` | 名單上的資料日期 | `stage_punish_watchlist` |
 | `raw_market_daily` | 月份 | `stage_trading_day` |
+| `raw_stock_price` | 查詢日期 | `stage_stock_price` |
 | `raw_holiday` | 西元年 | `stage_holiday` |
 | `raw_company` | 抓取日期 | `stage_company` |
 | `raw_announcement` | 公司代號_月份 | `stage_announcement` |
@@ -53,6 +54,7 @@
 | `stage_punish_day` | 一天的處置股抓到了（幾則） | query_date | 07/01–11/14 |
 | `stage_punish_watchlist` | 官方注意累計名單的一檔 | data_date, stock_id | 11/09–11/13（API 只有最新一天，11/09 開始每天抓） |
 | `stage_trading_day` | 一天（有沒有交易） | trade_date | 07/01–11/14 |
+| `stage_stock_price` | 某天某檔的收盤行情（那天有成交的） | trade_date, stock_id | 05/04 起 |
 | `stage_holiday` | 官方開休市日期的一天 | holiday_date | 2026 全年 |
 | `stage_company` | 一家上市公司 | company_id | 11/14 快照 |
 | `stage_announcement` | 一則重大訊息 | company_id, enter_date, serial_number | 09/01–11/13 |
@@ -282,6 +284,24 @@ erDiagram
 - 涵蓋到哪天看抓取時間：15:00（收盤資料公布）以後抓的含當天，之前抓的只到前一天。之後的日子沒有列＝還不知道，analyze 不會算。
 - 沒交易的日子成交欄位都是 NULL。
 
+### stage_stock_price　每日收盤行情
+
+- 來源：`raw_stock_price`（證交所 `GET /rwd/zh/afterTrading/MI_INDEX?type=ALLBUT0999`，一次一天 → `tables` 裡有「證券代號」「收盤價」欄位的那張）
+- 全部上市股票、ETF，不含權證、牛熊證。那天沒成交（收盤價「--」）的不放。
+
+| 欄位 | 型別 | API 欄位 | 轉換／說明 |
+|---|---|---|---|
+| trade_date | DATE | — | 回應的列沒有日期，用查詢的那天 |
+| stock_id | VARCHAR(10) | 證券代號 | 去空白 |
+| stock_name | VARCHAR(50) | 證券名稱 | 去空白 |
+| open_price | DECIMAL(10,2) | 開盤價 | 文字 → 數字 |
+| high_price | DECIMAL(10,2) | 最高價 | 文字 → 數字 |
+| low_price | DECIMAL(10,2) | 最低價 | 文字 → 數字 |
+| close_price | DECIMAL(10,2) | 收盤價 | 文字 → 數字 |
+| volume_shares | BIGINT | 成交股數 | 文字 → 數字 |
+
+- 卡片上的收盤價從這裡拿（`app_card.close_price`）；注意股公告也有收盤價，但只有當天被列的才有。
+
 ### stage_holiday　開休市日期
 
 - 來源：`raw_holiday`（證交所 `GET /rwd/zh/holidaySchedule/holidaySchedule`，`date`＝那年 1 月 1 日 → `data`）
@@ -396,12 +416,13 @@ erDiagram
 | next_resume_date | DATE | 那次的出關日 |
 | process_date | DATE | 哪一天算的（台灣日期；重跑會更新） |
 
+- `next_*` 是推算的「若再被列注意就處置」：回測用，網頁不顯示（網頁只放已發生、已公布的事）。
 - 還差幾次＝假設之後每個營業日都被列注意，再幾天會達標。例：10 日內被列 5 天，但最舊那天明天就滑出窗口 → `in10_left`＝2，不是 6−5＝1。
 - 今天達標（`punished_by` 有值）時，`*_left`、`steps_left` 都是 NULL：隔天重新算。
 - 未來的營業日依開休市日期推算（週一～五、扣掉休市日）；臨時休市要隔天重算才會反映。
 - 第 13 款若在再列的那天才出現，會延長為 7 天，事前算不出來（回測 129 筆中 5 筆是這種）。
-- 總覽的分頁（分區，每檔只在一區，加起來＝全部；依序判斷）：即將處置＝`punished_by` 有值，或 `period_start` 有值且 `> trade_date`（處置已公布、還沒開始）；處置中＝`period_start ≤ trade_date ≤ period_end`；聽牌＝`steps_left = 1`；其他＝剩下的。
-- 總覽的「只看」篩選（一檔可以同時符合好幾個）：今天被列注意＝`app_card.is_listed_today`；明日出關＝處置中且 `period_end = trade_date`；今日出關＝`resume_date = trade_date`。
+- 總覽的分頁（分區，每檔只在一區，加起來＝全部；依序判斷）：即將處置＝`punished_by` 有值，或 `period_start` 有值且 `> trade_date`（處置已公布、還沒開始）；處置中＝`period_start ≤ trade_date ≤ period_end`，其中 `period_end = trade_date` 的放明日出關；聽牌＝`steps_left = 1`；其他＝剩下的。
+- 總覽的「只看」篩選（一檔可以同時符合好幾個）：今日注意股＝`app_card.is_listed_today`；今日出關＝`resume_date = trade_date`。
 - 總覽只放 `app_card.is_company = 1`（不放權證、ETF），也不放近 30 個營業日沒有會累計紀錄、今天沒被列、沒有處置的股票（四條路徑都是 0）。
 
 ### app_progress_date　計入的日期
@@ -422,7 +443,7 @@ VIEW 是存起來的查詢，不複製資料；網頁查的時候資料庫才去
 
 | VIEW | 給哪個畫面 | 內容 |
 |---|---|---|
-| `app_card` | 卡片牆、個股卡片上半部 | `app_progress` 每一列，加上 `stock_name`、`is_listed_today`、`is_company`（上市公司；卡片牆只放這些，不放權證、ETF）、`close_price`、`reason_text`、`clauses`（今天被列第幾款，例如 `1,2`）、`is_counted_today`、處置中那次的 `punish_measure`／`punish_condition`／`punish_match_minutes`、`announcement_count`（近 30 個營業日公告則數） |
+| `app_card` | 卡片牆、個股卡片上半部 | `app_progress` 每一列，加上 `stock_name`、`is_listed_today`、`is_company`（上市公司；卡片牆只放這些，不放權證、ETF）、`close_price`（`stage_stock_price` 當天的收盤；還沒抓到就用注意股公告上的）、`reason_text`、`clauses`（今天被列第幾款，例如 `1,2`）、`is_counted_today`、處置中那次的 `measure_type`／`trigger_condition`／`match_interval_minutes`（和 `app_punish_history` 同名）、`announcement_count`（近 30 個營業日公告則數） |
 | `app_trading_day` | 注意紀錄格子、公告和處置紀錄的起日 | `stage_trading_day` 裡有交易的日子（`trade_date`） |
 | `app_notice_history` | 注意紀錄格子 | 每檔每個被列注意的交易日：`clauses`、`is_counted`（1＝累計）。沒被列的日子沒有列；早於 `count_start` 的是「已計入前次處置」 |
 | `app_punish_history` | 處置紀錄 | `stage_punish` 的欄位 |
