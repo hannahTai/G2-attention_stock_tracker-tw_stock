@@ -1,6 +1,6 @@
 """common/runner.py：依序執行任務、暫時性失敗重試、最後回報。不連網路、不連資料庫。"""
 import pytest
-import pymysql
+import psycopg
 import requests
 import sqlalchemy
 
@@ -23,7 +23,7 @@ class Flaky:
 
 
 def deadlock() -> sqlalchemy.exc.OperationalError:
-    return sqlalchemy.exc.OperationalError("INSERT …", {}, pymysql.err.OperationalError(1213, "Deadlock found"))
+    return sqlalchemy.exc.OperationalError("INSERT …", {}, psycopg.errors.DeadlockDetected("deadlock detected"))
 
 
 @pytest.fixture(autouse=True)

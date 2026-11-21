@@ -1,4 +1,4 @@
-"""測試共用：用記憶體裡的假 raw 表代替資料庫，測試不會碰到真的 MySQL。"""
+"""測試共用：用記憶體裡的假 raw 表代替資料庫，測試不會碰到真的資料庫。"""
 import datetime
 import json
 import types

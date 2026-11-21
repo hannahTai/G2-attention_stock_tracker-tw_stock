@@ -1,10 +1,10 @@
-"""整合測試：連本機 MySQL，驗證去重與冪等、多個 worker 同時整理也不會錯。
+"""整合測試：連本機 PostgreSQL，驗證去重與冪等、多個 worker 同時整理也不會錯。
 
     uv run pytest -m integration -v        # 只跑這個檔案的測試
     uv run pytest -m "not integration"     # 不連資料庫（CI 用）
 
-另外建一個測試用資料庫 <MYSQL_DATABASE>_test，照 schema/*.sql 建表，測完整個刪掉；正式的資料庫完全不碰。
-連不到 MySQL 就自動跳過，不會讓其他測試失敗。
+另外建一個測試用資料庫 <DB_NAME>_test，照 schema/*.sql 建表，測完整個刪掉；正式的資料庫完全不碰。
+連不到 PostgreSQL 就自動跳過，不會讓其他測試失敗。
 """
 import concurrent.futures
 import datetime
@@ -17,7 +17,7 @@ import sqlalchemy
 
 from analyze import task as analyze_task
 from common import repository, runner
-from common.config import MAX_RETRIES, MYSQL_DATABASE
+from common.config import DB_NAME, MAX_RETRIES
 from tests.test_transform_transformer import (
     PUNISH_API_FIELDS, PUNISH_ROW, ROW_ANDES, ROW_TENGHUI, envelope,
 )
@@ -26,7 +26,7 @@ from transform import transformer
 
 pytestmark = pytest.mark.integration
 
-TEST_DATABASE = f"{MYSQL_DATABASE}_test"
+TEST_DATABASE = f"{DB_NAME}_test"
 V1 = datetime.datetime(2026, 11, 9, 21, 0)    # 兩次抓取的時間（版本）：V2 比較新
 V2 = datetime.datetime(2026, 11, 10, 21, 0)
 
@@ -35,33 +35,27 @@ V2 = datetime.datetime(2026, 11, 10, 21, 0)
 @pytest.fixture(scope="module")
 def test_engine():
     """建 <資料庫>_test、照 schema/*.sql 建表；整個檔案測完就刪掉。"""
-    assert TEST_DATABASE != MYSQL_DATABASE
+    assert TEST_DATABASE != DB_NAME
     try:
-        with repository.get_engine("").begin() as conn:
-            conn.execute(sqlalchemy.text(f"DROP DATABASE IF EXISTS {TEST_DATABASE}"))
-            conn.execute(sqlalchemy.text(
-                f"CREATE DATABASE {TEST_DATABASE} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"))
+        repository.drop_database(TEST_DATABASE)
+        repository.create_tables(TEST_DATABASE)   # 跟正式的一樣：建資料庫、執行 schema/*.sql
     except sqlalchemy.exc.OperationalError:
-        pytest.skip("連不到 MySQL：先啟動 MySQL、確認 .env 的連線設定")
+        pytest.skip("連不到 PostgreSQL：先啟動 PostgreSQL、確認 .env 的連線設定")
 
     engine = repository.get_engine(TEST_DATABASE)
-    with engine.begin() as conn:
-        for sql_file in repository.SQL_FILES:   # 跟 create_tables() 一樣：一個檔案切成一句一句執行
-            for statement in sql_file.read_text(encoding="utf-8").split(";"):
-                if statement.strip():
-                    conn.execute(sqlalchemy.text(statement))
     yield engine
 
     engine.dispose()
-    with repository.get_engine("").begin() as conn:
-        conn.execute(sqlalchemy.text(f"DROP DATABASE IF EXISTS {TEST_DATABASE}"))
+    repository.drop_database(TEST_DATABASE)
 
 
 @pytest.fixture
 def db(test_engine, monkeypatch):
     """每個測試前清空資料表，並讓程式裡所有 get_engine() 都連到測試用資料庫。"""
     with test_engine.begin() as conn:
-        tables = [row[0] for row in conn.execute(sqlalchemy.text("SHOW FULL TABLES WHERE Table_type = 'BASE TABLE'"))]
+        tables = conn.execute(sqlalchemy.text(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = :schema AND table_type = 'BASE TABLE'"),
+            {"schema": repository.SCHEMA}).scalars().all()
         for table in tables:
             if table != "stage_announcement_clause":   # 固定資料，建表時就寫好了
                 conn.execute(sqlalchemy.text(f"DELETE FROM {table}"))
@@ -221,7 +215,7 @@ def test_parallel_punish_writes_keep_newest(db):
 def test_analyze_rerun_same_result(db):
     days = pd.bdate_range("2026-11-02", "2026-11-06").date
     with db.begin() as conn:
-        conn.execute(sqlalchemy.text("INSERT INTO stage_trading_day (trade_date, is_trading) VALUES (:d, 1)"),
+        conn.execute(sqlalchemy.text("INSERT INTO stage_trading_day (trade_date, is_trading) VALUES (:d, TRUE)"),
                      [{"d": d} for d in days])
         for table in ["stage_notice_day", "stage_punish_day"]:
             conn.execute(sqlalchemy.text(f"INSERT INTO {table} (query_date, {table.split('_')[1]}_count) VALUES (:d, 0)"),
@@ -245,7 +239,7 @@ def test_analyze_needs_every_day_in_window(db):
     weekend = [datetime.date(2026, 11, 7), datetime.date(2026, 11, 8)]
     with db.begin() as conn:
         conn.execute(sqlalchemy.text("INSERT INTO stage_trading_day (trade_date, is_trading) VALUES (:d, :t)"),
-                     [{"d": d, "t": 1} for d in days] + [{"d": d, "t": 0} for d in weekend])
+                     [{"d": d, "t": True} for d in days] + [{"d": d, "t": False} for d in weekend])
         conn.execute(sqlalchemy.text("INSERT INTO stage_notice_day (query_date, notice_count) VALUES (:d, 0)"),
                      [{"d": d} for d in days if d != datetime.date(2026, 11, 4)])   # 11/04 的注意股沒抓到
         conn.execute(sqlalchemy.text("INSERT INTO stage_punish_day (query_date, punish_count) VALUES (:d, 0)"),
