@@ -437,6 +437,32 @@ erDiagram
 | counted_date | DATE | 這一條計入的一天 |
 | process_date | DATE | 哪一天算的（台灣日期；重跑會更新） |
 
+### job_run　任務歷史
+
+- 每個任務每跑一次一列（成功、要重試、失敗都寫），本機依序執行和 Celery worker 都寫；只新增、不修改，永久保留。
+- 由 `common/runner.py` 的 `record()` 寫入（worker 上由 `common/worker.py` 的 `Job` 呼叫）；寫不進去只印警告，不影響任務。
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| run_id | BIGINT | 流水號（主鍵） |
+| task | VARCHAR(80) | 任務名稱，例如 `crawler.task.crawl_notice` |
+| args | JSONB | 參數，例如 `{"date_yyyymmdd": "20261120"}` |
+| status | VARCHAR(10) | `success`／`retry`（暫時性失敗、等一下重做）／`failure` |
+| result | TEXT | 成功時的一行結果，例如 `raw_notice/20261120` |
+| error | TEXT | 失敗時的錯誤（類型: 訊息） |
+| attempt | SMALLINT | 第幾次嘗試（1＝第一次） |
+| mode | VARCHAR(10) | `celery`＝worker 上跑；`local`＝本機依序執行 |
+| worker | VARCHAR(80) | 哪個 worker，例如 `crawl_twse@tw_stock`；本機為 NULL |
+| started_at、finished_at | TIMESTAMP(3) | 開始、結束（台灣時間） |
+| seconds | DECIMAL(10,3) | 花了幾秒 |
+
+```sql
+-- 今天失敗的任務
+SELECT task, args, error FROM tw_stock.job_run WHERE status = 'failure' AND started_at >= CURRENT_DATE;
+-- 每個任務跑幾次、平均幾秒、失敗幾次
+SELECT task, COUNT(*), ROUND(AVG(seconds), 2), COUNT(*) FILTER (WHERE status = 'failure') FROM tw_stock.job_run GROUP BY task;
+```
+
 ### VIEW（給網頁讀）
 
 VIEW 是存起來的查詢，不複製資料；網頁查的時候資料庫才去讀 stage 表。網頁的 SQL 只寫 `app_*`，stage 欄位改了只要改 VIEW。

@@ -6,11 +6,13 @@
     3. tables = {stage 表名: 整理好的 DataFrame}（transformer 的 xxx_to_frame → clean_xxx）
     4. return save(raw, tables)：一個交易寫進 stage（失敗就不變），每列記上 raw 的抓取時間、只讓比較新的覆蓋
 重跑不會重複；任務之間互不依賴，一個任務失敗不影響其他任務；好幾個 worker 同時跑、不照順序，結果都一樣。
+transform_xxx 都用 @app.task 註冊成 Celery 任務（見 common/worker.py）；upsert_stage、save 這些是任務共用的小函式，不是任務。
 """
 import pandas as pd
 
 from common import date_utils, repository
 from common.date_utils import parse_yyyymmdd
+from common.worker import Job, app
 from transform import transformer
 from transform.parsing import fetched_at
 from transform.transformer import STAGE_KEYS
@@ -65,6 +67,7 @@ def skipped(source: str, key) -> str:
 
 
 # ---------- 證交所 ----------
+@app.task(base=Job)
 def transform_notice(date_yyyymmdd: str) -> str:
     """注意股 → stage_notice、stage_notice_clause、stage_notice_day（那天先清掉再寫入）。"""
     key = date_yyyymmdd
@@ -78,6 +81,7 @@ def transform_notice(date_yyyymmdd: str) -> str:
     return save(raw, tables, clear_day=day)
 
 
+@app.task(base=Job)
 def transform_punish(date_yyyymmdd: str) -> str:
     """處置股 → stage_punish（同一則公告每天都查得到，用主鍵更新）、stage_punish_day（這天查過了）。"""
     key = date_yyyymmdd
@@ -91,6 +95,7 @@ def transform_punish(date_yyyymmdd: str) -> str:
     return save(raw, tables)
 
 
+@app.task(base=Job)
 def transform_punish_watchlist(date_yyyymmdd: str) -> str:
     """那天以前最新的注意累計名單 → stage_punish_watchlist。"""
     key = latest_key("punish_watchlist", date_yyyymmdd)
@@ -108,6 +113,7 @@ def notice_days(month_yyyymm: str) -> set:
             if isinstance(raw["body"], dict) and raw["body"].get("data")}
 
 
+@app.task(base=Job)
 def transform_market_daily(month_yyyymm: str) -> str:
     """每日市場成交（一個月）→ stage_trading_day：涵蓋到的每一天一列，標是不是交易日。"""
     key = month_yyyymm
@@ -120,6 +126,7 @@ def transform_market_daily(month_yyyymm: str) -> str:
     return save(raw, tables)
 
 
+@app.task(base=Job)
 def transform_stock_price(date_yyyymmdd: str) -> str:
     """每日收盤行情（一天）→ stage_stock_price。"""
     key = date_yyyymmdd
@@ -130,6 +137,7 @@ def transform_stock_price(date_yyyymmdd: str) -> str:
     return save(raw, tables)
 
 
+@app.task(base=Job)
 def transform_holiday(year: int) -> str:
     """開休市日期（一年）→ stage_holiday。"""
     key = str(year)
@@ -140,6 +148,7 @@ def transform_holiday(year: int) -> str:
     return save(raw, tables)
 
 
+@app.task(base=Job)
 def transform_company(date_yyyymmdd: str) -> str:
     """那天以前最新的上市公司清單 → stage_company（依 company_id 更新，下市的留著）。"""
     key = latest_key("company", date_yyyymmdd)
@@ -151,6 +160,7 @@ def transform_company(date_yyyymmdd: str) -> str:
 
 
 # ---------- 公開資訊觀測站 ----------
+@app.task(base=Job)
 def transform_announcement(stock_id: str, year: int, month: int) -> str:
     """一家公司一個月的重大訊息 → stage_announcement。"""
     key = f"{stock_id}_{year:04d}{month:02d}"
@@ -161,6 +171,7 @@ def transform_announcement(stock_id: str, year: int, month: int) -> str:
     return save(raw, tables)
 
 
+@app.task(base=Job)
 def transform_announcement_detail(stock_id: str, enter_yyyymmdd: str, serial_number: int) -> str:
     """一則重大訊息全文 → stage_announcement_detail。"""
     key = f"{stock_id}_{enter_yyyymmdd}_{serial_number}"

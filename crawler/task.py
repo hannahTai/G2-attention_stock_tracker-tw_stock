@@ -6,13 +6,16 @@
     3. return repository.save_raw(來源, key, resp)：成功、失敗都存；失敗的存完丟 FetchError
 這裡不整理資料：原文先存進 raw 表，整理在 transform/task.py 做（ELT）。
 任務的輸入都是字串、數字，不依賴其他任務。
+每個函式都用 @app.task 註冊成 Celery 任務（見 common/worker.py）：證交所的用 TwseJob、觀測站的用 MopsJob，做完等一下再拿下一個。
 """
 from common import repository
 from common.date_utils import today_yyyymmdd
+from common.worker import MopsJob, TwseJob, app
 from crawler import client
 
 
 # ---------- 證交所 ----------
+@app.task(base=TwseJob)
 def crawl_notice(date_yyyymmdd: str) -> str:
     """注意股：一天 → raw_notice（key 20261113）。還沒公布完整就抓的當失敗。"""
     resp = client.fetch_notice(date_yyyymmdd)
@@ -21,6 +24,7 @@ def crawl_notice(date_yyyymmdd: str) -> str:
     return repository.save_raw("notice", key, resp, problem)
 
 
+@app.task(base=TwseJob)
 def crawl_punish(date_yyyymmdd: str) -> str:
     """處置股：一天 → raw_punish（key 20261113）。還沒公布完整就抓的當失敗。"""
     resp = client.fetch_punish(date_yyyymmdd)
@@ -29,6 +33,7 @@ def crawl_punish(date_yyyymmdd: str) -> str:
     return repository.save_raw("punish", key, resp, problem)
 
 
+@app.task(base=TwseJob)
 def crawl_punish_watchlist() -> str:
     """注意累計名單：只有最新一份 → raw_punish_watchlist（key 名單上的資料日期；週末抓到的是週五的）。"""
     resp = client.fetch_punish_watchlist()
@@ -36,6 +41,7 @@ def crawl_punish_watchlist() -> str:
     return repository.save_raw("punish_watchlist", key, resp)
 
 
+@app.task(base=TwseJob)
 def crawl_market_daily(month_yyyymm: str) -> str:
     """每日市場成交：一個月 → raw_market_daily（key 202611）。"""
     resp = client.fetch_market_daily(month_yyyymm)
@@ -43,6 +49,7 @@ def crawl_market_daily(month_yyyymm: str) -> str:
     return repository.save_raw("market_daily", key, resp)
 
 
+@app.task(base=TwseJob)
 def crawl_stock_price(date_yyyymmdd: str) -> str:
     """每日收盤行情：一天 → raw_stock_price（key 20261120）。還沒公布完整就抓的當失敗。"""
     resp = client.fetch_stock_price(date_yyyymmdd)
@@ -51,6 +58,7 @@ def crawl_stock_price(date_yyyymmdd: str) -> str:
     return repository.save_raw("stock_price", key, resp, problem)
 
 
+@app.task(base=TwseJob)
 def crawl_holiday(year: int) -> str:
     """開休市日期：一年 → raw_holiday（key 2026）。回傳的年份不對就當失敗。"""
     resp = client.fetch_holiday(year)
@@ -59,6 +67,7 @@ def crawl_holiday(year: int) -> str:
     return repository.save_raw("holiday", key, resp, problem)
 
 
+@app.task(base=TwseJob)
 def crawl_company() -> str:
     """上市公司清單：只有最新一份 → raw_company（key 抓取日期，每天一份快照）。"""
     resp = client.fetch_companies()
@@ -67,6 +76,7 @@ def crawl_company() -> str:
 
 
 # ---------- 公開資訊觀測站 ----------
+@app.task(base=MopsJob)
 def crawl_announcement(stock_id: str, year: int, month: int) -> str:
     """重大訊息：一家公司一個月 → raw_announcement（key 1303_202611）。"""
     resp = client.fetch_announcements(stock_id, year, month)
@@ -74,6 +84,7 @@ def crawl_announcement(stock_id: str, year: int, month: int) -> str:
     return repository.save_raw("announcement", key, resp)
 
 
+@app.task(base=MopsJob)
 def crawl_announcement_detail(stock_id: str, enter_yyyymmdd: str, serial_number: int, api_name: str) -> str:
     """重大訊息全文：一則 → raw_announcement_detail（key 9908_20261102_1＝公司_輸入日期_序號）。
 

@@ -4,6 +4,7 @@
                                    → 換掉 app 那天的列
 
 輸入只有日期字串；只讀資料庫裡已有的 stage；結果直接寫回資料庫。要在 transform 做完之後才執行。
+analyze_progress 用 @app.task 註冊成 Celery 任務（見 common/worker.py）。
 """
 import datetime
 
@@ -13,6 +14,7 @@ import sqlalchemy
 from analyze import engine
 from common import date_utils, repository
 from common.date_utils import parse_yyyymmdd
+from common.worker import Job, app
 
 APP_TABLES = ["app_progress", "app_progress_date"]   # analyze_progress 寫入的表
 WINDOW_TRADING_DAYS = 30                             # 往前看幾個營業日（30 日 12 次）
@@ -95,6 +97,7 @@ def replace_app(progress: pd.DataFrame, dates: pd.DataFrame, day: datetime.date)
         repository.insert_rows(conn, "app_progress_date", dates.assign(process_date=process_date))
 
 
+@app.task(base=Job)
 def analyze_progress(date_yyyymmdd: str) -> str:
     """任務：算那天（YYYYMMDD）每檔離處置還差幾次，寫進 app 表。不是營業日就沒有東西要算。"""
     day = parse_yyyymmdd(date_yyyymmdd)

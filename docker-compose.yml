@@ -2,7 +2,7 @@
 #
 #   docker compose up -d --build        # 啟動（第一次或改了程式碼、套件都加 --build）
 #   docker compose ps                   # 看狀態
-#   docker compose logs -f worker       # 看 log（服務名稱見下面）
+#   docker compose logs -f celery-process   # 看 log（服務名稱見下面；log 檔另外存在 data/logs/）
 #   docker compose down                 # 停掉（資料留在 volume pgdata）
 #   docker compose run --rm producer python main.py                       # 跑一次每日資料線（抓 → 整理 → 計算）
 #   docker compose run --rm producer python main.py backfill --start 20261101   # 回補
@@ -16,9 +16,10 @@
 # RabbitMQ、Flower 的埠號故意不用預設的 5672、15672、5555：課程的容器已經佔用了。
 #
 # 連線設定（密碼等）從 .env 讀；容器之間用服務名稱連（db、rabbitmq、api），所以 x-app 會蓋掉 .env 的主機和埠號。
+# 帳號密碼沒在 .env 設的話用預設值（資料庫 postgres／postgres、RabbitMQ rabbitmq／rabbitmq），只適合本機開發；放上雲端一定要在 .env 設。
 # 不要用 docker compose down -v：-v 會連 volume 一起刪，資料庫就沒了。
 
-# 專案程式的共同設定：setup、api、web、producer、worker 都用同一個 image（Dockerfile），只是指令不同
+# 專案程式的共同設定：setup、api、web、producer、三個 Celery worker 都用同一個 image（Dockerfile），只是指令不同
 x-app: &app
   build: .
   image: attention-stock-tracker
@@ -30,9 +31,15 @@ x-app: &app
     RABBITMQ_PORT: "5672"
     USE_CELERY: "1"                     # 容器裡的 producer 把任務送進 RabbitMQ，給 worker 做
     API_URL: http://api:8001
+    LOG_DIR: /app/logs
+  logging:                              # 畫面上的 log（docker compose logs）：每個容器最多 3 個 10MB 的檔，舊的自動丟掉
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
 
-# worker 共同的：RabbitMQ 和資料表都準備好才啟動
-x-worker: &worker
+# Celery worker 共同的：RabbitMQ 和資料表都準備好才啟動
+x-celery: &celery
   <<: *app
   depends_on:
     rabbitmq:
@@ -40,6 +47,8 @@ x-worker: &worker
     setup:
       condition: service_completed_successfully
   restart: unless-stopped
+  volumes:
+    - ./data/logs:/app/logs             # worker 的 log 另外寫在本機的 data/logs/（每天一個檔，留 30 天；見 common/logs.py）
 
 services:
   # ---------- 儲存、佇列 ----------
@@ -49,8 +58,9 @@ services:
     container_name: postgres            # scripts/backup_db.py 用這個名字跑 pg_dump（PG_CONTAINER）
     restart: unless-stopped
     environment:
+      # 帳號密碼從 .env 讀，沒設就用 postgres／postgres；只在第一次建 volume（第一次啟動）時用，之後改 .env 不會改到資料庫裡的密碼
       POSTGRES_USER: ${DB_USER:-postgres}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:?在 .env 設 DB_PASSWORD}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
       TZ: Asia/Taipei
       PGTZ: Asia/Taipei
     ports:
@@ -66,10 +76,13 @@ services:
   # RabbitMQ：任務佇列（producer 送任務進來，worker 拿去做）
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
+    hostname: rabbitmq                  # 固定主機名稱：RabbitMQ 的資料（帳號、佇列）依主機名稱存，不固定的話每次重建容器都會重來
     restart: unless-stopped
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-worker}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-worker}
+      # 和資料庫一樣：帳號密碼從 .env 讀，沒設就用 rabbitmq／rabbitmq；只在第一次建 volume（第一次啟動）時建這個帳號，
+      # 之後改 .env 不會改到已經建好的帳號（要改密碼用 rabbitmqctl change_password）
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-rabbitmq}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-rabbitmq}
     ports:
       - "5673:5672"                     # 本機的 producer 要送任務進來時用（.env 設 USE_CELERY=1、RABBITMQ_PORT=5673）
       - "15673:15672"                   # 管理介面
@@ -91,30 +104,33 @@ services:
     restart: "no"
 
   # ---------- Celery worker（佇列的分法見 common/worker.py）----------
-  # 證交所：一次只做一個，每個任務後等 SLEEP_SECONDS 秒，太快會被擋
-  worker-twse:
-    <<: *worker
-    command: ["celery", "-A", "common.worker", "worker", "-Q", "twse", "--concurrency", "1",
-              "--hostname", "twse@%h", "--loglevel", "INFO"]
+  # worker 名稱固定成「佇列@tw_stock」（Flower、任務歷史 job_run 上看到的就是這個）；@ 前面也是 log 檔名（data/logs/crawl_twse-…）
+  # 證交所：一次只做一個，每個任務後等 SLEEP_SECONDS 秒（TwseJob），太快會被擋
+  celery-crawl-twse:
+    <<: *celery
+    command: ["celery", "-A", "common.worker", "worker", "-Q", "crawl_twse", "--concurrency", "1",
+              "--hostname", "crawl_twse@tw_stock", "--loglevel", "INFO"]
 
-  # 觀測站：一次只做一個，每個任務後等 SLEEP_SECONDS_MOPS 秒
-  worker-mops:
-    <<: *worker
-    command: ["celery", "-A", "common.worker", "worker", "-Q", "mops", "--concurrency", "1",
-              "--hostname", "mops@%h", "--loglevel", "INFO"]
+  # 觀測站：一次只做一個，每個任務後等 SLEEP_SECONDS_MOPS 秒（MopsJob）
+  celery-crawl-mops:
+    <<: *celery
+    command: ["celery", "-A", "common.worker", "worker", "-Q", "crawl_mops", "--concurrency", "1",
+              "--hostname", "crawl_mops@tw_stock", "--loglevel", "INFO"]
 
   # transform、analyze：只讀寫自己的資料庫，同時做 4 個
-  worker:
-    <<: *worker
-    command: ["celery", "-A", "common.worker", "worker", "-Q", "default", "--concurrency", "4",
-              "--hostname", "default@%h", "--loglevel", "INFO"]
+  celery-process:
+    <<: *celery
+    command: ["celery", "-A", "common.worker", "worker", "-Q", "process", "--concurrency", "4",
+              "--hostname", "process@tw_stock", "--loglevel", "INFO"]
 
-  # Flower：網頁上看 worker、任務的執行狀況
+  # Flower：網頁上看 worker、任務的執行狀況（帳號密碼和上面的 RabbitMQ 同一組）
   flower:
     image: mher/flower:2.0.1
     restart: unless-stopped
-    command: ["celery", "--broker=amqp://${RABBITMQ_USER:-worker}:${RABBITMQ_PASSWORD:-worker}@rabbitmq:5672//",
+    command: ["celery", "--broker=amqp://${RABBITMQ_USER:-rabbitmq}:${RABBITMQ_PASSWORD:-rabbitmq}@rabbitmq:5672//",
               "flower", "--port=5555"]
+    environment:
+      TZ: Asia/Taipei                   # 和 worker 同一個時區，不然 Flower 會警告時間差 8 小時
     ports:
       - "5556:5555"
     depends_on:
@@ -130,11 +146,11 @@ services:
     volumes:
       - ./data:/app/data                # main.py 的檔案鎖（同一時間只跑一輪）放在本機的 data/
     depends_on:
-      worker-twse:
+      celery-crawl-twse:
         condition: service_started
-      worker-mops:
+      celery-crawl-mops:
         condition: service_started
-      worker:
+      celery-process:
         condition: service_started
 
   # ---------- 網站 ----------
@@ -163,4 +179,5 @@ volumes:
   # 資料庫的檔案。name 固定成 pgdata：已經有這個 volume 就直接用（保留現有資料），沒有就新建
   pgdata:
     name: pgdata
+  # RabbitMQ 的資料（帳號、佇列）；搭配上面固定的 hostname，重建容器也留著
   rabbitmq-data:

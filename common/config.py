@@ -34,10 +34,17 @@ DB_NAME = os.environ.get("DB_NAME", "tw_stock")
 # 寫 127.0.0.1 不寫 localhost：Windows 會先試 IPv6（::1），uvicorn 只開在 IPv4，每次要多等約 2 秒
 API_URL = os.environ.get("API_URL", "http://127.0.0.1:8001")
 
-# Celery 任務佇列：USE_CELERY=1 時，producer 把任務送進 RabbitMQ，由 worker 執行（common/worker.py）；
-# 0（預設）就在這台電腦依序執行，不需要 RabbitMQ
-USE_CELERY = os.environ.get("USE_CELERY", "0") == "1"
+# Celery 任務佇列：1（預設）＝producer 把任務送進 RabbitMQ，由 worker 執行（common/worker.py，要先 docker compose up）；
+# 0＝在這台電腦依序執行，不需要 RabbitMQ（沒開 Docker 時臨時用）
+USE_CELERY = os.environ.get("USE_CELERY", "1") == "1"
 RABBITMQ_HOST = os.environ.get("RABBITMQ_HOST", "127.0.0.1")
 RABBITMQ_PORT = int(os.environ.get("RABBITMQ_PORT", 5672))
-RABBITMQ_USER = os.environ.get("RABBITMQ_USER", "worker")
-RABBITMQ_PASSWORD = os.environ.get("RABBITMQ_PASSWORD", "worker")
+RABBITMQ_USER = os.environ.get("RABBITMQ_USER", "rabbitmq")           # 預設值和 docker-compose.yml 一樣（本機開發用）
+RABBITMQ_PASSWORD = os.environ.get("RABBITMQ_PASSWORD", "rabbitmq")
+
+# 任務歷史：每個任務跑完寫一列 tw_stock.job_run（common/runner.py 的 record()）；測試裡關掉
+JOB_LOG = os.environ.get("JOB_LOG", "1") == "1"
+
+# 文字 log：每天一個檔 <LOG_DIR>/<名稱>-YYYY-MM-DD.log，只留最近 LOG_KEEP_DAYS 天（common/logs.py）
+LOG_DIR = pathlib.Path(os.environ.get("LOG_DIR", str(PROJECT_ROOT / "data" / "logs")))
+LOG_KEEP_DAYS = int(os.environ.get("LOG_KEEP_DAYS", "30"))

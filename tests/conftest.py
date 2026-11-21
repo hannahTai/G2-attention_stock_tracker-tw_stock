@@ -5,7 +5,7 @@ import types
 
 import pytest
 
-from common import date_utils, repository
+from common import date_utils, repository, runner
 
 
 class FakeRaw:
@@ -60,3 +60,10 @@ def raw_store(monkeypatch):
     for name in ("insert_raw_row", "read_raws", "list_raw_keys", "raw_fetched_times"):
         monkeypatch.setattr(repository, name, getattr(fake, name))
     return fake
+
+
+@pytest.fixture(autouse=True)
+def local_runner(monkeypatch):
+    """測試一律在本機依序執行、不寫任務歷史（不管 .env 的 USE_CELERY、JOB_LOG 怎麼設）；要測的測試自己打開。"""
+    monkeypatch.setattr(runner, "USE_CELERY", False)
+    monkeypatch.setattr(runner, "JOB_LOG", False)

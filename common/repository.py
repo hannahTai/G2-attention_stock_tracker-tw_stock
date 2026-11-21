@@ -4,6 +4,7 @@
   raw 表       寫：save_raw()（只新增、不修改）
                讀：read_raw()、read_raws()、list_raw_keys()、raw_fetched_times()（每個 raw_key 只看最新一份成功的）
   stage、app   insert_rows()、delete_where_in()、has_newer_rows()、upsert_rows()
+  任務歷史     insert_job_run()（job_run 表，只新增）
 
 寫入的函式都收 conn：呼叫的人用 `with get_engine().begin() as conn:` 開一個交易，全部成功才寫入。
 連線設定從 .env 讀（見 config.py）。
@@ -268,3 +269,13 @@ def upsert_rows(conn, table: str, df: pd.DataFrame, keys: list[str], version: st
         df = df.sort_values(version, kind="stable", na_position="first").drop_duplicates(keys, keep="last")
         df.to_sql(table, conn, if_exists="append", index=False, chunksize=1000,
                   method=functools.partial(upsert_chunk, keys=keys, version=version))
+
+
+# ---------- 任務歷史 ----------
+def insert_job_run(row: dict) -> None:
+    """任務歷史新增一列（欄位見 schema/log.sql）。自己開一個交易：和任務本身的寫入分開，任務失敗也記得下來。"""
+    statement = sqlalchemy.text(
+        "INSERT INTO tw_stock.job_run (task, args, status, result, error, attempt, mode, worker, started_at, finished_at, seconds) "
+        "VALUES (:task, CAST(:args AS JSONB), :status, :result, :error, :attempt, :mode, :worker, :started_at, :finished_at, :seconds)")
+    with get_engine().begin() as conn:
+        conn.execute(statement, {**row, "args": json.dumps(row["args"], ensure_ascii=False, default=str)})

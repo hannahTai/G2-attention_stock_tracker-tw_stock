@@ -39,7 +39,7 @@ analyze    stage_* 表 → app_* 表     規則引擎算進度
 **有失敗時怎麼查、怎麼補**
 
 1. 看昨晚有沒有成功：`Get-ScheduledTaskInfo G2-attention_stock_tracker-daily`，`LastTaskResult` 是 0 就是成功，1 就是有失敗。
-2. 打開 `data/daily.log`，看最後一次執行裡標 `✗` 的那幾行：
+2. 打開當天的 `data/logs/daily-YYYY-MM-DD.log`，看最後一次執行裡標 `✗` 的那幾行（或查任務歷史：`SELECT task, args, error FROM tw_stock.job_run WHERE status = 'failure' AND started_at >= CURRENT_DATE`）：
 
 | log 裡看到 | 意思 | 怎麼做 |
 |---|---|---|
@@ -184,10 +184,11 @@ gzip -dc data/backup/tw_stock_20261114_233000.sql.gz | wsl docker exec -i postgr
 
 | 工作 | 時間 | 執行 | log |
 |---|---|---|---|
-| `G2-attention_stock_tracker-daily` | 週一～五 21:00 | `scripts\run_daily.bat` | `data/daily.log` |
+| `G2-attention_stock_tracker-daily` | 週一～五 21:00 | `scripts\run_daily.bat` | `data/logs/daily-YYYY-MM-DD.log` |
 | `G2-attention_stock_tracker-backup` | 週一～五 23:30 | `scripts\run_backup.bat` | `data/backup.log` |
 
 - 用 `conhost.exe --headless` 背景執行；錯過時開機後補跑；電腦關機或睡眠時不會跑。
+- log 每天一個檔，只留 30 天（worker 的 log 也一樣：`data/logs/crawl_twse-…`、`crawl_mops-…`、`process-…`）；永久的紀錄是任務歷史 `tw_stock.job_run`（每個任務每跑一次一列）。
 - `Start-ScheduledTask <工作名稱>` 手動跑一次；`Get-ScheduledTaskInfo <工作名稱>` 看結果（0＝成功）。
 
 重灌時重建（backup 把檔名、時間換掉，並加 `-ExecutionTimeLimit (New-TimeSpan -Hours 1)`）：

@@ -122,9 +122,9 @@ def main() -> None:
     repository.create_tables()   # 建表（已經有就跳過）；全新的資料庫第一步就是 crawler
 
     # queue：開 Celery 時，證交所、觀測站各自一個 worker 一次做一個（見 common/worker.py）
-    failed = runner.run_jobs(build_twse_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS, queue="twse")
-    failed += runner.run_jobs(build_mops_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_MOPS, queue="mops")
-    failed += runner.run_jobs(build_detail_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_MOPS, queue="mops")
+    failed = runner.run_jobs(build_twse_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS, queue="crawl_twse")
+    failed += runner.run_jobs(build_mops_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_MOPS, queue="crawl_mops")
+    failed += runner.run_jobs(build_detail_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_MOPS, queue="crawl_mops")
     runner.finish(failed)
 
 

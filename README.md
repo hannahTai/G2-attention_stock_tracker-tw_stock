@@ -30,7 +30,7 @@ flowchart LR
     I --> ST["💾 Storage<br/>PostgreSQL<br/>raw / stage / app"]
     ST --> P["⚙️ Process<br/>pandas<br/>清理 + 規則引擎"]
     P --> SE["🖥 Serve<br/>FastAPI 資料 API<br/>Streamlit 網頁"]
-    SE --> O["📡 Observe<br/>daily.log + 回測<br/>失敗通知"]
+    SE --> O["📡 Observe<br/>log + 任務歷史 + 回測<br/>失敗通知"]
 ```
 
 | 階段 | 工具 |
@@ -40,7 +40,7 @@ flowchart LR
 | Storage | PostgreSQL 三層：`raw_*`（API 原文）→ `stage_*`（清理後）→ `app_*`（引擎結果）；之後 Cloud SQL、BigQuery |
 | Process | pandas：`transform/` 整理（raw → stage）、`analyze/` 規則引擎——依要點第六條算離處置還差幾次（stage → app） |
 | Serve | FastAPI 資料 API（只讀 `app_*` 表和 VIEW，回 JSON）＋ Streamlit 網頁（卡片牆、個股頁，只打 API、不連資料庫）；Metabase → Looker Studio 儀表板 |
-| Observe | `data/daily.log`、回測（真實處置 75 筆全部算到，條件也都對上）；之後失敗通知 |
+| Observe | `data/logs/`、任務歷史 `tw_stock.job_run`、回測（真實處置 75 筆全部算到，條件也都對上）；之後失敗通知 |
 
 順序是 ELT：原文先存進 raw，再清理、計算；規則改了可以從 raw 重算，不必重抓。每天只處理當天的資料。
 
@@ -62,7 +62,7 @@ flowchart LR
 ```
 crawler/                    抓資料：API → raw（producer → task → client → repository）
 ├─ producer.py                producer：決定今天要抓哪些任務、依序執行
-├─ task.py                    task：每個 crawl_xxx 任務抓一份、存進 raw（Celery worker 透過 common/worker.py 執行）
+├─ task.py                    task：每個 crawl_xxx 任務抓一份、存進 raw（@app.task 註冊成 Celery 任務，見 common/worker.py）
 └─ client.py                  client：打證交所、觀測站 API（fetch_xxx，不存檔）、檢查回應內容
 transform/                  轉換：raw → stage（同樣的 producer → task 寫法）
 ├─ producer.py                producer：產生任務清單（每份 raw 一個任務）並執行
@@ -89,7 +89,7 @@ common/                     各資料夾共用（crawler、transform、analyze �
 ├─ runner.py                  三個 producer 共用的任務執行：依序執行、暫時性失敗重試、列出失敗
 ├─ cli.py                     三個 producer 共用的指令參數（daily／backfill、--refetch）
 ├─ config.py                  設定（會因環境改變的值，從 .env 讀）
-├─ worker.py                  Celery worker：USE_CELERY=1 時從 RabbitMQ 拿任務來做（佇列 twse、mops、default）
+├─ worker.py                  Celery app 和任務共用的行為（重試、間隔）；USE_CELERY=1 時任務送進 RabbitMQ（佇列 crawl_twse、crawl_mops、process）
 └─ date_utils.py              日期工具
 schema/                     建表 SQL：raw.sql、stage.sql、app.sql、view.sql（給網頁讀的 VIEW）
 scripts/                    .bat：每日排程（daily）、回補（backfill）、從 raw 重算（rebuild）、備份（backup）、網站（web：API ＋ 網頁）
@@ -119,11 +119,12 @@ docker compose run --rm producer python main.py     # 跑一次資料線：任�
 | Flower（worker、任務狀況） | http://localhost:5556 |
 | RabbitMQ 管理介面 | http://localhost:15673 |
 
-worker 的分法：`worker-twse`、`worker-mops` 打外部網站，一次只做一個、每個任務後等一下（太快會被擋）；`worker` 做 transform、analyze，同時做 4 個。說明見 `docker-compose.yml`、`common/worker.py`。
+worker 的分法：`celery-crawl-twse`、`celery-crawl-mops`（佇列 `crawl_twse`、`crawl_mops`）打外部網站，一次只做一個、每個任務後等一下（太快會被擋；限制是對網站、對 IP，多開 worker 一起打只會更快被擋）；`celery-process`（佇列 `process`）做 transform、analyze，同時做 4 個。說明見 `docker-compose.yml`、`common/worker.py`。
+log 在 `data/logs/`，每天一個檔、留 30 天：`daily-YYYY-MM-DD.log`（每天的資料線）、`crawl_twse-…`、`crawl_mops-…`、`process-…`（三個 worker）。每個任務每跑一次另外記一列在 `tw_stock.job_run`（任務歷史，永久保留）。
 
 ### 本機（不用 Docker 跑程式，資料庫還是要有）
 
-`.env` 的 `USE_CELERY=0`：任務在這台電腦依序執行，不需要 RabbitMQ。
+預設 `USE_CELERY=1`：任務送進 RabbitMQ 給 Compose 裡的 Celery worker 做（要先 `docker compose up -d`）。沒開 Docker 時，`.env` 設 `USE_CELERY=0` 就改成在這台電腦依序執行，不需要 RabbitMQ。
 
 ```bash
 git clone https://github.com/hannahTai/G2-attention_stock_tracker-tw_stock.git
