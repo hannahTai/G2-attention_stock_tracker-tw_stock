@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{# 網址參數：date（交易日）、tab（分頁）、only（只看）、q（搜尋）。url_with() 會把目前的參數帶上，只換指定的那個。 #}
+{% block header_right %}
+<details class="datepick">
+  <summary>交易日 <span class="mono">{{ roc(day) }}</span></summary>
+  <nav class="datepick-list" aria-label="交易日">
+    {% for d in dates %}
+    <a href="?{{ url_with(date=ymd(d)) }}" {% if d == day %}aria-current="date"{% endif %}><span class="mono">{{ roc(d) }}</span></a>
+    {% endfor %}
+  </nav>
+</details>
+{# 搜尋框是一般的 <form method="get">：按 Enter 會換成 ?q=輸入的字，只留代號或名稱符合的卡片（分頁、只看照舊）。個股頁沒有搜尋框 #}
+<form class="search" method="get" role="search">
+  <input type="search" name="q" value="{{ search or '' }}" placeholder="搜尋代號或名稱" aria-label="搜尋代號或名稱" autocomplete="off">
+  <input type="hidden" name="date" value="{{ ymd(day) }}">
+  {% if tab != 'all' %}<input type="hidden" name="tab" value="{{ tab }}">{% endif %}
+  {% if only %}<input type="hidden" name="only" value="{{ only }}">{% endif %}
+</form>
+{% endblock %}
+
+{% block content %}
+{# 分頁＝分區，每檔只在一區，數字加起來＝全部；下面的「只看」是可以開關的篩選。
+   分頁旁的 ⓘ：滑鼠移上去顯示這一區是什麼（「全部」沒有） #}
+<nav class="tabs" aria-label="分區">
+  {% for key, label in tabs %}
+  <a href="?{{ url_with(tab=key) }}" class="tab-{{ key }} {{ 'zero' if not counts[key] }}" {% if key == tab %}aria-current="page"{% endif %}>
+    {{ label }} <span class="count">{{ counts[key] }}</span>
+    {% if tab_notes[key] %}<span class="info" aria-label="{{ tab_notes[key] }}">ⓘ<span class="tip" role="tooltip">{{ tab_notes[key] }}</span></span>{% endif %}
+  </a>
+  {% endfor %}
+</nav>
+
+<div class="filters" aria-label="只看">
+  <span class="small muted">只看</span>
+  {# 0 檔的篩選照樣顯示（「今天沒人出關」也是資訊），但不能點，免得點進一頁空白 #}
+  {% for key, label in filters %}
+    {% if key == only %}
+    <a class="chip on" href="?{{ url_with(only='') }}" aria-pressed="true">{{ label }} <span class="count">{{ filter_counts[key] }}</span> ✕</a>
+    {% elif not filter_counts[key] %}
+    <span class="chip zero" aria-disabled="true">{{ label }} <span class="count">0</span></span>
+    {% else %}
+    <a class="chip" href="?{{ url_with(only=key) }}" aria-pressed="false">{{ label }} <span class="count">{{ filter_counts[key] }}</span></a>
+    {% endif %}
+  {% endfor %}
+</div>
+
+{% if search %}
+<p class="search-note">搜尋「{{ search }}」：{{ shown }} 檔・<a href="?{{ url_with(q='') }}">清除搜尋</a></p>
+{% endif %}
+
+{% if not sections %}
+  {% if search %}
+  <p class="empty">沒有代號或名稱符合「{{ search }}」的股票</p>
+  {% elif only %}
+  <p class="empty">{{ md(day) }} 沒有符合「{{ only_label }}」的股票・<a href="?{{ url_with(only='') }}">清除篩選</a></p>
+  {% else %}
+  <p class="empty">{{ md(day) }} {{ empty_text[tab] }}</p>
+  {% endif %}
+{% endif %}
+
+{# 不分區、沒有小標題：卡片上的標籤已經寫了狀態（聽牌、處置中…）；一般卡片在前，「其他」的小卡片接在後面 #}
+{% for sec in sections %}
+<section class="sec sec-{{ sec.key }}">
+  {# 「其他」（差 2 次以上）比較不急：同樣的卡片、矮一點（cards-sm），全部列出（進度多的在前） #}
+  <div class="cards {{ 'cards-sm' if sec.key == 'rest' }}">
+    {% for c in sec.cards %}{% include "_card.html" %}{% endfor %}
+  </div>
+</section>
+{% endfor %}
+
+{% endblock %}

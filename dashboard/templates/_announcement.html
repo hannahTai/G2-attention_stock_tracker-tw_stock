@@ -1,0 +1,23 @@
+{# 一則公告（_announcement_day.html 用 include 引入，變數 a 是 views.announcement_item 的結果）。
+   兩行：第一行主旨（用整欄的寬度）→ 盤中／更正／說明 → 箭頭；第二行：類別標籤（分 5 種顏色，見 views.CLAUSE_GROUPS）＋時間（淺灰）。
+   有全文的話整塊可以點，箭頭朝右＝收著、朝下＝展開；沒有全文就沒有箭頭。
+   盤中＝交易日 09:00～14:30 發的。 #}
+{% macro head(a, chev=False) -%}
+  <span class="ann-title"><span class="ann-subject">{{ a.subject }}</span>
+  {%- if a.during_session %}<span class="flag acc">盤中</span>{% endif %}
+  {%- if a.is_correction %}<span class="flag amber">更正</span>{% endif %}
+  {%- if a.is_explanation %}<span class="flag mut">說明</span>{% endif %}
+  {%- if chev %}<span class="chev" aria-hidden="true"></span>{% endif %}</span>
+  <span class="ann-meta">{% if a.clause_name %}<span class="ann-cat {{ a.clause_group }}">{{ a.clause_name }}</span>{% endif %}<span class="mono">{{ a.time }}</span></span>
+{%- endmacro %}
+<div class="ann">
+  {% if a.content %}
+  <details class="ann-full">
+    <summary class="ann-head">{{ head(a, chev=True) }}</summary>
+    {# 一般文字：被硬切斷的行已經接回來，依框寬自動換行；有表格的照原樣、左右捲動 #}
+    <pre class="{{ 'table' if a.is_table else 'text' }}">{{ a.content }}</pre>
+  </details>
+  {% else %}
+  <p class="ann-head">{{ head(a) }}</p>
+  {% endif %}
+</div>

@@ -1,0 +1,59 @@
+{# 好幾頁共用的小元件。用法：{% import "_macros.html" as ui %}，再 {{ ui.tags(c) }}。
+
+   狀態（總覽的卡片、個股頁最上面共用，c 是 views.wall_card 的結果）：
+     tags(c)      狀態標籤：次要的小框（.sub-tag）在左、主要狀態的色塊（.pill）在最右邊；放在名稱那一列的右邊
+     headline(c)  大字
+     progress(c)  進度條：大字「差 N 次」的那條；格子＝留得住的次數，空格數＝還差幾次
+     facts(c)     資訊列（處置日期、撮合、預收）
+     foot(c, ann_href)  底部：收盤價｜公告則數（連到公開資訊）
+   個股頁的列表：
+     day_row(date, weekday)  左欄日期＋週幾、右欄內容（用 {% call %} 包內容）；公開資訊和注意紀錄共用
+     fold(label)             「顯示更早的…」：收起來的內容（用 {% call %} 包內容） #}
+
+{% macro tags(c) -%}
+{% if c.tags %}<div class="card-tags">
+  {%- for t in c.tags|rejectattr("main") %}<span class="sub-tag {{ t.kind }}">{{ t.text }}</span>{% endfor -%}
+  {%- for t in c.tags|selectattr("main") %}<span class="pill {{ t.kind }}">{{ t.text }}</span>{% endfor -%}
+</div>{% endif %}
+{%- endmacro %}
+
+{% macro headline(c) -%}
+<p class="big {{ c.headline.kind }}">{{ c.headline.text }}</p>
+{%- endmacro %}
+
+{% macro facts(c) -%}
+{% if c.facts %}<dl class="facts">{% for label, value in c.facts %}<dt>{{ label }}</dt><dd>{{ value }}</dd>{% endfor %}</dl>{% endif %}
+{%- endmacro %}
+
+{% macro progress(c) -%}
+{# 10 日內、30 日內最早的會滑出窗口，所以格子是留得住的次數（kept_cells）；已達幾次、哪幾天在個股頁的處置進度看 #}
+{% if c.progress %}
+<div class="progress">
+  <span class="bar" role="img" aria-label="{{ c.progress.label }}，還差 {{ c.progress.left }} 次">
+    {%- for on in c.progress.kept_cells %}<i class="{{ 'on' if on }}"></i>{% endfor -%}
+  </span>
+  <span class="progress-label">{{ c.progress.label }}{% if c.uncounted_today %}・今天被列的款不算次數{% endif %}</span>
+</div>
+{% endif %}
+{%- endmacro %}
+
+{% macro foot(c, ann_href) -%}
+<div class="card-foot">
+  <span>{% if c.close %}收盤 <span class="mono">{{ c.close }}</span>{% endif %}</span>
+  {% if c.announcement_count %}<a class="ann-link" href="{{ ann_href }}">公告 {{ c.announcement_count }} 則 ›</a>{% else %}<span>沒有公告</span>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro day_row(date, weekday) -%}
+<div class="day-row">
+  <div class="day-date"><span class="mono">{{ date }}</span><span class="small muted">週{{ weekday }}</span></div>
+  <div>{{ caller() }}</div>
+</div>
+{%- endmacro %}
+
+{% macro fold(label) -%}
+<details class="more">
+  <summary>{{ label }}</summary>
+  {{ caller() }}
+</details>
+{%- endmacro %}

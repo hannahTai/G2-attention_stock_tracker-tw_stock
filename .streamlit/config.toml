@@ -1,0 +1,12 @@
+# Streamlit 設定（在專案根目錄執行 streamlit run 時會讀這個檔）
+
+[server]
+port = 8502
+# headless：不問第一次執行的 Email、不自己開瀏覽器（run_web.bat 會開）
+headless = true
+# runOnSave：存檔後自動重跑，開著的網頁會自己更新（改 dashboard/ 裡的 .py 也會）
+runOnSave = true
+
+[browser]
+# 不送使用統計給 Streamlit
+gatherUsageStats = false

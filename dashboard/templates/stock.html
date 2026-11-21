@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+
+{# 版面：最上面是狀態；下面一欄，由上往下 ——
+     AI 摘要 → 公開資訊 → 新聞資訊（公司和市場說了什麼）→ 處置進度、30 格紀錄（還差幾次）→ 注意紀錄 → 處置紀錄（每一次的細節）
+   注意紀錄、以前的處置、公開資訊先列最近 7 天（views.RECENT_DAYS），更早的收在「顯示更早的…」。
+   要顯示什麼、怎麼寫都在 views.stock_page 決定，這裡只排版。 #}
+{% block content %}
+<a class="back" href="?{{ back_query }}">‹ 回總覽</a>
+
+{# 最上面：和總覽的卡片同一個版面（名稱｜標籤 → 大字、進度條、資訊列 → 收盤價｜公告），只是字大一點 #}
+<div class="hero {{ 'tone-' ~ wall.tone if wall.tone }}">
+  <div class="card-head">
+    <h2>{{ wall.name }}<span class="code">{{ wall.stock_id }}</span></h2>
+    {{ ui.tags(wall) }}
+  </div>
+  <div class="card-body">
+    {{ ui.headline(wall) }}
+    {{ ui.progress(wall) }}
+    {{ ui.facts(wall) }}
+  </div>
+  {{ ui.foot(wall, "#announcements") }}
+</div>
+
+{# AI 摘要（規劃見 docs/ai_plan.md 的 ③）：目前只有畫面，資料還沒接；沒有摘要就寫一行說明。
+   之後有摘要時顯示全文和用到的新聞（標題連結、來源、日期） #}
+<section class="block">
+  <h3>AI 摘要 <span class="muted">僅供參考，不構成投資建議</span></h3>
+  <div class="box">
+    {% if ai_summary %}
+    <p class="ai-text">{{ ai_summary.summary }}</p>
+    {% if ai_summary.sources %}
+    <ul class="ai-sources">
+      {% for s in ai_summary.sources %}
+      <li><a href="{{ s.link }}" target="_blank" rel="noopener noreferrer">{{ s.title }}</a><span class="muted small">・{{ s.source }}{% if s.date %} {{ s.date }}{% endif %}</span></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% else %}
+    <p class="muted small">今天的 AI 摘要還沒產生（每天收盤後更新）。</p>
+    {% endif %}
+  </div>
+</section>
+
+<section class="block" id="announcements">
+  <h3>公開資訊 <span class="muted">近 30 個營業日 {{ announcement_total }} 則</span></h3>
+  <div class="box day-list">
+    {% for g in announcements_recent %}{% include "_announcement_day.html" %}{% else %}
+    <p class="muted small day-none">{{ '近 %d 天沒有公告' % recent_days if announcement_total else '近 30 個營業日沒有重大訊息' }}</p>
+    {% endfor %}
+    {% if announcements_older %}
+    {% call ui.fold("顯示更早的 %d 則" % announcements_older_count) %}
+      {% for g in announcements_older %}{% include "_announcement_day.html" %}{% endfor %}
+    {% endcall %}
+    {% endif %}
+  </div>
+</section>
+
+{# 新聞資訊（規劃見 docs/ai_plan.md 的 ②，來源 FinMind TaiwanStockNews）：目前只有畫面，資料還沒接；
+   之後有新聞時一則一列：標題連結，下面一行來源・日期 #}
+<section class="block" id="news">
+  <h3>新聞資訊 <span class="muted">近 {{ recent_days }} 天</span></h3>
+  <div class="box">
+    {% if news %}
+    <ul class="news">
+      {% for n in news %}
+      <li><a href="{{ n.link }}" target="_blank" rel="noopener noreferrer">{{ n.title }}</a>
+        <span class="news-meta">{{ n.source }}{% if n.date %}・<span class="mono">{{ n.date }}</span>{% endif %}</span></li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted small">新聞還沒有資料（之後每天收盤後從 FinMind 更新）。</p>
+    {% endif %}
+  </div>
+</section>
+
+<section class="block">
+  <h3>處置進度</h3>
+  <div class="box">
+    <p class="note side-note">「日」都是營業日；格子上的日期是計入的那天。</p>
+    <div class="paths">
+      {% for p in paths %}
+      <div class="path path-{{ p.key }}">
+        <span class="path-label">{{ p.label }}</span>
+        <span>{% if p.met %}<span class="flag seal">達標</span>{% elif p.left == 1 %}<span class="flag amber">差 1 次</span>{% endif %}</span>
+        <span class="path-count num">{{ p.count }} / {{ p.threshold }} 次</span>
+        <span class="bar" role="img" aria-label="{{ p.label }} {{ p.count }} / {{ p.threshold }} 次，{{ p.dates }}">
+          {%- for on in p.cells %}<i class="{{ 'on' if on }}">{{ p.labels[loop.index0] }}</i>{% endfor -%}
+        </span>
+      </div>
+      {% endfor %}
+    </div>
+    {% for p in paths if p.expiring %}<p class="note">{{ p.label }}：最早計入的 {{ p.expiring }} 次在達標前會超出期間，所以還差 {{ p.left }} 次。</p>{% endfor %}
+    {% if not card.has_full_history %}<p class="note">前面的資料不滿 30 個營業日，30 日內的次數可能偏少。</p>{% endif %}
+
+    <p class="small muted strip-title">注意及處置紀錄・近 30 個營業日</p>
+    <div class="strip">
+      {% for cell in cells %}
+      <div class="cell" title="{{ cell.title }}">
+        <span class="month">{{ cell.month_label }}</span>
+        <span class="sq {{ cell.shade }} {{ 'punish' if cell.in_punish }}">{{ cell.day.day }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {# 圖例只列這 30 格裡有出現的（views.cell_legend） #}
+    <div class="legend">
+      {% for item in legend %}<span>{% if item.cls %}<i class="{{ item.cls }}"></i>{% endif %}{{ item.text }}</span>{% endfor %}
+    </div>
+  </div>
+</section>
+
+{# 注意紀錄：近 30 個營業日每次被列的那天，新的在前；原因全文都收著，點那一列才展開 #}
+{% macro notice_row(n) %}
+{% call ui.day_row(n.date, n.weekday) %}
+  <details class="log">
+    <summary aria-label="{{ n.date }} 被列注意的原因">
+      {% for c in n.clauses %}<span class="clause {{ 'counted' if c.counted }}">第 {{ c.no }} 款・{{ c.name }}</span>{% endfor %}
+      <span class="small muted">{{ n.note }}</span>
+      {% if n.reason %}<span class="chev" aria-hidden="true"></span>{% endif %}
+    </summary>
+    {% if n.reason %}<p class="reason">{{ n.reason }}</p>{% endif %}
+  </details>
+{% endcall %}
+{% endmacro %}
+<section class="block">
+  <h3>注意紀錄 <span class="muted">近 30 個營業日 {{ notice_total }} 次</span></h3>
+  <div class="box day-list">
+    {% for n in notices_recent %}{{ notice_row(n) }}{% else %}
+    <p class="muted small day-none">{{ '近 %d 天沒有被列注意' % recent_days if notices_older else '近 30 個營業日沒有被列注意。' }}</p>
+    {% endfor %}
+    {% if notices_older %}
+    {% call ui.fold("顯示更早的 %d 次" % notices_older|length) %}
+      {% for n in notices_older %}{{ notice_row(n) }}{% endfor %}
+    {% endcall %}
+    {% endif %}
+  </div>
+</section>
+
+{# 處置紀錄：一定顯示。現在這次（或已公布的這次）在 timeline，出關日寫在同一列下面；以前的處置灰色列在下面 #}
+{% macro step_list(steps) %}
+<ol class="timeline">
+  {% for step in steps %}
+  <li class="step {{ step.kind }}"><span class="when mono">{{ step.when }}</span>
+    <span>{{ step.text }}
+      {%- if step.note %}<span class="muted small">・{{ step.note }}</span>{% endif %}
+      {%- if step.resume_when %}<span class="step-after"><span class="mono">{{ step.resume_when }}</span> 出關，恢復正常交易</span>{% endif %}</span></li>
+  {% endfor %}
+</ol>
+{% endmacro %}
+<section class="block">
+  {# 標題右邊：「預收、撮合是什麼？」，點了在下面跳出小框說明（有處置內容才需要） #}
+  <div class="block-head">
+    <h3>處置紀錄</h3>
+    {% if show_glossary %}
+    <details class="glossary">
+      <summary>預收、撮合是什麼？</summary>
+      <div class="glossary-pop">
+        <p><b>預收</b>：下單前要先把錢（買）或股票（賣）交給券商。</p>
+        <p><b>約每 N 分鐘撮合</b>：不是即時成交，每隔一段時間才集中成交一次。</p>
+      </div>
+    </details>
+    {% endif %}
+  </div>
+  <div class="box">
+    {% if timeline %}
+    {{ step_list(timeline) }}
+    {% endif %}
+    {% if not has_punishment %}<p class="muted">無</p>{% endif %}
+
+    {% if past_recent %}
+    <div class="past-list">
+      <p class="small muted">其他處置</p>
+      {{ step_list(past_recent) }}
+    </div>
+    {% elif past_older and not timeline %}
+    <p class="muted small">近 {{ recent_days }} 天沒有處置</p>
+    {% endif %}
+    {% if past_older %}
+    {% call ui.fold("顯示更早的 %d 次" % past_older|length) %}{{ step_list(past_older) }}{% endcall %}
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

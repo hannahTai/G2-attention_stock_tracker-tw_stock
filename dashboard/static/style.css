@@ -1,0 +1,383 @@
+/* =====================================================================
+   注意股，還差幾步？樣式表（dashboard/templates 用）
+
+   設計原則（改樣式前先看這幾條）
+   1. 先結論、後細節：最上面放「會不會處置、什麼時候」，次數細節放最後。
+   2. 顏色只用來表示狀態，而且每種顏色只有一個意思：
+        琥珀 amber  ＝ 聽牌（再被列一次就處置）
+        橘 orange   ＝ 即將處置（已達標、處置還沒開始）
+        紅 seal     ＝ 處置中
+        紫 violet   ＝ 明日出關（處置最後一天）
+        綠 ok       ＝ 今日出關、恢復交易
+        藍 accent   ＝ 連結、會累計的款次、今日注意股
+      公開資訊的類別標籤另外分 5 色（.ann-cat，見 views.CLAUSE_GROUPS）。其他文字一律用墨色、灰色，重要程度靠字級和粗細分。
+      卡片的顏色（上緣色條）和主要狀態的色塊（.pill）同色；次要的狀態用小框（.sub-tag），公告的盤中、更正用有顏色的字（.flag）。
+   3. 一樣的東西放一樣的位置：每張卡片都是 名稱｜狀態 → 大字 → 進度條 → 資訊列 → 底部（收盤價｜公告）。
+   4. 預設只顯示重要的，其他收起來（「其他」用矮卡片、個股頁的列表先列最近 7 天、全文要點開）。
+   5. 用一般人聽得懂的話：寫「這次會算進處置次數」，不寫「is_counted」。
+   6. 字要看得清楚：內文 15px；灰字和背景的對比至少 4.5:1（WCAG AA）；深色模式同樣檢查。
+
+   順序：顏色和字型（token）→ Streamlit 外框 → 共用版面 → 共用元件 → 總覽 → 個股頁 → 手機
+   ===================================================================== */
+
+/* ---------- 顏色和字型：只在這裡定義，下面都用 var(--xxx) ---------- */
+:root {
+  --bg: #f3f5f8; --surface: #ffffff; --sunk: #e8ecf2; --line: #d5dbe4;
+  --ink: #16202e; --muted: #4f5b6c; --faint: #646e7e;
+  --accent: #1f4e8c; --accent-soft: #e3ecf8;
+  --seal: #b3261e; --seal-soft: #fbe9e7;
+  --amber: #9a5800; --amber-soft: #fdf0d9;
+  --ok: #1d6b45; --ok-soft: #e2f2e9;
+  --violet: #6a3fa0; --violet-soft: #efe8f8;
+  --orange: #c2410c; --orange-soft: #fdeadc;   /* 即將處置：介於聽牌（琥珀）和處置中（紅）之間 */
+  --cell-on: #1f4e8c; --cell-reset: #9fb7d9;
+  --shadow: 0 6px 20px rgb(0 0 0 / .14);   /* 浮在內容上面的小框（分頁說明、預收撮合說明） */
+  --f-body: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f141b; --surface: #171e28; --sunk: #1e2632; --line: #2b3544;
+    --ink: #e6ebf2; --muted: #b0b9c6; --faint: #8994a5;
+    --accent: #7fa8e6; --accent-soft: #1c2a40;
+    --seal: #ff8a80; --seal-soft: #3a1d1c;
+    --amber: #f2b356; --amber-soft: #3a2b14;
+    --ok: #6fcf9b; --ok-soft: #163327;
+    --violet: #c3a6f0; --violet-soft: #2a2140;
+    --orange: #f2965e; --orange-soft: #3a2316;
+    --cell-on: #7fa8e6; --cell-reset: #3d5679;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f141b; --surface: #171e28; --sunk: #1e2632; --line: #2b3544;
+  --ink: #e6ebf2; --muted: #b0b9c6; --faint: #8994a5;
+  --accent: #7fa8e6; --accent-soft: #1c2a40;
+  --seal: #ff8a80; --seal-soft: #3a1d1c;
+  --amber: #f2b356; --amber-soft: #3a2b14;
+  --ok: #6fcf9b; --ok-soft: #163327;
+  --violet: #c3a6f0; --violet-soft: #2a2140;
+  --orange: #f2965e; --orange-soft: #3a2316;
+  --cell-on: #7fa8e6; --cell-reset: #3d5679;
+  color-scheme: dark;
+}
+
+/* ---------- Streamlit 外框：藏起工具列、Deploy、側欄，背景和寬度交給下面的 .wrap ---------- */
+header[data-testid="stHeader"], [data-testid="stToolbar"], [data-testid="stDecoration"],
+[data-testid="stStatusWidget"], [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"] { display: none !important; }
+.stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] { background: var(--bg); color: var(--ink); }
+[data-testid="stMainBlockContainer"], .block-container { max-width: none; padding: 0 !important; }
+.stHtml h1, .stHtml h2, .stHtml h3 { font-family: var(--f-body); padding: 0; scroll-margin-top: 16px; }
+.stHtml h1 a, .stHtml h2 a, .stHtml h3 a { display: inline; }   /* Streamlit 會在標題旁加錨點連結 */
+.stHtml ol, .stHtml ul, .stHtml dl, .stHtml dd { margin: 0; padding: 0; }   /* Streamlit 預設給清單左邊縮排 */
+.stHtml li { margin: 0; }
+
+/* ---------- 共用版面 ---------- */
+* { box-sizing: border-box; }
+/* 寬螢幕：整頁佔畫面寬的 80%，最寬 1320px（太寬一行字太長、版面空）；窄螢幕用滿、左右留 16px */
+.wrap { color: var(--ink); font-family: var(--f-body); font-size: 15px; line-height: 1.65; max-width: none; margin: 0 auto;
+  padding-block: 24px 48px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+@media (min-width: 960px) { .wrap { max-width: min(80vw, 1320px); } }
+a { color: var(--accent); }
+p { margin: 0; }
+a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mono { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.num { font-variant-numeric: tabular-nums; }   /* 次數（「2 / 3 次」）：一般字型、數字等寬；等寬字型會把空格和「次」拉很開 */
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.note { font-size: 13px; color: var(--faint); margin-top: 8px; }
+
+header.top { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px; margin-bottom: 18px; }
+header.top h1 { font-size: 26px; font-weight: 900; margin: 0; letter-spacing: .02em; }
+header.top h1 a { color: inherit; text-decoration: none; }
+header.top .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.top-right { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+/* 搜尋框：和交易日選單同高、同樣的框；按 Enter 送出（沒有按鈕，網頁沒有 JavaScript 也能用） */
+.search input { font: inherit; font-size: 13px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; width: 180px; }
+.search input::placeholder { color: var(--faint); }
+.search input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+.search-note { font-size: 13px; color: var(--muted); margin: 0 0 12px; }
+/* 交易日選單：st.html 不執行 JavaScript，所以用 <details> 做下拉清單，每個日期是一個連結 */
+.datepick { position: relative; font-size: 13px; color: var(--muted); }
+.datepick > summary { color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; }
+.datepick > summary::after { content: " ▾"; color: var(--muted); }
+.datepick-list { position: absolute; right: 0; z-index: 10; margin-top: 4px; max-height: 320px; overflow: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 4px 0; min-width: 120px; }
+.datepick-list a { display: block; padding: 4px 14px; color: var(--ink); text-decoration: none; }
+.datepick-list a:hover { background: var(--sunk); }
+.datepick-list a[aria-current="date"] { font-weight: 700; color: var(--accent); }
+.banner { background: var(--amber-soft); color: var(--ink); border-radius: 8px; padding: 8px 14px; margin-bottom: 16px; font-size: 14px; }
+.foot { margin-top: 40px; color: var(--faint); font-size: 13px; display: grid; gap: 4px; }
+.empty { color: var(--muted); background: var(--surface); border: 1px dashed var(--line); border-radius: 8px; padding: 24px; text-align: center; }
+
+/* ---------- 共用元件 ---------- */
+/* 狀態標籤（總覽卡片、個股頁最上面共用，放在名稱那一列的右邊）：主要狀態用色塊 .pill（即將處置、處置中、聽牌、明日出關）靠最右邊，
+   次要的用小框 .sub-tag（細框、同色字、不填底）排在左邊，一看就分得出主次。
+   有顏色的字 .flag 給公告的盤中、更正和處置進度的「差 1 次」用 */
+.card-tags { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 4px; flex-shrink: 0; max-width: 65%; }
+.sub-tag { display: inline-block; font-size: 12px; line-height: 1.45; padding: 0 6px; border: 1px solid currentColor; border-radius: 5px; white-space: nowrap; font-weight: 500; }
+.sub-tag.amber { color: var(--amber); } .sub-tag.ok { color: var(--ok); } .sub-tag.seal { color: var(--seal); }
+.sub-tag.acc { color: var(--accent); }
+.sub-tag.mut { color: var(--muted); border-color: var(--line); }
+.pill { display: inline-block; font-size: 13px; line-height: 1.5; border-radius: 5px; padding: 0 8px; font-weight: 500; white-space: nowrap; vertical-align: 1px; }
+.pill.orange { background: var(--orange); color: var(--surface); }   /* 即將處置：實心，最急 */
+.pill.seal { background: var(--seal-soft); color: var(--seal); }
+.pill.amber { background: var(--amber-soft); color: var(--amber); }
+.pill.violet { background: var(--violet-soft); color: var(--violet); }   /* 明日出關 */
+.flag { font-size: 13px; font-weight: 600; white-space: nowrap; }
+.flag.seal { color: var(--seal); } .flag.amber { color: var(--amber); } .flag.ok { color: var(--ok); }
+.flag.acc { color: var(--accent); } .flag.mut { color: var(--muted); font-weight: 500; }
+
+/* 大字：每張卡片最先被看到的一句 */
+.big { font-size: 28px; font-weight: 900; letter-spacing: .03em; line-height: 1.25; }
+.big.seal { color: var(--seal); }
+.big.amber { color: var(--amber); }
+.big.violet { color: var(--violet); }
+.big.orange { color: var(--orange); }
+.big.quiet { font-size: 22px; font-weight: 700; color: var(--muted); }
+
+/* 進度條：一格一次，填滿的是已經累計的 */
+.bar { display: inline-flex; gap: 3px; }
+.bar i { width: 28px; height: 8px; border: 1px solid var(--cell-on); border-radius: 2px; }
+.bar i.on { background: var(--cell-on); }
+/* 聽牌卡片（tone-amber）的進度條用琥珀，和上緣色條、大字、標籤同色；其他地方維持藍色 */
+.card.tone-amber .bar i, .hero.tone-amber .bar i { border-color: var(--amber); }
+.card.tone-amber .bar i.on, .hero.tone-amber .bar i.on { background: var(--amber); }
+
+/* 資訊列：左邊標籤、右邊內容 */
+.facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 12px; margin: 0; font-size: 14px; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; font-weight: 600; }
+
+
+.code { font-family: var(--f-mono); font-size: .8em; font-weight: 500; color: var(--muted); margin-left: 6px; }
+.card-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+
+/* 可以點開的 <details>：預設的 summary 是藍色小字（「顯示更早的…」）；
+   做成別的樣子的（交易日選單、說明、公告、注意紀錄）拿掉三角形，各自的樣子寫在各自那段 */
+details summary { cursor: pointer; color: var(--accent); font-size: 13px; }
+.datepick > summary, .glossary > summary, .ann-full > summary, .log > summary { list-style: none; }
+.datepick > summary::-webkit-details-marker, .glossary > summary::-webkit-details-marker,
+.ann-full > summary::-webkit-details-marker, .log > summary::-webkit-details-marker { display: none; }
+/* 公告、注意紀錄整列可以點：點了不留框，用鍵盤（Tab）時才畫框 */
+.ann-full > summary, .log > summary { border-radius: 4px; }
+.ann-full > summary:focus, .log > summary:focus { outline: none; }
+.ann-full > summary:focus-visible, .log > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+/* 公告全文常有用空白排的表格：不自動換行，表格欄位才對得齊；太寬就在框裡左右捲 */
+details pre { white-space: pre; overflow: auto; font-family: var(--f-mono); font-size: 12px; line-height: 1.7; color: var(--ink); margin: 8px 0 0; background: var(--sunk); padding: 12px 14px; border-radius: 6px; max-height: 420px; tab-size: 4; }
+.more > summary { padding: 12px 0 4px; }
+
+/* 箭頭：朝右＝收著（像 >）、點開朝下；公告和注意紀錄共用 */
+.chev { display: inline-block; width: 7px; height: 7px; margin-left: 8px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: translateY(-1px) rotate(-45deg); transition: transform .15s; }
+.ann-full[open] .chev, .log[open] .chev { transform: translateY(-3px) rotate(45deg); }
+.ann-full > summary:hover .chev, .log > summary:hover .chev { border-color: var(--accent); }
+
+/* 卡片的顏色（上緣色條；卡片、個股頁最上面都用）跟著主要標籤（views.wall_card 的 tone）：
+   順序照階段變色：tone-amber＝聽牌 → tone-orange＝即將處置（整圈框）→ tone-seal＝處置中（紅）→ tone-violet＝明日出關；沒有主要標籤的不上色
+   寫成 .card.tone-xxx（兩個 class），才不會被後面 .card { border } 蓋掉 */
+.card.tone-orange, .hero.tone-orange { border: 1px solid var(--orange); border-top: 4px solid var(--orange); }
+.card.tone-seal, .hero.tone-seal { border-top: 4px solid var(--seal); }
+.card.tone-amber, .hero.tone-amber { border-top: 4px solid var(--amber); }
+.card.tone-violet, .hero.tone-violet { border-top: 4px solid var(--violet); }
+
+/* ---------- 總覽 ---------- */
+/* 分頁：底線式（篩選，不是按鈕）；圓點顏色和卡片同一套意思。太窄時換行，不用左右滑：左右滑（overflow）會把 ⓘ 的說明框裁掉 */
+.tabs { display: flex; flex-wrap: wrap; gap: 0 4px; margin-bottom: 12px; border-bottom: 1px solid var(--line); }
+.tabs a { flex: 0 0 auto; text-decoration: none; color: var(--muted); padding: 10px 12px; margin-bottom: -1px; border-bottom: 2px solid transparent; font-weight: 500; display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+.tabs a:hover { color: var(--ink); }
+.tabs a::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--line); }   /* 「其他」用這個灰點 */
+.tabs a.tab-all::before { display: none; }
+.tabs a.tab-soon::before { background: var(--orange); }
+.tabs a.tab-punish::before { background: var(--seal); }
+.tabs a.tab-one::before { background: var(--amber); }
+.tabs a.tab-leave_tomorrow::before { background: var(--violet); }
+.tabs a .count { font-family: var(--f-mono); font-size: 13px; color: var(--faint); }
+.tabs a.zero, .tabs a.zero .count { color: var(--faint); }
+.tabs a.zero::before { opacity: .4; }
+.tabs a[aria-current="page"] { color: var(--ink); font-weight: 700; border-bottom-color: var(--ink); }
+.tabs a[aria-current="page"] .count { color: var(--ink); }
+/* 分頁說明：ⓘ 滑鼠移上去才顯示 */
+.info { position: relative; font-size: 13px; font-weight: 400; color: var(--faint); cursor: help; outline: none; }
+.info:hover, .info:focus { color: var(--accent); }
+.info .tip { display: none; position: absolute; left: 50%; top: calc(100% + 6px); transform: translateX(-30%); z-index: 20;
+             width: max-content; max-width: min(340px, 80vw); padding: 6px 10px; border-radius: 6px; font-size: 13px; line-height: 1.5;
+             background: var(--ink); color: var(--surface); box-shadow: var(--shadow); white-space: normal; }   /* 分頁文字不換行，說明框要改回可以換行 */
+.info:hover .tip, .info:focus .tip { display: block; }
+.tabs a:last-child .tip { left: auto; right: 0; transform: none; }   /* 最右邊的分頁：說明框往左展開，不超出畫面 */
+
+/* 「只看」篩選：圓角小晶片，看起來和分頁不同（分頁是分類，這是開關） */
+.filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 24px; }
+.chip { font-size: 13px; text-decoration: none; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 2px 12px; display: inline-flex; gap: 6px; align-items: baseline; }
+.chip:hover { border-color: var(--accent); }
+.chip .count { font-family: var(--f-mono); color: var(--faint); }
+.chip.zero { color: var(--faint); background: transparent; border-style: dashed; cursor: default; }   /* 0 檔：不能點 */
+.chip.zero:hover { border-color: var(--line); }
+.chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.chip.on .count { color: var(--accent); }
+
+.sec { margin-bottom: 32px; }
+.sec + .sec { padding-top: 4px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+/* 直向 flex：同一列卡片等高，底部（.card-foot）用 margin-top: auto 推到最底，整列對齊。
+   滑鼠移上去：底色染一點卡片狀態的顏色（和上緣色條同色系，只混 6%）；顏色放在 --hover，沒有狀態的卡片用灰 */
+.card { position: relative; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px 10px; display: flex; flex-direction: column; gap: 12px;
+  --hover: var(--faint); transition: background-color .15s; }
+.card.tone-amber { --hover: var(--amber); }
+.card.tone-orange { --hover: var(--orange); }
+.card.tone-seal { --hover: var(--seal); }
+.card.tone-violet { --hover: var(--violet); }
+.card:hover { background: color-mix(in srgb, var(--hover) 6%, var(--surface)); }
+.card h3 { font-size: 17px; margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card h3 a { color: inherit; text-decoration: none; }
+.card h3 a::after { content: ""; position: absolute; inset: 0; }   /* 整張卡片都可以點 */
+.card .card-head { align-items: center; }
+.card-body { display: grid; gap: 6px; align-content: start; }
+/* 聽牌、即將處置、處置中的卡片在不同區，格線不會自動拉齊；中段給同一個最小高度（放得下大字＋標籤＋兩列資訊），每張卡片一樣高 */
+.cards:not(.cards-sm) .card-body { min-height: 122px; }
+.card-body .facts { margin-top: 4px; }
+.progress { display: grid; gap: 4px; margin-top: 2px; }
+/* 卡片上的進度條撐滿卡片寬：格子平分（30 日內那條有 12 格，固定寬會超出卡片），最寬 28px */
+.progress .bar { display: flex; }
+.progress .bar i { flex: 1 1 0; width: auto; max-width: 28px; min-width: 0; }
+.progress-label { margin: 0; font-size: 13px; color: var(--faint); }
+/* 底部：細線隔開，左收盤價、右公告；每張卡片都有，高度不同的卡片底部也對齊 */
+.card-foot { margin-top: auto; padding-top: 8px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+  font-size: 13px; color: var(--faint); }
+.card-foot .mono { color: var(--muted); }
+.ann-link { position: relative; z-index: 1; color: var(--muted); text-decoration: none; }
+.ann-link:hover { color: var(--accent); text-decoration: underline; }
+/* 「其他」（差 2 次以上）：同一種卡片、同樣寬（和上面的卡片對齊），只是矮一點——內距、間距、字小一點 */
+.sec-rest { margin-top: 14px; }
+.cards-sm .card { padding: 10px 12px 8px; gap: 8px; }
+.cards-sm .big.quiet { font-size: 18px; }
+
+/* ---------- 個股頁 ---------- */
+.back { display: inline-block; margin-bottom: 12px; font-size: 14px; color: var(--muted); text-decoration: none; }
+.back:hover { color: var(--accent); }
+.hero { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; display: grid; gap: 10px; margin-bottom: 28px; }
+.hero h2 { font-size: 26px; margin: 0; }
+.hero .big { font-size: 34px; }
+.hero .big.quiet { font-size: 26px; }
+.hero .facts { font-size: 15px; }
+.hero .card-head { align-items: center; }
+
+/* 區塊：一欄由上往下（順序見 templates/stock.html 最上面）。標題列可以在右邊放小字或小連結（.block-head） */
+.block { margin-bottom: 28px; }
+.block > h3, .block-head > h3 { font-size: 18px; margin: 0 0 10px; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.block > h3 .muted, .block-head > h3 .muted { font-size: 13px; font-weight: 400; }
+.block-head { position: relative; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.box { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; display: grid; gap: 6px; }
+
+/* AI 摘要：一段白話，下面列用到的新聞（標題連結＋來源、日期）。框和其他區塊一樣，不另外加色條（上面的卡片已經有狀態色條） */
+.ai-text { margin: 0; font-size: 15px; line-height: 1.8; color: var(--ink); }
+.ai-sources { list-style: none; margin: 10px 0 0; padding: 10px 0 0; border-top: 1px solid var(--line); display: grid; gap: 4px; font-size: 13px; }
+.ai-sources a { color: var(--accent); text-decoration: none; }
+.ai-sources a:hover { text-decoration: underline; }
+
+/* 依日期分組的列表（公開資訊、注意紀錄共用，_macros.html 的 day_row）：左欄日期＋週幾，右欄內容；一天一列，中間細線 */
+.day-list { gap: 0; padding-block: 4px; }
+/* 格線裡的項目預設 min-width: auto，公告全文（不換行的表格）會把整欄撐寬、蓋到右欄；一律設 0，寬的內容在自己的框裡捲動 */
+.day-list > *, .day-row > *, .ann, .ann-full, .more { min-width: 0; }
+.day-row { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 14px; padding-block: 12px; border-bottom: 1px solid var(--line); }
+.day-row:last-child { border-bottom: 0; }
+.day-date { display: grid; align-content: start; line-height: 1.35; }
+.day-date .mono { font-weight: 600; }
+.day-none { margin: 0; padding-block: 12px; border-bottom: 1px solid var(--line); }   /* 最近 7 天沒有東西時的一行字，下面接「顯示更早的…」 */
+.day-none:last-child { border-bottom: 0; }
+
+/* 公開資訊：一則兩行——主旨（用整欄的寬度，太長就換行）｜類別標籤＋時間 */
+.ann-list { display: grid; gap: 10px; }
+.ann-head { display: grid; gap: 2px; color: var(--ink); font-size: 15px; line-height: 1.55; }
+.ann-title { overflow-wrap: anywhere; }
+.ann-head .flag { margin-left: 6px; }
+.ann-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 13px; color: var(--faint); }
+.ann-meta .mono { font-size: 12px; }
+/* 類別標籤：小方框、淡底色，顏色分 5 類（views.CLAUSE_GROUPS）；一行放得下，不換行 */
+.ann-cat { display: inline-block; font-size: 12px; font-weight: 600; line-height: 1.6; padding: 0 7px; border-radius: 4px; white-space: nowrap;
+  color: var(--muted); background: var(--sunk); }
+.ann-cat.alert { color: var(--seal); background: var(--seal-soft); }             /* 需要留意：訴訟、停工、退票… */
+.ann-cat.finance { color: var(--accent); background: var(--accent-soft); }       /* 財務：財報、股利、庫藏股… */
+.ann-cat.deal { color: var(--amber); background: var(--amber-soft); }            /* 交易、投資、籌資 */
+.ann-cat.governance { color: var(--violet); background: var(--violet-soft); }    /* 公司治理：人事、股東會、法說會… */
+.ann-full > summary { cursor: pointer; }
+.ann-full > summary:hover .ann-subject { color: var(--accent); }
+.ann-full pre.text { white-space: pre-wrap; overflow-wrap: anywhere; }   /* 一般文字依框寬換行；有表格的（.table）照原樣不換行、左右捲動 */
+
+/* 新聞資訊：一則一列，標題連結＋下面一行小灰字來源・日期（和公開資訊的兩行一樣） */
+.news { list-style: none; margin: 0; padding: 0; display: grid; }
+.news li { display: grid; gap: 2px; padding-block: 10px; border-bottom: 1px solid var(--line); }
+.news li:first-child { padding-top: 0; }
+.news li:last-child { border-bottom: 0; padding-bottom: 0; }
+.news a { color: var(--ink); text-decoration: none; font-size: 15px; overflow-wrap: anywhere; }
+.news a:hover { color: var(--accent); }
+.news-meta { font-size: 13px; color: var(--faint); }
+
+/* 注意紀錄：款次標籤＋算不算進累計＋箭頭，點開看原因全文 */
+.log > summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; color: var(--ink); font-size: 14px; cursor: pointer; }
+.clause { display: inline-block; font-size: 13px; border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; color: var(--muted); }
+.clause.counted { border-color: var(--cell-on); color: var(--accent); }
+.reason { font-size: 16px; }
+.log .reason { margin-top: 8px; }
+
+/* 處置紀錄：一列一個日期，左邊色條表示那段時間的狀態 */
+.timeline { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.step { display: grid; grid-template-columns: minmax(104px, auto) minmax(0, 1fr); gap: 14px; align-items: baseline; padding-left: 12px; border-left: 3px solid var(--line); }
+.step.seal { border-left-color: var(--seal); }
+.step.ok { border-left-color: var(--ok); }
+.step.past { border-left-color: var(--sunk); color: var(--muted); }   /* 以前的處置：灰色 */
+.step .when { font-weight: 600; white-space: nowrap; }
+.step-after { display: block; font-size: 13px; color: var(--muted); margin-top: 2px; }   /* 處置那一列裡、說明下面的「11/30 出關，恢復正常交易」 */
+.past-list { display: grid; gap: 6px; margin-top: 10px; padding-top: 12px; border-top: 1px solid var(--line); }
+.box > .past-list:first-child { margin-top: 0; padding-top: 0; border-top: 0; }   /* 沒有進行中的處置時，它就是框裡第一個，不用分隔線 */
+/* 「預收、撮合是什麼？」：標題右邊的小字，點了在下面跳出小框（蓋在時程上面，不把內容往下推） */
+.glossary > summary { cursor: pointer; font-size: 13px; color: var(--muted); text-decoration: underline dotted; text-underline-offset: 3px; }
+.glossary > summary:hover, .glossary[open] > summary { color: var(--accent); }
+.glossary > summary:focus { outline: none; }
+.glossary > summary:focus-visible { color: var(--accent); text-decoration-style: solid; }   /* 鍵盤操作：變色、底線變實線（不畫框，點完不會留一圈框） */
+.glossary-pop { position: absolute; right: 0; top: calc(100% + 6px); z-index: 5; width: min(440px, 100%); padding: 12px 16px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
+.glossary-pop p { font-size: 13px; color: var(--muted); margin: 0; line-height: 1.6; text-wrap: pretty; }   /* 寬度放得下一句一行；窄的時候 pretty 避免最後一行只剩一兩個字 */
+.glossary-pop p + p { margin-top: 6px; }
+.glossary-pop b { color: var(--ink); font-weight: 600; }
+
+/* 處置進度（細節，字小一點）；四條路徑固定排成 2×2（自動排會變成 3＋1，最後一條落單），手機上一條一列 */
+.side-note { margin: 0 0 6px; }
+.paths { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 28px; align-items: start; }
+.path { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 2px 8px; align-items: center; }
+.path-label { font-weight: 500; }
+.path-count { font-weight: 700; white-space: nowrap; }
+.path .bar { grid-column: 1 / -1; display: flex; gap: 3px; }
+/* 格子裡寫計入的日期（例如 10/21）：格子加高、字放中間 */
+.path .bar i { flex: 1 1 0; width: auto; height: 18px; font: 500 10px/16px var(--f-mono); font-style: normal; text-align: center;
+               color: var(--surface); white-space: nowrap; overflow: hidden; letter-spacing: -.02em; }
+/* 30 日內 12 日：12 格在一條路徑的寬度裡寫不下日期，排成兩排、每排 6 格 */
+.path-in30 .bar { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); }
+
+/* 30 格注意紀錄：每格寫幾號（月份在上面那排）；有顏色的格子另外設字色 */
+.strip-title { margin-top: 18px; }
+.strip { display: grid; grid-template-columns: repeat(30, minmax(0, 1fr)); gap: 2px; }
+.strip .cell { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; min-width: 0; }
+.strip .month { width: 0; overflow: visible; font-size: 11px; color: var(--muted); height: 1.3em; white-space: nowrap; }   /* 寬度 0：不會把格子撐寬 */
+.strip .cell:nth-last-child(-n+3) .month { direction: rtl; justify-self: end; }   /* 最後幾格的月份往左長，才不會超出右邊 */
+.strip .sq { height: 22px; border-radius: 2px; background: var(--surface); border: 1px solid var(--line); position: relative;
+  display: grid; place-items: center; font-family: var(--f-mono); font-size: 10px; line-height: 1; white-space: nowrap; overflow: hidden; color: var(--faint); }
+.strip .sq.on { background: var(--cell-on); border-color: var(--cell-on); color: var(--surface); }    /* 計入本次累計 */
+.strip .sq.reset { background: var(--cell-reset); border-color: var(--cell-reset); color: var(--ink); }   /* 已計入前次處置：和深藍同色系，算過但用掉了 */
+/* 處置期間：格子下面一條紅線（overflow: visible 才畫得出格子外） */
+.strip .sq.punish { overflow: visible; }
+.strip .sq.punish::after { content: ""; position: absolute; left: -1px; right: -1px; bottom: -5px; height: 3px; background: var(--seal); border-radius: 1px; }
+.legend { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 12px; color: var(--muted); margin-top: 12px; }
+.legend i { display: inline-block; width: 11px; height: 11px; border-radius: 2px; vertical-align: -1px; margin-right: 4px; border: 1px solid var(--line); }
+.legend i.on { background: var(--cell-on); border-color: var(--cell-on); }
+.legend i.reset { background: var(--cell-reset); border-color: var(--cell-reset); }
+.legend i.punish { background: var(--seal); border-color: var(--seal); height: 4px; vertical-align: 2px; }
+
+/* ---------- 手機（窄於 560px） ---------- */
+@media (max-width: 560px) {
+  .paths { grid-template-columns: minmax(0, 1fr); }
+  .strip .sq { font-size: 0; }   /* 格子太窄，不寫幾號（滑鼠／長按看 title） */
+  .day-row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .day-date { display: flex; gap: 6px; align-items: baseline; }
+  .step { grid-template-columns: minmax(0, 1fr); gap: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }

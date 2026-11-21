@@ -1,0 +1,8 @@
+{# 公開資訊的一天（stock.html 用 include 引入，變數 g 是 views.announcement_groups 的一組）。
+   同一天的公告全部列出，不收合。日期欄和注意紀錄共用（_macros.html 的 day_row）。 #}
+{% import "_macros.html" as ui %}
+{% call ui.day_row(g.date, g.weekday) %}
+  <div class="ann-list">
+    {% for a in g["items"] %}{% include "_announcement.html" %}{% endfor %}
+  </div>
+{% endcall %}

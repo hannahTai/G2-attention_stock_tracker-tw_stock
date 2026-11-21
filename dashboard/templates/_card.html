@@ -1,0 +1,22 @@
+{# 總覽的一張卡片（overview.html 用 include 引入，變數 c 是 views.wall_card 的結果）。
+   每張卡片都是同樣三段，不管內容多少，位置都對得齊：
+     上：名稱、代號｜狀態標籤（主要狀態用色塊 .pill，次要的第二次處置、今日出關、聽牌、今日注意股用小框 .sub-tag）
+     中：大字；進度條；資訊列（處置日期、撮合、預收）
+     下（細線隔開，永遠貼底）：收盤價｜公告則數
+   標籤一律全部顯示：同一張卡在「全部」和各分頁長得一樣。標籤、大字、資訊列和個股頁最上面共用（_macros.html）。 #}
+{% import "_macros.html" as ui %}
+{% set href = "?stock=" ~ c.stock_id ~ "&date=" ~ ymd(day) ~ ("&" ~ back_query if back_query else "") %}
+<article class="card {{ 'tone-' ~ c.tone if c.tone }}">
+  <div class="card-head">
+    <h3><a href="{{ href }}">{{ c.name }}<span class="code">{{ c.stock_id }}</span></a></h3>
+    {{ ui.tags(c) }}
+  </div>
+
+  <div class="card-body">
+    {{ ui.headline(c) }}
+    {{ ui.progress(c) }}
+    {{ ui.facts(c) }}
+  </div>
+
+  {{ ui.foot(c, href ~ "#announcements") }}
+</article>
