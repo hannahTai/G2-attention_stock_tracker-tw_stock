@@ -1,6 +1,6 @@
-"""repository 層：只負責把資料存進 MySQL、從 MySQL 讀回來，不知道資料從哪個 API 來、被整理過什麼。
+"""repository 層：只負責把資料存進 PostgreSQL、從 PostgreSQL 讀回來，不知道資料從哪個 API 來、被整理過什麼。
 
-  連線、建表   get_engine()、create_tables()
+  連線、建表   get_engine()、create_database()、drop_database()、create_tables()
   raw 表       寫：save_raw()（只新增、不修改）
                讀：read_raw()、read_raws()、list_raw_keys()、raw_fetched_times()（每個 raw_key 只看最新一份成功的）
   stage、app   insert_rows()、delete_where_in()、has_newer_rows()、upsert_rows()
@@ -16,13 +16,16 @@ import urllib.parse
 import pandas as pd
 import requests
 import sqlalchemy
-import sqlalchemy.dialects.mysql
+import sqlalchemy.dialects.postgresql
 
 from common import date_utils
-from common.config import MYSQL_ACCOUNT, MYSQL_DATABASE, MYSQL_HOST, MYSQL_PASSWORD, MYSQL_PORT, PROJECT_ROOT
+from common.config import DB_HOST, DB_NAME, DB_PASSWORD, DB_PORT, DB_USER, PROJECT_ROOT
 
 # 建表的 SQL 檔：schema/ 底下所有 .sql，依檔名執行（app → raw → stage → view；view 要用到 stage 表，排最後）
 SQL_FILES = sorted((PROJECT_ROOT / "schema").glob("*.sql"))
+
+# 每個資料庫裡的表都放在這個 schema；連線時設成 search_path，SQL 直接寫表名就找得到（也可以寫 tw_stock.<表名>）
+SCHEMA = "tw_stock"
 
 # raw 表：一個來源一張，表名 raw_<來源>
 SOURCES = ("notice", "punish", "punish_watchlist", "market_daily", "holiday", "company", "announcement",
@@ -32,26 +35,52 @@ RAW_COLUMNS = ["raw_key", "fetched_at", "http_status", "ok", "problem", "url", "
 
 # ---------- 連線、建表 ----------
 @functools.cache   # 同一個資料庫只建一次 engine，之後重複使用（engine 自己管理連線）
-def get_engine(database: str = MYSQL_DATABASE) -> sqlalchemy.Engine:
-    """連線用的 engine。database 給空字串只連到 MySQL 伺服器（資料庫還不存在、要建資料庫時用）。"""
-    password = urllib.parse.quote_plus(MYSQL_PASSWORD)   # 密碼裡的 @ : / 會把連線字串切錯，先編碼
-    url = f"mysql+pymysql://{MYSQL_ACCOUNT}:{password}@{MYSQL_HOST}:{MYSQL_PORT}/{database}?charset=utf8mb4"
+def get_engine(database: str = DB_NAME) -> sqlalchemy.Engine:
+    """連線用的 engine。database 給空字串連到伺服器內建的 postgres 資料庫（要建、刪資料庫時用）。"""
+    password = urllib.parse.quote_plus(DB_PASSWORD)   # 密碼裡的 @ : / 會把連線字串切錯，先編碼
+    url = f"postgresql+psycopg://{DB_USER}:{password}@{DB_HOST}:{DB_PORT}/{database or 'postgres'}"
     # pool_pre_ping：拿連線前先確認還活著，斷了就重連
-    # time_zone：連線用台灣時間，DEFAULT CURRENT_TIMESTAMP 才是台灣時間（雲端預設 UTC）
-    return sqlalchemy.create_engine(url, pool_pre_ping=True, connect_args={"init_command": "SET time_zone = '+08:00'"})
+    # timezone：連線用台灣時間，DEFAULT LOCALTIMESTAMP 才是台灣時間（雲端預設 UTC）
+    # search_path：SQL 只寫表名時，到 SCHEMA 找
+    options = f"-c timezone=Asia/Taipei -c search_path={SCHEMA}"
+    return sqlalchemy.create_engine(url, pool_pre_ping=True, connect_args={"options": options})
 
 
-def create_tables() -> None:
-    """建資料庫，再執行 schema/*.sql 建表。已經存在的跳過，不刪任何表（欄位改了要自己 ALTER）。"""
-    with get_engine("").begin() as conn:   # 資料庫可能還不存在，先只連到伺服器
-        conn.execute(sqlalchemy.text(
-            f"CREATE DATABASE IF NOT EXISTS {MYSQL_DATABASE} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"))
+def admin_execute(sql: str) -> None:
+    """在伺服器層級執行一句 SQL（CREATE／DROP DATABASE 不能放在交易裡，所以用 AUTOCOMMIT）。"""
+    with get_engine("").connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        conn.execute(sqlalchemy.text(sql))
 
-    with get_engine().begin() as conn:
-        for sql_file in SQL_FILES:
-            for statement in sql_file.read_text(encoding="utf-8").split(";"):   # 一個檔案有好幾句，一句一句執行
-                if statement.strip():
-                    conn.execute(sqlalchemy.text(statement))
+
+def create_database(database: str = DB_NAME) -> None:
+    """資料庫不存在就建（PostgreSQL 沒有 CREATE DATABASE IF NOT EXISTS，先查再建）。"""
+    with get_engine("").connect() as conn:
+        exists = conn.execute(sqlalchemy.text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                              {"name": database}).scalar()
+    if not exists:
+        admin_execute(f"CREATE DATABASE \"{database}\" ENCODING 'UTF8' TEMPLATE template0")
+
+
+def drop_database(database: str) -> None:
+    """刪掉整個資料庫（測試用；還連著的連線一起斷掉）。"""
+    admin_execute(f"DROP DATABASE IF EXISTS \"{database}\" WITH (FORCE)")
+
+
+def run_sql_files(conn) -> None:
+    """建 SCHEMA，再執行 schema/*.sql。一個檔案有好幾句，用分號切開一句一句執行；只有註解的片段跳過。"""
+    conn.execute(sqlalchemy.text(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}"))
+    for sql_file in SQL_FILES:
+        for statement in sql_file.read_text(encoding="utf-8").split(";"):
+            code = [line for line in statement.splitlines() if line.strip() and not line.strip().startswith("--")]
+            if code:
+                conn.execute(sqlalchemy.text(statement))
+
+
+def create_tables(database: str = DB_NAME) -> None:
+    """建資料庫，再執行 schema/*.sql 建表。已經存在的表跳過，不刪任何表（欄位改了要自己 ALTER）；VIEW 每次重建。"""
+    create_database(database)
+    with get_engine(database).begin() as conn:
+        run_sql_files(conn)
 
 
 # ---------- raw 表：寫（只新增、不修改）----------
@@ -180,10 +209,19 @@ def raw_fetched_times(source: str) -> dict[str, datetime.datetime]:
 
 
 # ---------- stage、app 表 ----------
+def insert_chunk(pd_table, conn, columns: list[str], data_iter) -> None:
+    """df.to_sql 每 1000 列呼叫一次：用資料庫裡表的欄位型別組 INSERT。
+
+    不用 pandas 自己猜的型別：整欄都是 None 的日期欄，pandas 會當成文字，PostgreSQL 不會自動轉成 DATE。
+    """
+    table = sqlalchemy.Table(pd_table.name, sqlalchemy.MetaData(), autoload_with=conn)   # 從資料庫讀表的結構
+    conn.execute(sqlalchemy.insert(table).values([dict(zip(columns, row)) for row in data_iter]))
+
+
 def insert_rows(conn, table: str, df: pd.DataFrame) -> None:
     """把 df 新增到表裡（一般 INSERT，主鍵重複會報錯）。一句 INSERT 帶 1000 列。"""
     if not df.empty:
-        df.to_sql(table, conn, if_exists="append", index=False, method="multi", chunksize=1000)
+        df.to_sql(table, conn, if_exists="append", index=False, method=insert_chunk, chunksize=1000)
 
 
 def delete_where_in(conn, table: str, column: str, values: list) -> None:
@@ -198,37 +236,35 @@ def has_newer_rows(conn, table: str, column: str, value, version: str, incoming)
     """表裡 column = value 的列，有沒有版本（version 欄）比 incoming 新的。「先清掉一個範圍再寫入」之前用。
 
     FOR UPDATE：讀的同時鎖住這個範圍，別的交易要等這邊做完，不會兩邊都以為自己比較新。
+    PostgreSQL 的 FOR UPDATE 不能直接配 MAX()，所以先在子查詢鎖住那些列，外面再取最大值。
     """
     stored = conn.execute(sqlalchemy.text(
-        f"SELECT MAX({version}) FROM {table} WHERE {column} = :value FOR UPDATE"), {"value": value}).scalar()
+        f"SELECT MAX({version}) FROM (SELECT {version} FROM {table} WHERE {column} = :value FOR UPDATE) AS locked"),
+        {"value": value}).scalar()
     return stored is not None and stored > incoming
 
 
 def upsert_chunk(pd_table, conn, columns: list[str], data_iter, *, keys: list[str], version: str) -> None:
-    """df.to_sql 每 1000 列呼叫一次：組成一句 INSERT … ON DUPLICATE KEY UPDATE。
+    """df.to_sql 每 1000 列呼叫一次：組成一句 INSERT … ON CONFLICT (主鍵) DO UPDATE … WHERE。
 
-    主鍵撞到時，每個欄位都是「資料庫裡的版本是 NULL，或這批的版本 >= 資料庫的」才換成新值，否則留舊值。
-    同一批裡主鍵相同的列，MySQL 照順序處理，最後一列勝出。
+    主鍵撞到時，只有「資料庫裡的版本是 NULL，或這批的版本 >= 資料庫的」才整列換成新值，否則留舊值。
     """
     table = sqlalchemy.Table(pd_table.name, sqlalchemy.MetaData(), autoload_with=conn)   # 從資料庫讀表的結構
-    insert = sqlalchemy.dialects.mysql.insert(table).values([dict(zip(columns, row)) for row in data_iter])
-    new, old = insert.inserted, table.c                                                 # new＝這次要寫的值（AS new）
+    insert = sqlalchemy.dialects.postgresql.insert(table).values([dict(zip(columns, row)) for row in data_iter])
+    new, old = insert.excluded, table.c                                                 # new＝這次要寫的值（EXCLUDED）
+    updates = {c: new[c] for c in columns if c not in keys}
+    updates["loaded_at"] = sqlalchemy.text("LOCALTIMESTAMP(0)")
     is_newer = sqlalchemy.or_(old[version].is_(None), new[version] >= old[version])
-
-    def newer_or_old(column: str, value):
-        return sqlalchemy.case((is_newer, value), else_=old[column])
-
-    updates = [(c, newer_or_old(c, new[c])) for c in columns if c not in keys and c != version]
-    updates.append(("loaded_at", newer_or_old("loaded_at", sqlalchemy.func.now())))
-    updates.append((version, newer_or_old(version, new[version])))   # 版本欄放最後：MySQL 依序更新，先改掉就比錯了
-    conn.execute(insert.on_duplicate_key_update(updates))
+    conn.execute(insert.on_conflict_do_update(index_elements=keys, set_=updates, where=is_newer))
 
 
 def upsert_rows(conn, table: str, df: pd.DataFrame, keys: list[str], version: str) -> None:
     """用主鍵更新：主鍵已經有的就更新、沒有的就新增（upsert），這批沒有的列不動。
 
     keys：主鍵欄位。version：版本欄位，主鍵撞到時只讓比較新（或一樣新）的覆蓋，見 upsert_chunk()。
+    同一批裡主鍵相同的列只留一列（PostgreSQL 一句 INSERT 不能改同一列兩次）：版本最新的，一樣新就留後面的。
     """
     if not df.empty:
+        df = df.sort_values(version, kind="stable", na_position="first").drop_duplicates(keys, keep="last")
         df.to_sql(table, conn, if_exists="append", index=False, chunksize=1000,
                   method=functools.partial(upsert_chunk, keys=keys, version=version))
