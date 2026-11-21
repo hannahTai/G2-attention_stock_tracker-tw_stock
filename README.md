@@ -110,6 +110,7 @@ PostgreSQL、RabbitMQ、3 個 Celery worker、Flower、資料 API、網頁全部
 cp .env.example .env                                # 填入密碼
 docker compose up -d --build                        # 啟動（第一次會建表）
 docker compose run --rm producer python main.py     # 跑一次資料線：任務送進 RabbitMQ，由 worker 執行
+# 開發時 .env 的 COMPOSE_FILE 把 docker-compose.local.yml 疊上來：程式碼直接掛進容器，api、web 存檔自動重載；改了任務的程式 docker compose restart celery-crawl-twse celery-crawl-mops celery-process
 ```
 
 | 服務 | 網址 |

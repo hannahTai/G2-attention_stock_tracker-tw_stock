@@ -1,6 +1,7 @@
 # 注意股，還差幾步？一鍵啟動：PostgreSQL、RabbitMQ、Celery worker、Flower、資料 API、網頁
 #
-#   docker compose up -d --build        # 啟動（第一次或改了程式碼、套件都加 --build）
+#   docker compose up -d --build        # 啟動（第一次或改了套件加 --build）
+#   本機開發時 .env 的 COMPOSE_FILE 會把 docker-compose.local.yml 疊上來：程式碼直接掛進容器，api、web 存檔就自動重載（見那個檔）
 #   docker compose ps                   # 看狀態
 #   docker compose logs -f celery-process   # 看 log（服務名稱見下面；log 檔另外存在 data/logs/）
 #   docker compose down                 # 停掉（資料留在 volume pgdata）

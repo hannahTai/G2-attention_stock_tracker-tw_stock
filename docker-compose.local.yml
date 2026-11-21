@@ -1,0 +1,52 @@
+# 本機開發用：疊在 docker-compose.yml 上面（同名的服務合併，這裡寫的蓋掉或加上去）。
+# .env 的 COMPOSE_FILE=docker-compose.yml:docker-compose.local.yml 讓 docker compose 自動兩個都讀，不用每次打 -f。
+# 把 Windows 上的程式碼直接掛進容器（.:/app），改了存檔就生效，不用每次 --build：
+#   api（FastAPI）    存檔自動重啟（uvicorn --reload）
+#   web（Streamlit）  存檔自動重跑，開著的網頁會自己更新
+#   Celery worker、producer、setup  用掛進來的最新程式碼；改了任務的程式要 docker compose restart celery-crawl-twse celery-crawl-mops celery-process
+#                                  （worker 沒有自動重載：跑到一半的任務重載會被中斷）
+#
+# 為什麼要「輪詢」（polling）：檔案是在 Windows 改的（D:\ 掛到 WSL 的 /mnt/d），Linux 收不到「檔案變了」的通知，
+# 只能每隔一下去看一次有沒有變。
+#
+# 套件裝在 image 的 /opt/venv（見 Dockerfile），掛載 /app 不會蓋掉；改了 pyproject.toml 才需要 docker compose up -d --build。
+# 不要開發模式（例如放上雲端）：docker compose -f docker-compose.yml up -d，只用基本設定、用 image 裡的程式碼。
+# 看合併後的結果：docker compose config
+
+x-code: &code
+  volumes:
+    - .:/app
+
+services:
+  setup:
+    <<: *code
+
+  api:
+    <<: *code
+    command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
+    environment:
+      WATCHFILES_FORCE_POLLING: "true"   # uvicorn --reload 用輪詢看檔案有沒有變
+
+  web:
+    <<: *code
+    command: ["streamlit", "run", "dashboard/app.py", "--server.address=0.0.0.0",
+              "--server.runOnSave=true", "--server.fileWatcherType=poll"]
+
+  celery-crawl-twse:
+    volumes:
+      - .:/app
+      - ./data/logs:/app/logs
+
+  celery-crawl-mops:
+    volumes:
+      - .:/app
+      - ./data/logs:/app/logs
+
+  celery-process:
+    volumes:
+      - .:/app
+      - ./data/logs:/app/logs
+
+  producer:
+    volumes:
+      - .:/app
