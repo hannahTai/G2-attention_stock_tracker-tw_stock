@@ -4,105 +4,185 @@
 -- 由 common.repository.create_tables() 執行；已存在就跳過
 
 CREATE TABLE IF NOT EXISTS raw_notice (
-    raw_key      VARCHAR(30) NOT NULL COMMENT '查詢日期，例如 20261113',
-    fetched_at   DATETIME(6) NOT NULL COMMENT '抓取時間（台灣時間）',
-    http_status  SMALLINT    NOT NULL COMMENT 'HTTP 狀態碼',
-    ok           BOOLEAN     NOT NULL COMMENT '成功且內容檢查通過；transform 只讀 ok 的列',
-    problem      TEXT                 COMMENT '失敗原因；成功為 NULL',
-    url          TEXT        NOT NULL COMMENT '請求網址（含查詢參數）',
-    request_body TEXT                 COMMENT 'POST 的參數（JSON 字串）；GET 為 NULL',
-    body         LONGTEXT    NOT NULL COMMENT 'API 回應原文（JSON 字串；被擋時可能是 HTML）',
-    loaded_at    DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '寫入時間（台灣時間）',
+    raw_key      VARCHAR(30) NOT NULL,
+    fetched_at   TIMESTAMP(6) NOT NULL,
+    http_status  SMALLINT    NOT NULL,
+    ok           BOOLEAN     NOT NULL,
+    problem      TEXT,
+    url          TEXT        NOT NULL,
+    request_body TEXT,
+    body         TEXT    NOT NULL,
+    loaded_at    TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
     PRIMARY KEY (raw_key, fetched_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='證交所 注意股';
+);
+COMMENT ON TABLE raw_notice IS '證交所 注意股';
+COMMENT ON COLUMN raw_notice.raw_key IS '查詢日期，例如 20261113';
+COMMENT ON COLUMN raw_notice.fetched_at IS '抓取時間（台灣時間）';
+COMMENT ON COLUMN raw_notice.http_status IS 'HTTP 狀態碼';
+COMMENT ON COLUMN raw_notice.ok IS '成功且內容檢查通過；transform 只讀 ok 的列';
+COMMENT ON COLUMN raw_notice.problem IS '失敗原因；成功為 NULL';
+COMMENT ON COLUMN raw_notice.url IS '請求網址（含查詢參數）';
+COMMENT ON COLUMN raw_notice.request_body IS 'POST 的參數（JSON 字串）；GET 為 NULL';
+COMMENT ON COLUMN raw_notice.body IS 'API 回應原文（JSON 字串；被擋時可能是 HTML）';
+COMMENT ON COLUMN raw_notice.loaded_at IS '寫入時間（台灣時間）';
 
 CREATE TABLE IF NOT EXISTS raw_punish (
-    raw_key      VARCHAR(30) NOT NULL COMMENT '查詢日期，例如 20261113（查當天起 14 天內處置中的）',
-    fetched_at   DATETIME(6) NOT NULL COMMENT '抓取時間（台灣時間）',
-    http_status  SMALLINT    NOT NULL COMMENT 'HTTP 狀態碼',
-    ok           BOOLEAN     NOT NULL COMMENT '成功且內容檢查通過；transform 只讀 ok 的列',
-    problem      TEXT                 COMMENT '失敗原因；成功為 NULL',
-    url          TEXT        NOT NULL COMMENT '請求網址（含查詢參數）',
-    request_body TEXT                 COMMENT 'POST 的參數（JSON 字串）；GET 為 NULL',
-    body         LONGTEXT    NOT NULL COMMENT 'API 回應原文（JSON 字串；被擋時可能是 HTML）',
-    loaded_at    DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '寫入時間（台灣時間）',
+    raw_key      VARCHAR(30) NOT NULL,
+    fetched_at   TIMESTAMP(6) NOT NULL,
+    http_status  SMALLINT    NOT NULL,
+    ok           BOOLEAN     NOT NULL,
+    problem      TEXT,
+    url          TEXT        NOT NULL,
+    request_body TEXT,
+    body         TEXT    NOT NULL,
+    loaded_at    TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
     PRIMARY KEY (raw_key, fetched_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='證交所 處置股';
+);
+COMMENT ON TABLE raw_punish IS '證交所 處置股';
+COMMENT ON COLUMN raw_punish.raw_key IS '查詢日期，例如 20261113（查當天起 14 天內處置中的）';
+COMMENT ON COLUMN raw_punish.fetched_at IS '抓取時間（台灣時間）';
+COMMENT ON COLUMN raw_punish.http_status IS 'HTTP 狀態碼';
+COMMENT ON COLUMN raw_punish.ok IS '成功且內容檢查通過；transform 只讀 ok 的列';
+COMMENT ON COLUMN raw_punish.problem IS '失敗原因；成功為 NULL';
+COMMENT ON COLUMN raw_punish.url IS '請求網址（含查詢參數）';
+COMMENT ON COLUMN raw_punish.request_body IS 'POST 的參數（JSON 字串）；GET 為 NULL';
+COMMENT ON COLUMN raw_punish.body IS 'API 回應原文（JSON 字串；被擋時可能是 HTML）';
+COMMENT ON COLUMN raw_punish.loaded_at IS '寫入時間（台灣時間）';
 
 CREATE TABLE IF NOT EXISTS raw_punish_watchlist (
-    raw_key      VARCHAR(30) NOT NULL COMMENT '名單上的資料日期，例如 20261113',
-    fetched_at   DATETIME(6) NOT NULL COMMENT '抓取時間（台灣時間）',
-    http_status  SMALLINT    NOT NULL COMMENT 'HTTP 狀態碼',
-    ok           BOOLEAN     NOT NULL COMMENT '成功且內容檢查通過；transform 只讀 ok 的列',
-    problem      TEXT                 COMMENT '失敗原因；成功為 NULL',
-    url          TEXT        NOT NULL COMMENT '請求網址（含查詢參數）',
-    request_body TEXT                 COMMENT 'POST 的參數（JSON 字串）；GET 為 NULL',
-    body         LONGTEXT    NOT NULL COMMENT 'API 回應原文（JSON 字串；被擋時可能是 HTML）',
-    loaded_at    DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '寫入時間（台灣時間）',
+    raw_key      VARCHAR(30) NOT NULL,
+    fetched_at   TIMESTAMP(6) NOT NULL,
+    http_status  SMALLINT    NOT NULL,
+    ok           BOOLEAN     NOT NULL,
+    problem      TEXT,
+    url          TEXT        NOT NULL,
+    request_body TEXT,
+    body         TEXT    NOT NULL,
+    loaded_at    TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
     PRIMARY KEY (raw_key, fetched_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='證交所 注意累計可能達處置標準名單';
+);
+COMMENT ON TABLE raw_punish_watchlist IS '證交所 注意累計可能達處置標準名單';
+COMMENT ON COLUMN raw_punish_watchlist.raw_key IS '名單上的資料日期，例如 20261113';
+COMMENT ON COLUMN raw_punish_watchlist.fetched_at IS '抓取時間（台灣時間）';
+COMMENT ON COLUMN raw_punish_watchlist.http_status IS 'HTTP 狀態碼';
+COMMENT ON COLUMN raw_punish_watchlist.ok IS '成功且內容檢查通過；transform 只讀 ok 的列';
+COMMENT ON COLUMN raw_punish_watchlist.problem IS '失敗原因；成功為 NULL';
+COMMENT ON COLUMN raw_punish_watchlist.url IS '請求網址（含查詢參數）';
+COMMENT ON COLUMN raw_punish_watchlist.request_body IS 'POST 的參數（JSON 字串）；GET 為 NULL';
+COMMENT ON COLUMN raw_punish_watchlist.body IS 'API 回應原文（JSON 字串；被擋時可能是 HTML）';
+COMMENT ON COLUMN raw_punish_watchlist.loaded_at IS '寫入時間（台灣時間）';
 
 CREATE TABLE IF NOT EXISTS raw_market_daily (
-    raw_key      VARCHAR(30) NOT NULL COMMENT '月份，例如 202611',
-    fetched_at   DATETIME(6) NOT NULL COMMENT '抓取時間（台灣時間）',
-    http_status  SMALLINT    NOT NULL COMMENT 'HTTP 狀態碼',
-    ok           BOOLEAN     NOT NULL COMMENT '成功且內容檢查通過；transform 只讀 ok 的列',
-    problem      TEXT                 COMMENT '失敗原因；成功為 NULL',
-    url          TEXT        NOT NULL COMMENT '請求網址（含查詢參數）',
-    request_body TEXT                 COMMENT 'POST 的參數（JSON 字串）；GET 為 NULL',
-    body         LONGTEXT    NOT NULL COMMENT 'API 回應原文（JSON 字串；被擋時可能是 HTML）',
-    loaded_at    DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '寫入時間（台灣時間）',
+    raw_key      VARCHAR(30) NOT NULL,
+    fetched_at   TIMESTAMP(6) NOT NULL,
+    http_status  SMALLINT    NOT NULL,
+    ok           BOOLEAN     NOT NULL,
+    problem      TEXT,
+    url          TEXT        NOT NULL,
+    request_body TEXT,
+    body         TEXT    NOT NULL,
+    loaded_at    TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
     PRIMARY KEY (raw_key, fetched_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='證交所 每日市場成交（一次一個月）';
+);
+COMMENT ON TABLE raw_market_daily IS '證交所 每日市場成交（一次一個月）';
+COMMENT ON COLUMN raw_market_daily.raw_key IS '月份，例如 202611';
+COMMENT ON COLUMN raw_market_daily.fetched_at IS '抓取時間（台灣時間）';
+COMMENT ON COLUMN raw_market_daily.http_status IS 'HTTP 狀態碼';
+COMMENT ON COLUMN raw_market_daily.ok IS '成功且內容檢查通過；transform 只讀 ok 的列';
+COMMENT ON COLUMN raw_market_daily.problem IS '失敗原因；成功為 NULL';
+COMMENT ON COLUMN raw_market_daily.url IS '請求網址（含查詢參數）';
+COMMENT ON COLUMN raw_market_daily.request_body IS 'POST 的參數（JSON 字串）；GET 為 NULL';
+COMMENT ON COLUMN raw_market_daily.body IS 'API 回應原文（JSON 字串；被擋時可能是 HTML）';
+COMMENT ON COLUMN raw_market_daily.loaded_at IS '寫入時間（台灣時間）';
 
 CREATE TABLE IF NOT EXISTS raw_holiday (
-    raw_key      VARCHAR(30) NOT NULL COMMENT '西元年，例如 2026',
-    fetched_at   DATETIME(6) NOT NULL COMMENT '抓取時間（台灣時間）',
-    http_status  SMALLINT    NOT NULL COMMENT 'HTTP 狀態碼',
-    ok           BOOLEAN     NOT NULL COMMENT '成功且內容檢查通過；transform 只讀 ok 的列',
-    problem      TEXT                 COMMENT '失敗原因；成功為 NULL',
-    url          TEXT        NOT NULL COMMENT '請求網址（含查詢參數）',
-    request_body TEXT                 COMMENT 'POST 的參數（JSON 字串）；GET 為 NULL',
-    body         LONGTEXT    NOT NULL COMMENT 'API 回應原文（JSON 字串；被擋時可能是 HTML）',
-    loaded_at    DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '寫入時間（台灣時間）',
+    raw_key      VARCHAR(30) NOT NULL,
+    fetched_at   TIMESTAMP(6) NOT NULL,
+    http_status  SMALLINT    NOT NULL,
+    ok           BOOLEAN     NOT NULL,
+    problem      TEXT,
+    url          TEXT        NOT NULL,
+    request_body TEXT,
+    body         TEXT    NOT NULL,
+    loaded_at    TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
     PRIMARY KEY (raw_key, fetched_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='證交所 開休市日期（一次一年）';
+);
+COMMENT ON TABLE raw_holiday IS '證交所 開休市日期（一次一年）';
+COMMENT ON COLUMN raw_holiday.raw_key IS '西元年，例如 2026';
+COMMENT ON COLUMN raw_holiday.fetched_at IS '抓取時間（台灣時間）';
+COMMENT ON COLUMN raw_holiday.http_status IS 'HTTP 狀態碼';
+COMMENT ON COLUMN raw_holiday.ok IS '成功且內容檢查通過；transform 只讀 ok 的列';
+COMMENT ON COLUMN raw_holiday.problem IS '失敗原因；成功為 NULL';
+COMMENT ON COLUMN raw_holiday.url IS '請求網址（含查詢參數）';
+COMMENT ON COLUMN raw_holiday.request_body IS 'POST 的參數（JSON 字串）；GET 為 NULL';
+COMMENT ON COLUMN raw_holiday.body IS 'API 回應原文（JSON 字串；被擋時可能是 HTML）';
+COMMENT ON COLUMN raw_holiday.loaded_at IS '寫入時間（台灣時間）';
 
 CREATE TABLE IF NOT EXISTS raw_company (
-    raw_key      VARCHAR(30) NOT NULL COMMENT '抓取日期，例如 20261113（每天一份快照）',
-    fetched_at   DATETIME(6) NOT NULL COMMENT '抓取時間（台灣時間）',
-    http_status  SMALLINT    NOT NULL COMMENT 'HTTP 狀態碼',
-    ok           BOOLEAN     NOT NULL COMMENT '成功且內容檢查通過；transform 只讀 ok 的列',
-    problem      TEXT                 COMMENT '失敗原因；成功為 NULL',
-    url          TEXT        NOT NULL COMMENT '請求網址（含查詢參數）',
-    request_body TEXT                 COMMENT 'POST 的參數（JSON 字串）；GET 為 NULL',
-    body         LONGTEXT    NOT NULL COMMENT 'API 回應原文（JSON 字串；被擋時可能是 HTML）',
-    loaded_at    DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '寫入時間（台灣時間）',
+    raw_key      VARCHAR(30) NOT NULL,
+    fetched_at   TIMESTAMP(6) NOT NULL,
+    http_status  SMALLINT    NOT NULL,
+    ok           BOOLEAN     NOT NULL,
+    problem      TEXT,
+    url          TEXT        NOT NULL,
+    request_body TEXT,
+    body         TEXT    NOT NULL,
+    loaded_at    TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
     PRIMARY KEY (raw_key, fetched_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='證交所 OpenAPI 上市公司清單';
+);
+COMMENT ON TABLE raw_company IS '證交所 OpenAPI 上市公司清單';
+COMMENT ON COLUMN raw_company.raw_key IS '抓取日期，例如 20261113（每天一份快照）';
+COMMENT ON COLUMN raw_company.fetched_at IS '抓取時間（台灣時間）';
+COMMENT ON COLUMN raw_company.http_status IS 'HTTP 狀態碼';
+COMMENT ON COLUMN raw_company.ok IS '成功且內容檢查通過；transform 只讀 ok 的列';
+COMMENT ON COLUMN raw_company.problem IS '失敗原因；成功為 NULL';
+COMMENT ON COLUMN raw_company.url IS '請求網址（含查詢參數）';
+COMMENT ON COLUMN raw_company.request_body IS 'POST 的參數（JSON 字串）；GET 為 NULL';
+COMMENT ON COLUMN raw_company.body IS 'API 回應原文（JSON 字串；被擋時可能是 HTML）';
+COMMENT ON COLUMN raw_company.loaded_at IS '寫入時間（台灣時間）';
 
 CREATE TABLE IF NOT EXISTS raw_announcement (
-    raw_key      VARCHAR(30) NOT NULL COMMENT '公司代號_月份，例如 1303_202611',
-    fetched_at   DATETIME(6) NOT NULL COMMENT '抓取時間（台灣時間）',
-    http_status  SMALLINT    NOT NULL COMMENT 'HTTP 狀態碼',
-    ok           BOOLEAN     NOT NULL COMMENT '成功且內容檢查通過；transform 只讀 ok 的列',
-    problem      TEXT                 COMMENT '失敗原因；成功為 NULL',
-    url          TEXT        NOT NULL COMMENT '請求網址（含查詢參數）',
-    request_body TEXT                 COMMENT 'POST 的參數（JSON 字串）；GET 為 NULL',
-    body         LONGTEXT    NOT NULL COMMENT 'API 回應原文（JSON 字串；被擋時可能是 HTML）',
-    loaded_at    DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '寫入時間（台灣時間）',
+    raw_key      VARCHAR(30) NOT NULL,
+    fetched_at   TIMESTAMP(6) NOT NULL,
+    http_status  SMALLINT    NOT NULL,
+    ok           BOOLEAN     NOT NULL,
+    problem      TEXT,
+    url          TEXT        NOT NULL,
+    request_body TEXT,
+    body         TEXT    NOT NULL,
+    loaded_at    TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
     PRIMARY KEY (raw_key, fetched_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='觀測站 重大訊息（一家公司一個月）';
+);
+COMMENT ON TABLE raw_announcement IS '觀測站 重大訊息（一家公司一個月）';
+COMMENT ON COLUMN raw_announcement.raw_key IS '公司代號_月份，例如 1303_202611';
+COMMENT ON COLUMN raw_announcement.fetched_at IS '抓取時間（台灣時間）';
+COMMENT ON COLUMN raw_announcement.http_status IS 'HTTP 狀態碼';
+COMMENT ON COLUMN raw_announcement.ok IS '成功且內容檢查通過；transform 只讀 ok 的列';
+COMMENT ON COLUMN raw_announcement.problem IS '失敗原因；成功為 NULL';
+COMMENT ON COLUMN raw_announcement.url IS '請求網址（含查詢參數）';
+COMMENT ON COLUMN raw_announcement.request_body IS 'POST 的參數（JSON 字串）；GET 為 NULL';
+COMMENT ON COLUMN raw_announcement.body IS 'API 回應原文（JSON 字串；被擋時可能是 HTML）';
+COMMENT ON COLUMN raw_announcement.loaded_at IS '寫入時間（台灣時間）';
 
 CREATE TABLE IF NOT EXISTS raw_announcement_detail (
-    raw_key      VARCHAR(30) NOT NULL COMMENT '公司代號_輸入日期_序號，例如 9908_20261102_1',
-    fetched_at   DATETIME(6) NOT NULL COMMENT '抓取時間（台灣時間）',
-    http_status  SMALLINT    NOT NULL COMMENT 'HTTP 狀態碼',
-    ok           BOOLEAN     NOT NULL COMMENT '成功且內容檢查通過；transform 只讀 ok 的列',
-    problem      TEXT                 COMMENT '失敗原因；成功為 NULL',
-    url          TEXT        NOT NULL COMMENT '請求網址（含查詢參數）',
-    request_body TEXT                 COMMENT 'POST 的參數（JSON 字串）；GET 為 NULL',
-    body         LONGTEXT    NOT NULL COMMENT 'API 回應原文（JSON 字串；被擋時可能是 HTML）',
-    loaded_at    DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '寫入時間（台灣時間）',
+    raw_key      VARCHAR(30) NOT NULL,
+    fetched_at   TIMESTAMP(6) NOT NULL,
+    http_status  SMALLINT    NOT NULL,
+    ok           BOOLEAN     NOT NULL,
+    problem      TEXT,
+    url          TEXT        NOT NULL,
+    request_body TEXT,
+    body         TEXT    NOT NULL,
+    loaded_at    TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
     PRIMARY KEY (raw_key, fetched_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='觀測站 重大訊息全文（一則公告）';
+);
+COMMENT ON TABLE raw_announcement_detail IS '觀測站 重大訊息全文（一則公告）';
+COMMENT ON COLUMN raw_announcement_detail.raw_key IS '公司代號_輸入日期_序號，例如 9908_20261102_1';
+COMMENT ON COLUMN raw_announcement_detail.fetched_at IS '抓取時間（台灣時間）';
+COMMENT ON COLUMN raw_announcement_detail.http_status IS 'HTTP 狀態碼';
+COMMENT ON COLUMN raw_announcement_detail.ok IS '成功且內容檢查通過；transform 只讀 ok 的列';
+COMMENT ON COLUMN raw_announcement_detail.problem IS '失敗原因；成功為 NULL';
+COMMENT ON COLUMN raw_announcement_detail.url IS '請求網址（含查詢參數）';
+COMMENT ON COLUMN raw_announcement_detail.request_body IS 'POST 的參數（JSON 字串）；GET 為 NULL';
+COMMENT ON COLUMN raw_announcement_detail.body IS 'API 回應原文（JSON 字串；被擋時可能是 HTML）';
+COMMENT ON COLUMN raw_announcement_detail.loaded_at IS '寫入時間（台灣時間）';

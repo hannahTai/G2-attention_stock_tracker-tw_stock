@@ -1,10 +1,13 @@
 -- app 層的 VIEW（表名開頭 app_）：網頁只讀 app_*，需要的 stage 欄位從這裡拿
--- VIEW 是存起來的查詢，不複製資料，查的時候 MySQL 才去讀 stage 表，所以永遠是最新的
+-- VIEW 是存起來的查詢，不複製資料，查的時候資料庫才去讀 stage 表，所以永遠是最新的
 -- 檔名排在 stage.sql 後面：create_tables() 依檔名順序執行，建 VIEW 時 stage 表已經在了
--- CREATE OR REPLACE：重跑會用最新的定義蓋掉舊的，不影響資料
+-- 先 DROP 再 CREATE：重跑會用最新的定義蓋掉舊的，不影響資料
+-- （PostgreSQL 的 CREATE OR REPLACE VIEW 不能拿掉欄位、改欄位順序或型別，所以整個重建）
+
+DROP VIEW IF EXISTS app_card, app_trading_day, app_notice_history, app_punish_history, app_announcement;
 
 -- 卡片牆、個股卡片上半部：app_progress 每一列，加上名稱、收盤價、今天被列的款次、公告則數
-CREATE OR REPLACE VIEW app_card AS
+CREATE VIEW app_card AS
 SELECT
     p.*,
     (SELECT n2.stock_name FROM stage_notice n2
@@ -15,7 +18,7 @@ SELECT
                                                                 AS is_company,      -- 是不是上市公司（卡片牆只放上市公司，不放權證、ETF）
     n.close_price,                                                                  -- 今天沒被列為 NULL
     n.reason_text,                                                                  -- 今天被列的原因全文
-    (SELECT GROUP_CONCAT(c.clause ORDER BY c.clause) FROM stage_notice_clause c
+    (SELECT string_agg(c.clause::text, ',' ORDER BY c.clause) FROM stage_notice_clause c
       WHERE c.stock_id = p.stock_id AND c.trade_date = p.trade_date)  AS clauses,    -- 今天被列第幾款，例如 1,2
     (SELECT COUNT(*) > 0 FROM stage_notice_clause c
       WHERE c.stock_id = p.stock_id AND c.trade_date = p.trade_date
@@ -41,32 +44,40 @@ LEFT JOIN stage_notice n
 LEFT JOIN stage_punish s
        ON s.stock_id = p.stock_id AND s.period_start = p.period_start AND s.period_end = p.period_end;
 
+-- 交易日：網頁畫注意紀錄格子（近 30 個營業日）、算公告和處置紀錄的起日用
+CREATE VIEW app_trading_day AS
+SELECT trade_date
+FROM stage_trading_day
+WHERE is_trading;
+
 -- 注意紀錄格子：每檔每個被列注意的交易日，被列哪幾款、會不會累計
 -- 沒被列的日子沒有列（畫成「未列注意」）。「已計入前次處置」＝早於 app_card.count_start 的日子
-CREATE OR REPLACE VIEW app_notice_history AS
+CREATE VIEW app_notice_history AS
 SELECT
     c.trade_date,
     c.stock_id,
-    GROUP_CONCAT(c.clause ORDER BY c.clause) AS clauses,
-    MAX(c.clause BETWEEN 1 AND 8)            AS is_counted  -- 1＝累計（有第 1～8 款），0＝不累計（只有第 9～14 款）
+    string_agg(c.clause::text, ',' ORDER BY c.clause) AS clauses,
+    bool_or(c.clause BETWEEN 1 AND 8)        AS is_counted,  -- true＝累計（有第 1～8 款），false＝不累計（只有第 9～14 款）
+    MAX(n.reason_text)                       AS reason_text  -- 那天被列的原因全文（一天一檔只有一列，MAX 只是為了配合 GROUP BY）
 FROM stage_notice_clause c
+LEFT JOIN stage_notice n ON n.trade_date = c.trade_date AND n.stock_id = c.stock_id
 GROUP BY c.trade_date, c.stock_id;
 
 -- 處置紀錄：處置公告（卡片上列近 30 個營業日內的）
-CREATE OR REPLACE VIEW app_punish_history AS
+CREATE VIEW app_punish_history AS
 SELECT announce_date, stock_id, stock_name, trigger_condition, period_start, period_end,
        measure_type, match_interval_minutes, content
 FROM stage_punish;
 
 -- 公司公告：加上交易時段內／後、更正、說明公告的標記，和全文（還沒抓到全文的為 NULL）
-CREATE OR REPLACE VIEW app_announcement AS
+CREATE VIEW app_announcement AS
 SELECT
     a.company_id AS stock_id,
     a.announce_date,
     a.announce_time,
     a.company_name,
     a.subject,
-    a.announce_time <= '14:30:00' AS is_during_session,  -- 1＝交易時段內（14:30 前，含盤後定價交易）
+    a.announce_time <= '14:30:00' AS is_during_session,  -- true＝交易時段內（14:30 前，含盤後定價交易）
     a.subject LIKE '%更正%'        AS is_correction,      -- 更正公告
     (a.subject LIKE '%澄清%' OR (a.subject LIKE '%說明%' AND a.subject NOT LIKE '%說明會%'))
                                   AS is_explanation,     -- 說明、澄清公告（排除「法人說明會」）
