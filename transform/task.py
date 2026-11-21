@@ -46,7 +46,7 @@ def upsert_stage(tables: dict[str, pd.DataFrame], version, clear_day=None) -> in
 
 def save(raw: dict, tables: dict[str, pd.DataFrame], clear_day=None) -> str:
     """每個任務的最後一步：用 raw 的抓取時間當版本寫進 stage，回傳給 log 看的一行。"""
-    version = fetched_at(raw).astimezone(date_utils.TAIPEI).replace(tzinfo=None)   # 存台灣時間（DATETIME 沒有時區）
+    version = fetched_at(raw).astimezone(date_utils.TAIPEI).replace(tzinfo=None)   # 存台灣時間（TIMESTAMP 沒有時區）
     rows = upsert_stage(tables, version, clear_day)
     where = f"raw_{raw['meta']['source']}/{raw['meta']['key']} → {'、'.join(tables)}"
     if rows is None:

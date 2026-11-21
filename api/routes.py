@@ -84,7 +84,7 @@ def list_cards(date: str | None = fastapi.Query(None, description=DATE_HELP)) ->
 
 @router.get("/stocks/{stock_id}", tags=[TAG_STOCK])
 def get_stock(stock_id: str, date: str | None = fastapi.Query(None, description=DATE_HELP)) -> dict:
-    """個股：卡片、四條路徑計入的日子、近 30 個營業日的注意紀錄、處置紀錄、公司公告。"""
+    """個股：卡片、四條路徑計入的日子、近 30 個營業日的注意紀錄、處置紀錄、公開資訊（重大訊息）。"""
     with get_engine().connect() as conn:
         day = pick_day(conn, parse_date(date))
         card = queries.card(conn, stock_id, day)

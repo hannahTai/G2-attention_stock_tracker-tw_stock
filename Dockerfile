@@ -1,4 +1,4 @@
-# 專案的 Python 環境：api（FastAPI）、web（Streamlit）、setup（建表）共用這一個 image，只是啟動的指令不同
+# 專案的 Python 環境：setup（建表）、api（FastAPI）、web（Streamlit）、producer、三個 Celery worker 共用這一個 image，只是啟動的指令不同
 # 見 docker-compose.yml
 
 FROM python:3.12-slim

@@ -12,7 +12,7 @@ TibaMe 資料工程專題（NKR204），個人製作。2026/11 起實作，預�
 
 自選股被列注意時，散戶最想知道：這次會不會累計？還差幾次會被處置？如果明天再被列注意，從哪天開始受限？這些資訊今天散在 4 個地方（作業要點、證交所兩個公告頁面、觀測站逐家查詢），官方名單只列「只差一次」的股票，而且沒有歷史。
 
-**本專案每個交易日替每檔注意股與處置股產生一張卡片**，只放可指回原文的事實：注意款次、四條累計路徑還差幾次（列出計入的日期）、處置條件與措施、幾號出關、公司公告。
+**本專案每個交易日替每檔注意股與處置股產生一張卡片**，只放可指回原文的事實：注意款次、四條累計路徑還差幾次（列出計入的日期）、處置條件與措施、幾號出關、公開資訊（重大訊息）。
 
 **不做的事：** 不預測漲跌、不推薦買賣、不判斷是否涉及炒作。範圍限上市公司股票（不含權證、ETF）。
 
@@ -84,16 +84,17 @@ dashboard/                  網頁：Streamlit 打資料 API，不直接連資�
 ├─ views.py                   把資料整理成畫面上的文字、分區、篩選（不碰網路）
 ├─ render.py                  把資料套進 Jinja2 範本，變成 HTML
 └─ templates/、static/        網頁範本（卡片牆、個股頁）、CSS
-common/                     三個資料夾共用（彼此不互相 import，只用 common）
+common/                     各資料夾共用（crawler、transform、analyze 彼此不互相 import，只用 common）
 ├─ repository.py              repository：連線、建表、raw 表讀寫、stage／app 表讀寫
 ├─ runner.py                  三個 producer 共用的任務執行：依序執行、暫時性失敗重試、列出失敗
 ├─ cli.py                     三個 producer 共用的指令參數（daily／backfill、--refetch）
 ├─ config.py                  設定（會因環境改變的值，從 .env 讀）
+├─ worker.py                  Celery worker：USE_CELERY=1 時從 RabbitMQ 拿任務來做（佇列 twse、mops、default）
 └─ date_utils.py              日期工具
 schema/                     建表 SQL：raw.sql、stage.sql、app.sql、view.sql（給網頁讀的 VIEW）
 scripts/                    .bat：每日排程（daily）、回補（backfill）、從 raw 重算（rebuild）、備份（backup）、網站（web：API ＋ 網頁）
 tests/                      測試
-docs/                       流程說明（flow.md）、資料表（tables.md）、處置規則（rules.md）、提案
+docs/                       流程說明（flow.md）、資料表（tables.md）、處置規則（rules.md）、AI 規劃（ai_plan.md）、提案
 main.py                     一次跑完：crawler → transform → analyze（同一時間只跑一輪）
 ```
 
@@ -157,11 +158,6 @@ uv run streamlit run dashboard/app.py              # 2. 網頁，打開 http://l
 
 ---
 
-## 進度追蹤
-
-見 [task.md](task.md)
-
----
 
 ## License
 

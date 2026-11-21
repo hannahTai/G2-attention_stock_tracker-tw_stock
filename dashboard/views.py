@@ -277,7 +277,7 @@ def rule_for(round_no: int, start: datetime.date | None, minutes: int | None = N
 
 
 def measures_text(rule: dict) -> str:
-    """處置措施一句話：撮合間隔＋預收。處置紀錄（現在、以前、若再列的那次）都用這一句。
+    """處置措施一句話：撮合間隔＋預收。處置紀錄（現在、以前的處置）都用這一句。
 
     卡片的資訊列（facts）另外分成「撮合」「預收」兩列，所以那邊不用這句。
 
