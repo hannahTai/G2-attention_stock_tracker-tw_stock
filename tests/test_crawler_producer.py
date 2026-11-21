@@ -109,6 +109,12 @@ def test_twse_skips_days_fetched_after_publish(raw_store):
     assert twse_keys(pc.build_twse_jobs("20261112", "20261113", refetch=True), "crawl_notice") == [("20261112",), ("20261113",)]
 
 
+def test_twse_stock_price_skips_days_fetched_after_publish(raw_store):
+    """收盤行情：一天一份，和注意股一樣，那天 20:00 以後抓的不再抓。"""
+    raw_store.put("stock_price", "20261112", {"tables": []}, fetched_at="2026-11-12T21:00:00+08:00")
+    assert twse_keys(pc.build_twse_jobs("20261112", "20261113"), "crawl_stock_price") == [("20261113",)]
+
+
 def test_twse_skips_finished_months(raw_store):
     """市場成交：那個月最後一天 20:00 以後抓的不再抓；當月照樣抓。"""
     raw_store.put("market_daily", "202610", {"data": []}, fetched_at="2026-11-02T21:00:00+08:00")

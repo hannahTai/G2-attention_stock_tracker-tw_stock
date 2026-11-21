@@ -43,6 +43,14 @@ def crawl_market_daily(month_yyyymm: str) -> str:
     return repository.save_raw("market_daily", key, resp)
 
 
+def crawl_stock_price(date_yyyymmdd: str) -> str:
+    """每日收盤行情：一天 → raw_stock_price（key 20261120）。還沒公布完整就抓的當失敗。"""
+    resp = client.fetch_stock_price(date_yyyymmdd)
+    key = date_yyyymmdd
+    problem = client.fetched_too_early_problem(date_yyyymmdd)
+    return repository.save_raw("stock_price", key, resp, problem)
+
+
 def crawl_holiday(year: int) -> str:
     """開休市日期：一年 → raw_holiday（key 2026）。回傳的年份不對就當失敗。"""
     resp = client.fetch_holiday(year)

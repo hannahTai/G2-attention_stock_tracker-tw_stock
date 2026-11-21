@@ -129,6 +129,31 @@ COMMENT ON COLUMN stage_trading_day.taiex_change_points IS '漲跌點數';
 COMMENT ON COLUMN stage_trading_day.loaded_at IS '寫入時間（台灣時間）';
 COMMENT ON COLUMN stage_trading_day.source_fetched_at IS '來自哪次抓取（raw 的 fetched_at）；寫入時只讓比較新的覆蓋';
 
+CREATE TABLE IF NOT EXISTS stage_stock_price (
+    trade_date        DATE           NOT NULL,
+    stock_id          VARCHAR(10)    NOT NULL,
+    stock_name        VARCHAR(50),
+    open_price        DECIMAL(10, 2),
+    high_price        DECIMAL(10, 2),
+    low_price         DECIMAL(10, 2),
+    close_price       DECIMAL(10, 2),
+    volume_shares     BIGINT,
+    loaded_at         TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
+    source_fetched_at TIMESTAMP(6),
+    PRIMARY KEY (trade_date, stock_id)
+);
+COMMENT ON TABLE stage_stock_price IS '每日收盤行情：一天一檔一列（那天沒成交的不放）';
+COMMENT ON COLUMN stage_stock_price.trade_date IS '交易日';
+COMMENT ON COLUMN stage_stock_price.stock_id IS '證券代號';
+COMMENT ON COLUMN stage_stock_price.stock_name IS '證券名稱';
+COMMENT ON COLUMN stage_stock_price.open_price IS '開盤價';
+COMMENT ON COLUMN stage_stock_price.high_price IS '最高價';
+COMMENT ON COLUMN stage_stock_price.low_price IS '最低價';
+COMMENT ON COLUMN stage_stock_price.close_price IS '收盤價';
+COMMENT ON COLUMN stage_stock_price.volume_shares IS '成交股數';
+COMMENT ON COLUMN stage_stock_price.loaded_at IS '寫入時間（台灣時間）';
+COMMENT ON COLUMN stage_stock_price.source_fetched_at IS '來自哪次抓取（raw 的 fetched_at）；寫入時只讓比較新的覆蓋';
+
 CREATE TABLE IF NOT EXISTS stage_holiday (
     holiday_date      DATE         NOT NULL,
     holiday_name      VARCHAR(100) NOT NULL,

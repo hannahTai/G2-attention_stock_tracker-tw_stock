@@ -22,6 +22,7 @@ def build_jobs(start: str, end: str) -> list[tuple]:
     jobs = [(task.transform_notice, {"date_yyyymmdd": d}) for d in days]
     jobs += [(task.transform_punish, {"date_yyyymmdd": d}) for d in days]
     jobs += [(task.transform_punish_watchlist, {"date_yyyymmdd": d}) for d in days]
+    jobs += [(task.transform_stock_price, {"date_yyyymmdd": d}) for d in days]
     jobs += [(task.transform_market_daily, {"month_yyyymm": m}) for m in months]
     jobs += [(task.transform_holiday, {"year": y}) for y in holiday_years(start, end)]   # 11 月起也整理下一年
     jobs += [(task.transform_company, {"date_yyyymmdd": end})]                    # 只用最新一份

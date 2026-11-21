@@ -19,6 +19,7 @@ def test_daily_jobs_cover_what_crawler_fetched(raw_store):
 
     assert jobs["transform_notice"] == [("20261113",)]
     assert jobs["transform_punish"] == [("20261113",)]
+    assert jobs["transform_stock_price"] == [("20261113",)]
     assert jobs["transform_market_daily"] == [("202611",)]   # 一份是一整個月
     assert jobs["transform_holiday"] == [(2026,), (2027,)]   # 一份是一整年；11 月起也整理下一年
     assert jobs["transform_punish_watchlist"] == [("20261113",)]

@@ -28,7 +28,7 @@ SQL_FILES = sorted((PROJECT_ROOT / "schema").glob("*.sql"))
 SCHEMA = "tw_stock"
 
 # raw 表：一個來源一張，表名 raw_<來源>
-SOURCES = ("notice", "punish", "punish_watchlist", "market_daily", "holiday", "company", "announcement",
+SOURCES = ("notice", "punish", "punish_watchlist", "market_daily", "stock_price", "holiday", "company", "announcement",
            "announcement_detail")
 RAW_COLUMNS = ["raw_key", "fetched_at", "http_status", "ok", "problem", "url", "request_body", "body"]
 

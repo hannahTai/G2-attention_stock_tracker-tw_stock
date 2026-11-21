@@ -4,7 +4,7 @@
   xxx_stock_ids()、watchlist_date()、company_ids()、announcement_ids()：從回應取出 producer、task 要用的值
   xxx_problem()：檢查回應，有問題回傳原因（task 存成失敗），沒問題回傳 None
 
-  證交所：注意股、處置股、注意累計名單、每日市場成交、開休市日期、上市公司清單
+  證交所：注意股、處置股、注意累計名單、每日市場成交、每日收盤行情、開休市日期、上市公司清單
   公開資訊觀測站：公司重大訊息（一家公司一個月一個請求）、重大訊息全文（一則一個請求）
 """
 import calendar
@@ -62,6 +62,14 @@ def fetch_punish_watchlist() -> requests.Response:
 def fetch_market_daily(month_yyyymm: str) -> requests.Response:
     """每日市場成交，某個月（YYYYMM）。每一列是一個有交易的日子。"""
     return http_get(f"{TWSE_BASE}/afterTrading/FMTQIK", {"response": "json", "date": f"{month_yyyymm}01"})
+
+
+def fetch_stock_price(date_yyyymmdd: str) -> requests.Response:
+    """每日收盤行情，某一天（YYYYMMDD）：全部上市股票、ETF（ALLBUT0999＝不含權證、牛熊證）。
+
+    回應裡有好幾張表（指數、大盤統計…），個股收盤在 fields 有「證券代號」「收盤價」的那張。沒開市的日子沒有 tables。
+    """
+    return http_get(f"{TWSE_BASE}/afterTrading/MI_INDEX", {"response": "json", "date": date_yyyymmdd, "type": "ALLBUT0999"})
 
 
 def fetch_holiday(year: int) -> requests.Response:

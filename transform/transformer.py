@@ -25,6 +25,7 @@ STAGE_KEYS = {
     "stage_punish_day": ["query_date"],
     "stage_punish_watchlist": ["data_date", "stock_id"],
     "stage_trading_day": ["trade_date"],
+    "stage_stock_price": ["trade_date", "stock_id"],
     "stage_holiday": ["holiday_date"],
     "stage_company": ["company_id"],
     "stage_announcement": ["company_id", "enter_date", "serial_number"],
@@ -168,6 +169,33 @@ def clean_trading_day(df: pd.DataFrame, month_yyyymm: str, through: datetime.dat
     if not_updated.any():
         warnings.warn(f"市場成交還沒有 {sorted(out.loc[not_updated, 'trade_date'])}，但那天有注意股：先不寫，等下次抓")
     return out[~not_updated].sort_values("trade_date", kind="stable").reset_index(drop=True)
+
+
+# ---------- 每日收盤行情 → stage_stock_price ----------
+# 用得到的官方欄位（沒用到：成交筆數、成交金額、漲跌、最後揭示買賣價量、本益比）
+STOCK_PRICE_FIELDS = ["證券代號", "證券名稱", "成交股數", "開盤價", "最高價", "最低價", "收盤價"]
+
+
+def stock_price_to_frame(raw: dict) -> pd.DataFrame:
+    """回應裡有好幾張表，取 fields 有「證券代號」「收盤價」的那張；沒開市的日子沒有，回傳空表。"""
+    tables = raw["body"].get("tables") or []
+    table = next((t for t in tables if {"證券代號", "收盤價"} <= set(t.get("fields") or [])), {})
+    return twse_rows_to_frame({"body": table}, STOCK_PRICE_FIELDS, "每日收盤行情")
+
+
+def clean_stock_price(df: pd.DataFrame, day: datetime.date) -> pd.DataFrame:
+    """→ stage_stock_price。回應的列沒有日期欄，用查詢的那天。那天沒成交（收盤價「--」）的不放。"""
+    prices = pd.DataFrame({
+        "trade_date": [day] * len(df),
+        "stock_id": df["證券代號"].str.strip(),
+        "stock_name": df["證券名稱"].str.strip(),
+        "open_price": to_number(df["開盤價"]),
+        "high_price": to_number(df["最高價"]),
+        "low_price": to_number(df["最低價"]),
+        "close_price": to_number(df["收盤價"]),
+        "volume_shares": to_number(df["成交股數"]).astype("Int64"),
+    })
+    return prices[prices["close_price"].notna()].reset_index(drop=True)
 
 
 # ---------- 開休市日期 → stage_holiday ----------

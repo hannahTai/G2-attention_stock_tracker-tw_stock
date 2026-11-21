@@ -51,13 +51,15 @@ def build_twse_jobs(start: str, end: str, refetch: bool = False) -> list[tuple]:
     """產生證交所的任務清單：[(任務函式, 參數 dict), ...]。refetch＝True 就不跳過已經完整的。"""
     days = dates_between(start, end)
     months = months_between(start, end)
-    fetched = {s: {} if refetch else repository.raw_fetched_times(s) for s in ("notice", "punish", "market_daily", "holiday")}
+    fetched = {s: {} if refetch else repository.raw_fetched_times(s) for s in ("notice", "punish", "stock_price", "market_daily", "holiday")}
 
     # 開休市日期一年一份（11 月起也抓下一年），抓過就不再抓；颱風假不在這份裡，是從市場成交看出來的
     jobs = [(task.crawl_notice, {"date_yyyymmdd": d}) for d in days
             if not is_complete(fetched["notice"], d, day_ready_at(d))]
     jobs += [(task.crawl_punish, {"date_yyyymmdd": d}) for d in days
              if not is_complete(fetched["punish"], d, day_ready_at(d))]
+    jobs += [(task.crawl_stock_price, {"date_yyyymmdd": d}) for d in days
+             if not is_complete(fetched["stock_price"], d, day_ready_at(d))]
     if end == today_yyyymmdd():
         jobs += [(task.crawl_punish_watchlist, {})]   # 只有最新一天，回補時抓不到舊的
     jobs += [(task.crawl_market_daily, {"month_yyyymm": m}) for m in months
@@ -119,9 +121,10 @@ def main() -> None:
     args = cli.parse_args()   # daily：今天；backfill：--start～--end，--refetch 全部重抓
     repository.create_tables()   # 建表（已經有就跳過）；全新的資料庫第一步就是 crawler
 
-    failed = runner.run_jobs(build_twse_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS)
-    failed += runner.run_jobs(build_mops_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_MOPS)
-    failed += runner.run_jobs(build_detail_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_MOPS)
+    # queue：開 Celery 時，證交所、觀測站各自一個 worker 一次做一個（見 common/worker.py）
+    failed = runner.run_jobs(build_twse_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS, queue="twse")
+    failed += runner.run_jobs(build_mops_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_MOPS, queue="mops")
+    failed += runner.run_jobs(build_detail_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_MOPS, queue="mops")
     runner.finish(failed)
 
 

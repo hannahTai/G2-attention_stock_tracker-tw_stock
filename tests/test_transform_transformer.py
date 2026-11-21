@@ -11,7 +11,7 @@ from transform.parsing import chinese_number, strip_html, to_number
 from transform.transformer import (
     announcement_detail_to_frame, announcement_to_frame, clean_announcement_detail, holiday_to_frame, market_daily_to_frame, notice_to_frame, punish_to_frame,
     punish_watchlist_to_frame, clean_announcement, clean_company, company_to_frame, clean_holiday, clean_notice,
-    clean_punish, clean_punish_watchlist, clean_trading_day,
+    clean_punish, clean_punish_watchlist, clean_stock_price, clean_trading_day, stock_price_to_frame,
 )
 
 
@@ -287,3 +287,31 @@ def test_announcement_detail_dr_format():
     row = clean_announcement_detail(announcement_detail_to_frame(raw)).iloc[0]
     assert (row["announce_clause"], row["fact_date"]) == ("第五條第28款", datetime.date(2026, 6, 9))
     assert row["content"] == "營業收入 42,528\n\n其他：\n補充說明"
+
+
+# ---------- 每日收盤行情 ----------
+STOCK_PRICE_API_FIELDS = ["證券代號", "證券名稱", "成交股數", "成交筆數", "成交金額", "開盤價", "最高價", "最低價", "收盤價",
+                          "漲跌(+/-)", "漲跌價差", "最後揭示買價", "最後揭示買量", "最後揭示賣價", "最後揭示賣量", "本益比"]
+
+
+def price_envelope(rows):
+    """收盤行情的回應有好幾張表；個股那張在後面。"""
+    index_table = {"title": "價格指數", "fields": ["指數", "收盤指數"], "data": [["發行量加權股價指數", "27,000.00"]]}
+    price_table = {"title": "每日收盤行情", "fields": STOCK_PRICE_API_FIELDS, "data": rows}
+    return {"meta": {"fetched_at": "2026-11-20T21:00:00+08:00"}, "body": {"stat": "OK", "tables": [index_table, price_table]}}
+
+
+def test_stock_price_picks_the_price_table_and_drops_untraded():
+    traded = ["2466", "冠西電", "1,234,000", "900", "389,000,000", "310.00", "318.00", "309.50", "315.50",
+              "<p style= color:red>+</p>", "5.50", "315.00", "10", "315.50", "3", "25.10"]
+    untraded = ["9999", "沒成交", "0", "0", "0", "--", "--", "--", "--", "<p> </p>", "0.00", "--", "0", "--", "0", "0.00"]
+    day = datetime.date(2026, 11, 20)
+    df = clean_stock_price(stock_price_to_frame(price_envelope([traded, untraded])), day)
+    assert df["stock_id"].tolist() == ["2466"]
+    row = df.iloc[0]
+    assert (row["trade_date"], row["close_price"], row["high_price"], row["volume_shares"]) == (day, 315.5, 318.0, 1234000)
+
+
+def test_stock_price_on_closed_day_is_empty():
+    raw = {"meta": {"fetched_at": "2026-11-22T21:00:00+08:00"}, "body": {"stat": "很抱歉，沒有符合條件的資料!"}}
+    assert clean_stock_price(stock_price_to_frame(raw), datetime.date(2026, 11, 22)).empty

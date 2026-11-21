@@ -95,6 +95,29 @@ COMMENT ON COLUMN raw_market_daily.request_body IS 'POST 的參數（JSON 字串
 COMMENT ON COLUMN raw_market_daily.body IS 'API 回應原文（JSON 字串；被擋時可能是 HTML）';
 COMMENT ON COLUMN raw_market_daily.loaded_at IS '寫入時間（台灣時間）';
 
+CREATE TABLE IF NOT EXISTS raw_stock_price (
+    raw_key      VARCHAR(30) NOT NULL,
+    fetched_at   TIMESTAMP(6) NOT NULL,
+    http_status  SMALLINT    NOT NULL,
+    ok           BOOLEAN     NOT NULL,
+    problem      TEXT,
+    url          TEXT        NOT NULL,
+    request_body TEXT,
+    body         TEXT    NOT NULL,
+    loaded_at    TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
+    PRIMARY KEY (raw_key, fetched_at)
+);
+COMMENT ON TABLE raw_stock_price IS '證交所 每日收盤行情（一次一天，全部上市股票、ETF，不含權證）';
+COMMENT ON COLUMN raw_stock_price.raw_key IS '日期，例如 20261120';
+COMMENT ON COLUMN raw_stock_price.fetched_at IS '抓取時間（台灣時間）';
+COMMENT ON COLUMN raw_stock_price.http_status IS 'HTTP 狀態碼';
+COMMENT ON COLUMN raw_stock_price.ok IS '成功且內容檢查通過；transform 只讀 ok 的列';
+COMMENT ON COLUMN raw_stock_price.problem IS '失敗原因；成功為 NULL';
+COMMENT ON COLUMN raw_stock_price.url IS '請求網址（含查詢參數）';
+COMMENT ON COLUMN raw_stock_price.request_body IS 'POST 的參數（JSON 字串）；GET 為 NULL';
+COMMENT ON COLUMN raw_stock_price.body IS 'API 回應原文（JSON 字串；被擋時可能是 HTML）';
+COMMENT ON COLUMN raw_stock_price.loaded_at IS '寫入時間（台灣時間）';
+
 CREATE TABLE IF NOT EXISTS raw_holiday (
     raw_key      VARCHAR(30) NOT NULL,
     fetched_at   TIMESTAMP(6) NOT NULL,

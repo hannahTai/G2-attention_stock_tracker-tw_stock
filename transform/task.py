@@ -120,6 +120,16 @@ def transform_market_daily(month_yyyymm: str) -> str:
     return save(raw, tables)
 
 
+def transform_stock_price(date_yyyymmdd: str) -> str:
+    """每日收盤行情（一天）→ stage_stock_price。"""
+    key = date_yyyymmdd
+    raw = repository.read_raw("stock_price", key)
+    if raw is None:
+        return skipped("stock_price", key)
+    tables = {"stage_stock_price": transformer.clean_stock_price(transformer.stock_price_to_frame(raw), parse_yyyymmdd(key))}
+    return save(raw, tables)
+
+
 def transform_holiday(year: int) -> str:
     """開休市日期（一年）→ stage_holiday。"""
     key = str(year)
