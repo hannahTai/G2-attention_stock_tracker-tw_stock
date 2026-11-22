@@ -1,4 +1,4 @@
-"""verifier：檢查 AI 的回答，① 公告分類（classifier.py）和新聞摘要（summarizer.py）共用。不呼叫 API、不連資料庫。"""
+"""verifier：檢查 AI 的回答，公告分類（classifier.py）和新聞摘要（summarizer.py）共用。不呼叫 API、不連資料庫。"""
 import re
 
 

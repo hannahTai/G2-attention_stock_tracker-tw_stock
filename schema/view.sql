@@ -140,6 +140,7 @@ FROM stage_punish;
 
 -- ---------- 公開資訊（重大訊息）----------
 -- 加上交易時段內／後、更正、說明公告的標記，和全文（還沒抓到全文的為 NULL）
+-- 更正、說明的標記和類型用公告分類（ai_announcement_label 最新一版）；還沒分類的（剛發的公告）先用主旨的關鍵字判斷
 CREATE VIEW app_announcement AS
 SELECT
     a.company_id AS stock_id,
@@ -152,14 +153,19 @@ SELECT
     -- true＝交易時段內（14:30 前，含盤後定價交易）
     a.announce_time <= '14:30:00' AS is_during_session,
 
-    -- 更正公告
-    a.subject LIKE '%更正%' AS is_correction,
+    -- 更正公告：公告分類的判斷；還沒分類就看主旨有沒有「更正」
+    COALESCE(l.is_correction, a.subject LIKE '%更正%') AS is_correction,
 
-    -- 說明、澄清公告（排除「法人說明會」）
-    (
-        a.subject LIKE '%澄清%'
-        OR (a.subject LIKE '%說明%' AND a.subject NOT LIKE '%說明會%')
+    -- 說明、澄清公告：公告分類的類型是「澄清／回應媒體」；還沒分類就看主旨（排除「法人說明會」）
+    COALESCE(
+        l.category = '澄清／回應媒體',
+        a.subject LIKE '%澄清%' OR (a.subject LIKE '%說明%' AND a.subject NOT LIKE '%說明會%')
     ) AS is_explanation,
+
+    l.category,                     -- 公告分類的類型（13 類）；還沒分類為 NULL
+    l.has_news,                     -- 公告分類：有新的資訊（例行、依規定才公布的為否）；還沒分類為 NULL
+    l.is_negative,                  -- 公告分類：對公司是壞消息（衰退、虧損、訴訟、裁罰…）；還沒分類為 NULL
+    CASE WHEN l.summary_ok THEN l.summary END AS ai_summary,   -- 公告分類的白話摘要（沒通過檢查的不顯示）
 
     d.announce_clause,              -- 符合條款，例如 第31款
     c.short_name AS clause_name,    -- 條款的簡短名稱，例如 財務報告
@@ -169,7 +175,14 @@ FROM stage_announcement a
 LEFT JOIN stage_announcement_detail d
     ON d.announcement_id = a.announcement_id
 LEFT JOIN stage_announcement_clause c
-    ON c.announce_clause = d.announce_clause;
+    ON c.announce_clause = d.announce_clause
+LEFT JOIN LATERAL (   -- 最新一版的公告分類
+    SELECT x.category, x.is_correction, x.has_news, x.is_negative, x.summary, x.summary_ok
+    FROM ai_announcement_label x
+    WHERE x.announcement_id = a.announcement_id
+    ORDER BY x.labeled_at DESC
+    LIMIT 1
+) l ON TRUE;
 
 
 -- ---------- 新聞資訊 ----------

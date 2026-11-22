@@ -1,6 +1,6 @@
 """task 層（AI）：一個任務處理一筆資料、問 LLM、結果寫進 ai_* 表，回傳一行結果。
 
-    classify_announcement：① 公告分類，一則重大訊息 → ai_announcement_label
+    classify_announcement：公告分類，一則重大訊息 → ai_announcement_label
     summarize_news：新聞摘要，一則新聞 → ai_news_summary
 
 問 LLM 和 crawler 打 API 同樣三步（label_once、summary_once）：
@@ -8,7 +8,7 @@
     2. problem = client.xxx_problem(response)：檢查回應
     3. repository.save_llm_call(紀錄, problem)：每次呼叫都記一列 ai_llm_call（token、花費）；有問題的存完丟 FetchError
 同一個 prompt 版本已經有結果的就跳過（不重複花錢）；還沒有全文的公告也跳過，下次再分類。
-摘要超過上限（公告 40 字；新聞依文章長度，見 summarizer.summary_limit）：帶著上次的回答請 LLM 縮短，只重問一次；
+摘要超過上限（公告 60 字；新聞依文章長度，見 summarizer.summary_limit）：帶著上次的回答請 LLM 縮短，只重問一次；
 還是太長、或縮短失敗就用手上的回答照存，summary_ok＝否。
 只讀 stage 表、只寫自己的 ai_* 表，失敗不影響資料線和其他任務。
 例外：summarize_news 要新聞全文，全文不存進資料庫（著作權），只能當場再抓一次網頁（用 crawler/client.py 的函式，不另寫爬蟲）。
@@ -37,7 +37,7 @@ def shorten_once(ask, key: str, user_message: str, answer: dict, model: str, lim
 
 
 def label_once(key: str, messages: list[dict]) -> tuple[dict, str]:
-    """問一次 ① 公告分類，記一列 ai_llm_call，回傳 (回答, 實際回答的模型)。"""
+    """問一次 公告分類，記一列 ai_llm_call，回傳 (回答, 實際回答的模型)。"""
     started = date_utils.now()
     response = client.fetch_announcement_label(messages)
     problem = client.announcement_label_problem(response)
@@ -81,7 +81,7 @@ def summarize_news(news_id: str) -> str:
 
     全文只在記憶體裡，用完就丟，不存進資料庫（著作權）；存的只有摘要。
     網頁這次打不開（被擋、不是網頁）或全文太短就跳過，不問 LLM；5xx、429、逾時丟錯誤重試（requests 的錯誤）。
-    摘要上限依文章長度（summarizer.summary_limit：文章的三成，80～1200 字）；超過就請 LLM 縮短，只重問一次（和 ① 一樣），還是太長就照存，summary_ok＝否。
+    摘要上限依文章長度（summarizer.summary_limit：文章的三成，80～1200 字）；超過就請 LLM 縮短，只重問一次（和公告分類一樣），還是太長就照存，summary_ok＝否。
     在 ai 佇列上跑（同時 2 個），沒有 NewsDetailJob 的間隔：要摘要的網頁分散在十幾個網站，同一個網站不會被連續打。
     """
     if repository.has_news_summary(news_id, summarizer.PROMPT_VERSION):

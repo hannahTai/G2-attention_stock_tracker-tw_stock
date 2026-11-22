@@ -4,7 +4,7 @@
 crawler    API        → raw_* 表     抓資料，存原文
 transform  raw_* 表   → stage_* 表   整理成表
 analyze    stage_* 表 → app_* 表     規則引擎算進度
-ai         stage_* 表 → ai_* 表     呼叫 LLM、存結果（① 公告分類、新聞摘要）
+ai         stage_* 表 → ai_* 表     呼叫 LLM、存結果（公告分類、新聞摘要）
 ```
 
 ## 每天怎麼跑
@@ -41,7 +41,7 @@ ai         stage_* 表 → ai_* 表     呼叫 LLM、存結果（① 公告分�
 
 只讀 stage 表、呼叫 LLM、把結果存進 ai_* 表。失敗只影響 AI 的結果，網站照常。
 
-- ① 公告分類：還沒分類、有全文的公告，每則一個任務 `classify_announcement` → `ai_announcement_label`。
+- 公告分類：還沒分類、有全文的公告，每則一個任務 `classify_announcement` → `ai_announcement_label`。
 - 新聞摘要：有抓到網頁、全文夠長、還沒摘要的新聞，每則一個任務 `summarize_news` → `ai_news_summary`。
 - 沒設 `ANTHROPIC_API_KEY` 就整批跳過。
 
@@ -169,7 +169,7 @@ raw 是有主鍵又只新增：主鍵含 `fetched_at`（精確到微秒），每
 
 | 項目 | 任務 | 一次處理 | 範圍 | 摘要上限 | 寫入 |
 |---|---|---|---|---|---|
-| ① 公告分類 | `classify_announcement` | 一則公告 | 區間內發言的公告，加上全文在區間內才寫進來的（新被關注的公司，crawler 會補抓當月和上個月的公告） | 40 字 | `ai_announcement_label` |
+| 公告分類 | `classify_announcement` | 一則公告 | 區間內發言的公告，加上全文在區間內才寫進來的（新被關注的公司，crawler 會補抓當月和上個月的公告） | 60 字 | `ai_announcement_label` |
 | 新聞摘要 | `summarize_news` | 一則新聞 | 區間內（往前多 `NEWS_LOOKBACK_DAYS` 天）有抓到網頁、全文至少 200 字的新聞 | 文章的三成（80～1200 字） | `ai_news_summary`（網站讀 `app_stock_news.ai_summary`） |
 
 - 只讀 stage 表、呼叫 Claude、結果存進自己的 `ai_*` 表。沒設 `ANTHROPIC_API_KEY` 就整批跳過。模型：`.env` 的 `AI_CLASSIFY_MODEL`、`AI_SUMMARY_MODEL`（預設 `claude-haiku-5-5`），結構化輸出（照 JSON schema 回答）。

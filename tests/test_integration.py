@@ -304,7 +304,7 @@ def test_news_id_must_be_md5_of_link(db):
 def test_announcement_label_inserted_twice_keeps_first(db):
     """同一個任務被送了兩次：同一則、同一版只留第一次的結果，不報錯。"""
     label = {"announcement_id": key_md5("6108", "20261114", 3), "prompt_version": "v2",
-             "category": "營運", "is_correction": False, "has_news": True, "summary": "第一次", "reason": "r",
+             "category": "營運", "is_correction": False, "has_news": True, "is_negative": False, "summary": "第一次", "reason": "r",
              "summary_ok": True, "model": "claude-haiku-5-5"}
     repository.insert_announcement_label(label)
     repository.insert_announcement_label({**label, "summary": "第二次"})
@@ -345,3 +345,22 @@ def test_announcement_id_matches_sql_and_joins_detail(db):
     with pytest.raises(sqlalchemy.exc.IntegrityError, match="stage_announcement_id_is_md5"):
         with db.begin() as conn:
             conn.execute(sqlalchemy.text("UPDATE stage_announcement SET announcement_id = :bad"), {"bad": "0" * 32})
+
+
+def test_app_announcement_labels_come_from_ai_with_keyword_fallback(db):
+    """更正、說明的標記：有公告分類的結果就用它；還沒分類（剛發的公告）用主旨關鍵字。"""
+    announcement = pd.DataFrame({"company_id": ["9908"], "announce_date": [datetime.date(2026, 11, 2)],
+                                 "enter_date": [datetime.date(2026, 11, 2)], "serial_number": [1],
+                                 "announce_time": ["14:39:07"], "company_name": ["大台北"], "subject": ["更正第三季財報"]})
+    announcement.insert(4, "announcement_id", transformer.announcement_ids(announcement))
+    transform_task.upsert_stage({"stage_announcement": announcement}, V1)
+    query = sqlalchemy.text("SELECT is_correction, is_explanation, category, ai_summary FROM app_announcement")
+    with db.connect() as conn:
+        assert tuple(conn.execute(query).one()) == (True, False, None, None)    # 還沒分類：主旨有「更正」
+    repository.insert_announcement_label({
+        "announcement_id": key_md5("9908", "20261102", 1), "prompt_version": "v2", "category": "澄清／回應媒體",
+        "is_correction": False, "has_news": False, "is_negative": True, "summary": "澄清媒體報導", "reason": "r", "summary_ok": True, "model": "m"})
+    with db.connect() as conn:
+        assert tuple(conn.execute(query).one()) == (False, True, "澄清／回應媒體", "澄清媒體報導")   # 用公告分類的判斷
+    with db.connect() as conn:   # 壞消息另外一欄
+        assert conn.execute(sqlalchemy.text("SELECT is_negative FROM app_announcement")).scalar() is True

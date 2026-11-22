@@ -38,7 +38,7 @@ flowchart LR
 | Source | 證交所 API（注意股、處置股、注意累計名單、開休市日期、市場成交、收盤行情、上市公司）、公開資訊觀測站 API（重大訊息、重大訊息全文）、FinMind API（個股新聞）、新聞網站（新聞網頁的 `<head>`） |
 | Ingest | Python requests；Celery + RabbitMQ 任務佇列（證交所、觀測站、FinMind 各一個 worker 限速，Flower 監看）；Windows 工作排程器（之後 Airflow） |
 | Storage | PostgreSQL 三層：`raw_*`（API 原文）→ `stage_*`（清理後）→ `app_*`（引擎結果），另外 `ai_*`（AI 結果、LLM 呼叫紀錄）；之後 Cloud SQL、BigQuery |
-| Process | pandas：`transform/` 整理（raw → stage）、`analyze/` 規則引擎——依要點第六條算離處置還差幾次（stage → app）；`ai/` Claude API——① 公告分類、新聞摘要（結構化輸出） |
+| Process | pandas：`transform/` 整理（raw → stage）、`analyze/` 規則引擎——依要點第六條算離處置還差幾次（stage → app）；`ai/` Claude API——公告分類、新聞摘要（結構化輸出） |
 | Serve | FastAPI 資料 API（只讀 `app_*` 表和 VIEW，回 JSON）＋ Streamlit 網頁（卡片牆、個股頁，只打 API、不連資料庫）；Metabase → Looker Studio 儀表板 |
 | Observe | `data/logs/`、任務歷史 `tw_stock.job_run`、回測（真實處置 75 筆全部算到，條件也都對上）；之後失敗通知 |
 
@@ -79,7 +79,7 @@ ai/                         AI 項目：只讀 stage、呼叫 LLM、存進 ai_* 
 ├─ producer.py                producer：產生任務清單（還沒分類的公告、還沒摘要的新聞，每則一個任務）
 ├─ task.py                    task：classify_announcement → ai_announcement_label；summarize_news → ai_news_summary
 ├─ client.py                  client：呼叫 Claude API（fetch_xxx，結構化輸出，不存檔）、檢查回應、算 token 花費
-├─ classifier.py              ① 公告分類的 prompt、JSON schema（13 類）、檢查摘要的長度
+├─ classifier.py              公告分類的 prompt、JSON schema（13 類）、檢查摘要的長度
 ├─ summarizer.py              新聞摘要的 prompt、JSON schema、檢查摘要的長度
 └─ verifier.py                檢查 AI 的回答，兩個項目共用（摘要裡的數字要出現在原文裡）
 api/                        資料 API：FastAPI 讀 app_* 表和 VIEW，回 JSON

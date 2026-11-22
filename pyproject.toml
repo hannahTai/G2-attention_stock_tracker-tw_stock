@@ -19,7 +19,7 @@ dependencies = [
     "streamlit>=1.67.0",          # 網頁（dashboard/），打資料 API
     "jinja2>=3.1.6",              # 網頁範本（dashboard/templates/），Streamlit 用 st.html 顯示
     "celery>=5.5",                # 任務佇列（USE_CELERY=1 時，producer 把任務送進 RabbitMQ 給 worker 做）
-    "anthropic>=1.0",             # Claude API（ai/：① 公告分類）
+    "anthropic>=1.0",             # Claude API（ai/：公告分類、新聞摘要）
     "trafilatura>=2.0",           # 新聞網頁：抽 meta 摘要、正文（正文只在記憶體裡用，不存）
 ]
 

@@ -1,4 +1,4 @@
-"""ai/：① 公告分類、新聞摘要（prompt、檢查、任務流程）、LLM 呼叫紀錄、AI producer 的任務清單。不連網路、不連資料庫、不花錢。執行：uv run pytest"""
+"""ai/：公告分類、新聞摘要（prompt、檢查、任務流程）、LLM 呼叫紀錄、AI producer 的任務清單。不連網路、不連資料庫、不花錢。執行：uv run pytest"""
 import datetime
 import json
 import types
@@ -20,7 +20,7 @@ ANNOUNCEMENT = {
     "subject": "本公司115年10月營收", "announce_clause": "第51款", "clause_name": "其他重大事項",
     "fact_date": datetime.date(2026, 11, 14), "content": "10月營收為1,520萬元，較去年同期增加31%。",
 }
-ANSWER = {"category": "營收、自結損益", "is_correction": False, "has_news": True,
+ANSWER = {"category": "營收、自結損益", "is_correction": False, "has_news": True, "is_negative": False,
           "summary": "10月營收1520萬元，年增31%", "reason": "公告每月營收"}
 
 
@@ -52,7 +52,7 @@ def test_label_row_checks_numbers_against_announcement():
 
 
 def test_label_row_rejects_summary_over_limit():
-    long = {**ANSWER, "summary": "10月營收1520萬元，年增31%" + "，持續成長" * 6}
+    long = {**ANSWER, "summary": "10月營收1520萬元，年增31%" + "，持續成長" * 10}
     assert classifier.too_long(long["summary"])
     assert not classifier.to_label_row(ANNOUNCEMENT, long, "claude-haiku-5-5")["summary_ok"]
 
@@ -154,16 +154,16 @@ def test_classify_writes_label_and_records_call(monkeypatch, labels):
 def test_classify_asks_once_more_when_summary_too_long(monkeypatch, labels):
     """摘要超過上限：帶著上次的回答請它縮短，只重問一次；第二次的回答才存。"""
     monkeypatch.setattr(repository, "read_announcement", lambda *key: ANNOUNCEMENT)
-    asked = answer_with(monkeypatch, {**ANSWER, "summary": "一" * 41}, ANSWER)
+    asked = answer_with(monkeypatch, {**ANSWER, "summary": "一" * 61}, ANSWER)
     ai_task.classify_announcement("6108", "20261114", 3)
     assert [m["role"] for m in asked[0]] == ["user"] and [m["role"] for m in asked[1]] == ["user", "assistant", "user"]
-    assert "41 個字" in asked[1][-1]["content"]
+    assert "61 個字" in asked[1][-1]["content"]
     assert labels.rows[0]["summary"] == ANSWER["summary"] and labels.rows[0]["summary_ok"] and len(labels.calls) == 2
 
 
 def test_classify_still_too_long_is_saved_but_hidden(monkeypatch, labels):
     monkeypatch.setattr(repository, "read_announcement", lambda *key: ANNOUNCEMENT)
-    answer_with(monkeypatch, {**ANSWER, "summary": "一" * 41})
+    answer_with(monkeypatch, {**ANSWER, "summary": "一" * 61})
     ai_task.classify_announcement("6108", "20261114", 3)
     assert not labels.rows[0]["summary_ok"]
 
@@ -177,10 +177,10 @@ def test_classify_keeps_first_answer_when_shorten_fails(monkeypatch, labels):
         calls.append(messages)
         if len(calls) == 2:
             raise repository.FetchError("沒有正常結束（stop_reason=refusal）", retryable=False)
-        return fake_response({**ANSWER, "summary": "一" * 41})
+        return fake_response({**ANSWER, "summary": "一" * 61})
     monkeypatch.setattr(client, "fetch_announcement_label", fake_fetch)
     ai_task.classify_announcement("6108", "20261114", 3)
-    assert len(calls) == 2 and labels.rows[0]["summary"] == "一" * 41 and not labels.rows[0]["summary_ok"]
+    assert len(calls) == 2 and labels.rows[0]["summary"] == "一" * 61 and not labels.rows[0]["summary_ok"]
 
 
 def test_classify_skips_labeled_and_missing_detail(monkeypatch, labels):

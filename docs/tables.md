@@ -525,8 +525,8 @@ VIEW 是存起來的查詢，不複製資料；網頁查的時候資料庫才去
 | `app_trading_day` | 注意紀錄格子、公告和處置紀錄的起日 | `stage_trading_day` 裡有交易的日子（`trade_date`） |
 | `app_notice_history` | 注意紀錄格子 | 每檔每個被列注意的交易日：`clauses`、`is_counted`（true＝累計）、`reason_text`（那天被列的原因全文）。沒被列的日子沒有列；早於 `count_start` 的是「已計入前次處置」 |
 | `app_punish_history` | 處置紀錄 | `stage_punish` 的欄位 |
-| `app_stock_news` | 新聞資訊（之後 ②、③ 也讀這裡） | `stage_stock_news` 每一列，用 `news_id` JOIN `stage_news` 帶出標題、媒體（`publisher`）、時間、連結，LEFT JOIN `stage_news_detail` 帶出 `lead`（導言）；3 則以上新聞共用的同一句導言（網站介紹、個股概覽頁）當成沒有，為 NULL。`ai_summary`：`ai_news_summary` 最新一版、通過檢查的摘要 |
-| `app_announcement` | 公開資訊 | `stage_announcement`（含 `announcement_id`），加上 `is_during_session`（14:30 前＝交易時段內）、`is_correction`（更正）、`is_explanation`（說明、澄清；排除法人說明會）；用 `announcement_id` LEFT JOIN `stage_announcement_detail` 帶出 `announce_clause`、`fact_date`、`content`（還沒抓到全文的為 NULL），再 JOIN `stage_announcement_clause` 帶出 `clause_name`（例如 財務報告） |
+| `app_stock_news` | 新聞資訊（之後新聞 RAG、卡片 AI 摘要也讀這裡） | `stage_stock_news` 每一列，用 `news_id` JOIN `stage_news` 帶出標題、媒體（`publisher`）、時間、連結，LEFT JOIN `stage_news_detail` 帶出 `lead`（導言）；3 則以上新聞共用的同一句導言（網站介紹、個股概覽頁）當成沒有，為 NULL。`ai_summary`：`ai_news_summary` 最新一版、通過檢查的摘要 |
+| `app_announcement` | 公開資訊 | `stage_announcement`（含 `announcement_id`），加上 `is_during_session`（14:30 前＝交易時段內）、`is_correction`（更正）、`is_explanation`（說明、澄清：類型是澄清／回應媒體）——用公告分類（`ai_announcement_label` 最新一版）的判斷，還沒分類的先用主旨關鍵字；`category`、`has_news`、`is_negative`、`ai_summary`（公告分類的類型、有新消息、壞消息、白話摘要，`summary_ok` 才顯示）；用 `announcement_id` LEFT JOIN `stage_announcement_detail` 帶出 `announce_clause`、`fact_date`、`content`（還沒抓到全文的為 NULL），再 JOIN `stage_announcement_clause` 帶出 `clause_name`（例如 財務報告） |
 
 ## ai 層
 
@@ -540,13 +540,14 @@ AI 項目的結果（由 `ai/task.py` 寫入）。和 `app_*` 分開：`app_*` �
 | 欄位 | 型別 | 說明 |
 |---|---|---|
 | announcement_id | CHAR(32) | 主鍵之一；公告代號（`stage_announcement.announcement_id`） |
-| prompt_version | VARCHAR(20) | 主鍵之一，例如 `v2` |
+| prompt_version | VARCHAR(20) | 主鍵之一，例如 `v3` |
 | category | VARCHAR(20) | 13 類選一：注意股例行說明、澄清／回應媒體、營收、自結損益、財務報告、訂單、合約、合作、新產品、認證、許可、投資、資產買賣、籌資、股利、庫藏股、人事異動、股東會、董事會、法說會、負面事件、其他 |
 | is_correction | BOOLEAN | 更正、補充、修正先前的公告 |
 | has_news | BOOLEAN | 有新的資訊；例行、依規定才公布的為否 |
-| summary | VARCHAR(100) | 一句白話摘要；程式限制 40 字（`SUMMARY_MAX_CHARS`），超過就帶著上次的回答請 LLM 縮短，只重問一次 |
+| is_negative | BOOLEAN | 對公司是壞消息（衰退、虧損、訴訟、裁罰、災害、合約取消…）；照事實判斷，不是預測股價。和類型分開判斷（營收衰退仍是「營收、自結損益」）。v3 起才有，舊版為 NULL |
+| summary | VARCHAR(100) | 一句白話摘要；程式限制 60 字（`SUMMARY_MAX_CHARS`），超過就帶著上次的回答請 LLM 縮短，只重問一次 |
 | reason | TEXT | LLM 給的一句理由（評估、除錯用） |
-| summary_ok | BOOLEAN | 摘要通過程式檢查：不超過 40 字、數字都出現在公告裡；否的話網站不該顯示摘要（網站還沒接上 ai_announcement_label） |
+| summary_ok | BOOLEAN | 摘要通過程式檢查：不超過 60 字、數字都出現在公告裡；否的話網站不顯示摘要（app_announcement.ai_summary 為 NULL） |
 | model | VARCHAR(50) | 模型 |
 | labeled_at | TIMESTAMP(0) | 分類時間（台灣時間） |
 
@@ -591,4 +592,18 @@ AI 項目的結果（由 `ai/task.py` 寫入）。和 `app_*` 分開：`app_*` �
 SELECT called_at::date, task, COUNT(*), SUM(cost_usd) FROM tw_stock.ai_llm_call GROUP BY 1, 2 ORDER BY 1 DESC;
 -- 各類型幾則
 SELECT category, COUNT(*), COUNT(*) FILTER (WHERE has_news) FROM tw_stock.ai_announcement_label GROUP BY 1 ORDER BY 2 DESC;
+-- 一則公告的分類用了哪幾次呼叫、花多少（摘要太長重問一次就有兩列；失敗的呼叫有紀錄、沒有分類結果）
+SELECT l.announcement_id, l.category, c.call_id, c.status, c.input_tokens, c.output_tokens, c.cost_usd, c.called_at
+FROM tw_stock.ai_announcement_label l
+JOIN tw_stock.ai_llm_call c
+  ON c.task = 'classify_announcement'
+ AND md5(c.ref_key) = l.announcement_id        -- ref_key 是看得懂的 9908_20261102_1，announcement_id 是它的 md5
+ AND c.prompt_version = l.prompt_version
+ORDER BY c.called_at;
+-- 新聞摘要：ref_key 就是 news_id，直接對
+SELECT s.news_id, s.summary_ok, c.call_id, c.cost_usd
+FROM tw_stock.ai_news_summary s
+JOIN tw_stock.ai_llm_call c ON c.task = 'summarize_news' AND c.ref_key = s.news_id AND c.prompt_version = s.prompt_version;
 ```
+
+- 分類、摘要和呼叫紀錄不用外鍵連：一個結果可能來自 1～2 次呼叫（縮短重問），失敗的呼叫沒有結果。用上面的 JOIN 對。

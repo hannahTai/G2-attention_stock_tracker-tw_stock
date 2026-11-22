@@ -42,13 +42,14 @@ COMMENT ON COLUMN ai_llm_call.request_id IS 'API 的 request-id（回報問題�
 COMMENT ON COLUMN ai_llm_call.error IS '失敗原因（ai/client.py 的 xxx_problem）';
 COMMENT ON COLUMN ai_llm_call.called_at IS '呼叫時間（台灣時間）';
 
--- ① 公告分類：每則公告每個 prompt 版本一列；同一版已經有就不再問
+-- 公告分類：每則公告每個 prompt 版本一列；同一版已經有就不再問
 CREATE TABLE IF NOT EXISTS ai_announcement_label (
     announcement_id CHAR(32)     NOT NULL,
     prompt_version  VARCHAR(20)  NOT NULL,
     category        VARCHAR(20)  NOT NULL,
     is_correction   BOOLEAN      NOT NULL,
     has_news        BOOLEAN      NOT NULL,
+    is_negative     BOOLEAN,
     summary         VARCHAR(100) NOT NULL,
     reason          TEXT         NOT NULL,
     summary_ok      BOOLEAN      NOT NULL,
@@ -62,9 +63,10 @@ COMMENT ON COLUMN ai_announcement_label.prompt_version IS 'prompt 版本（ai/cl
 COMMENT ON COLUMN ai_announcement_label.category IS '類型（13 類選一，見 ai/classifier.py 的 CATEGORIES）';
 COMMENT ON COLUMN ai_announcement_label.is_correction IS '更正、補充、修正先前的公告';
 COMMENT ON COLUMN ai_announcement_label.has_news IS '有新的資訊；例行、依規定才公布的為否';
-COMMENT ON COLUMN ai_announcement_label.summary IS '一句白話摘要（程式限制 40 字；超過會請 LLM 縮短一次）';
+COMMENT ON COLUMN ai_announcement_label.is_negative IS '對公司是壞消息（衰退、虧損、訴訟、裁罰、災害…；照事實判斷，不是預測股價）；v3 起才有，舊版為 NULL';
+COMMENT ON COLUMN ai_announcement_label.summary IS '一句白話摘要（程式限制 60 字；超過會請 LLM 縮短一次）';
 COMMENT ON COLUMN ai_announcement_label.reason IS 'LLM 給的一句理由（評估、除錯用）';
-COMMENT ON COLUMN ai_announcement_label.summary_ok IS '摘要通過程式檢查：不超過 40 字、數字都出現在公告裡；否的話網站不該顯示摘要（網站還沒接上 ai_announcement_label）';
+COMMENT ON COLUMN ai_announcement_label.summary_ok IS '摘要通過程式檢查：不超過 60 字、數字都出現在公告裡；否的話網站不顯示摘要（app_announcement.ai_summary 為 NULL）';
 COMMENT ON COLUMN ai_announcement_label.model IS '模型';
 COMMENT ON COLUMN ai_announcement_label.labeled_at IS '分類時間（台灣時間）';
 

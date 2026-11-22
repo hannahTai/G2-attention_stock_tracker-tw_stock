@@ -1,9 +1,10 @@
-"""① 公告分類：prompt、回答的格式（JSON schema）、檢查和整理結果。不呼叫 API（呼叫在 ai/client.py，流程在 ai/task.py）。
+"""公告分類：prompt、回答的格式（JSON schema）、檢查和整理結果。不呼叫 API（呼叫在 ai/client.py，流程在 ai/task.py）。
 
 每則重大訊息判斷：
   category       類型，13 類選一個（CATEGORIES；schema 用 enum 限定，不會出現自己編的類型）
   is_correction  更正、補充、修正先前的公告
   has_news       有新的資訊（例行、依規定才公布的為否）
+  is_negative    對公司是壞消息（衰退、虧損、訴訟、裁罰、災害…；照事實判斷，不是預測股價）
   summary        一句白話摘要，最多 SUMMARY_MAX_CHARS 字，數字只能用公告裡有的（summary_ok 用程式檢查）
   reason         一句理由（評估、除錯用）
 改了 SYSTEM_PROMPT、CATEGORIES 或 SCHEMA 就把 PROMPT_VERSION 加一版：新版本另外存，舊的結果留著比較。
@@ -14,10 +15,10 @@ import json
 from ai import verifier
 from common.date_utils import to_yyyymmdd
 
-PROMPT_VERSION = "v2"   # v2：日期照公告的寫法、減資（含註銷限制員工權利新股）歸籌資
+PROMPT_VERSION = "v3"   # v2：日期照公告的寫法、減資歸籌資；v3：加 is_negative，摘要 40 → 60 字
 
 # 摘要最多幾個字（中文、英文、數字、標點都算一個字）。超過就請 LLM 縮短一次（ai/task.py），還是超過就 summary_ok＝否
-SUMMARY_MAX_CHARS = 40
+SUMMARY_MAX_CHARS = 60
 
 CATEGORIES = [
     "注意股例行說明",
@@ -41,10 +42,11 @@ SCHEMA = {
         "category": {"type": "string", "enum": CATEGORIES},
         "is_correction": {"type": "boolean"},
         "has_news": {"type": "boolean"},
+        "is_negative": {"type": "boolean"},
         "summary": {"type": "string"},
         "reason": {"type": "string"},
     },
-    "required": ["category", "is_correction", "has_news", "summary", "reason"],
+    "required": ["category", "is_correction", "has_news", "is_negative", "summary", "reason"],
     "additionalProperties": False,
 }
 
@@ -81,12 +83,20 @@ SYSTEM_PROMPT = f"""你替台灣上市公司的重大訊息分類。使用者會
 公告裡有新的、具體的資訊（營收數字、新訂單、新許可、交易金額、新的人事任命…）→ true。
 只是依規定公布、沒有新內容的 → false，例如注意股例行說明、股東會例行議程、單純更正錯字。
 
+## is_negative
+公告的內容對公司是壞消息 → true。照公告寫的事實判斷，不是預測股價：
+- 營收、獲利比去年或上個月衰退、虧損、虧損擴大。
+- 訴訟、裁罰、主管機關調查或檢調搜索、災害、火災、資安事件、停工、退票、違約。
+- 訂單、合約、合作被取消或終止，投資計畫延後或停止，財報被會計師出具保留或無法表示意見。
+- 董事長、總經理等主管因為案件或突然辭職（一般任期屆滿、改選不算）。
+不是壞消息、或看不出好壞的（例行說明、股東會議程、一般人事、中性的資產交易）→ false。類型不限：營收衰退仍然是「營收、自結損益」，只是 is_negative＝true。
+
 ## summary
 一句白話摘要，最多 {SUMMARY_MAX_CHARS} 個字（中文、英文、數字、標點都算一個字），講這則公告最重要的事。
 - 數字只能用公告裡寫的，不要自己換算、四捨五入或推算；寫不出精確數字就不寫數字。
 - 日期照公告的寫法抄：公告寫民國年（115年、115/11/23）就寫民國年，不要換成西元；公告寫西元才寫西元。
 - 不寫公司名稱（網頁上已經有）。
-- 不判斷利多、利空，不給投資建議。
+- 摘要本身照事實寫，不寫利多、利空，不給投資建議（壞消息另外用 is_negative 標）。
 
 ## reason
 一句話說明為什麼選這個類型（給人檢查用）。"""
@@ -118,7 +128,7 @@ def build_user_message(row: dict) -> str:
 
 def too_long(summary: str) -> bool:
     """
-    >>> too_long("一" * 40), too_long("一" * 41)
+    >>> too_long("一" * 60), too_long("一" * 61)
     (False, True)
     """
     return len(summary.strip()) > SUMMARY_MAX_CHARS
@@ -140,7 +150,7 @@ def summary_ok(summary: str, source: str) -> bool:
 
     >>> summary_ok("10月營收1520萬元", "本公司10月營收為1,520萬元")
     True
-    >>> summary_ok("10月營收1520萬元" + "，" * 40, "本公司10月營收為1,520萬元")
+    >>> summary_ok("10月營收1520萬元" + "，" * 60, "本公司10月營收為1,520萬元")
     False
     """
     return not too_long(summary) and verifier.numbers_ok(summary, source)
@@ -155,6 +165,7 @@ def to_label_row(row: dict, answer: dict, model: str) -> dict:
         "category": answer["category"],
         "is_correction": answer["is_correction"],
         "has_news": answer["has_news"],
+        "is_negative": answer["is_negative"],
         "summary": summary[:100],   # 欄位上限 100 字（防呆）；超過 SUMMARY_MAX_CHARS 的 summary_ok 已經是否，網站不顯示
         "reason": answer["reason"].strip(),
         "summary_ok": summary_ok(summary, f"{row['subject']}\n{row['content']}"),

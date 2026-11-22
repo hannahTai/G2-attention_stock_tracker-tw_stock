@@ -1,7 +1,7 @@
 """client 層（AI）：只負責呼叫 Claude API，不存檔（存進 ai_llm_call 的是 task.py → repository.save_llm_call）。
 
   create_message()：送出一次請求，回傳原始回應（和 crawler/client.py 的 http_get 一樣，是共用的）
-  fetch_xxx()：一個 AI 項目的請求：fetch_announcement_label()（① 公告分類）、fetch_news_summary()（新聞摘要），一則問一次
+  fetch_xxx()：一個 AI 項目的請求：fetch_announcement_label()（公告分類）、fetch_news_summary()（新聞摘要），一則問一次
   xxx_problem()：檢查回應，有問題回傳原因（task 存成失敗），沒問題回傳 None
   parse_answer()、call_record()：從回應取值（回答、要記進 ai_llm_call 的 token 和花費）
 
@@ -54,7 +54,7 @@ def create_message(model: str, system: str, messages: list[dict], schema: dict,
 
 
 def fetch_announcement_label(messages: list[dict]) -> anthropic.types.Message:
-    """① 公告分類：messages 是一則公告（classifier.build_user_message），或摘要太長時重問的整段對話（classifier.shorten_messages）。"""
+    """公告分類：messages 是一則公告（classifier.build_user_message），或摘要太長時重問的整段對話（classifier.shorten_messages）。"""
     return create_message(AI_CLASSIFY_MODEL, classifier.SYSTEM_PROMPT, messages, classifier.SCHEMA)
 
 
@@ -65,7 +65,7 @@ def fetch_news_summary(messages: list[dict]) -> anthropic.types.Message:
 
 # ---------- 檢查回應：有問題回傳原因（task 存成失敗），沒問題回傳 None ----------
 def announcement_label_problem(response) -> str | None:
-    """① 公告分類的回應能不能用，見 json_answer_problem。"""
+    """公告分類的回應能不能用，見 json_answer_problem。"""
     return json_answer_problem(response)
 
 

@@ -63,5 +63,5 @@ LOG_KEEP_DAYS = int(os.environ.get("LOG_KEEP_DAYS", "30"))
 
 # AI（ai/）：Claude API。金鑰的環境變數 ANTHROPIC_API_KEY 由 anthropic 套件自己讀；沒設就跳過 AI 任務，資料線照常
 ANTHROPIC_API_KEY = secret("ANTHROPIC_API_KEY")
-AI_CLASSIFY_MODEL = os.environ.get("AI_CLASSIFY_MODEL", "claude-haiku-5-5")   # ① 公告分類：便宜的小型模型
+AI_CLASSIFY_MODEL = os.environ.get("AI_CLASSIFY_MODEL", "claude-haiku-5-5")   # 公告分類：便宜的小型模型
 AI_SUMMARY_MODEL = os.environ.get("AI_SUMMARY_MODEL", "claude-haiku-5-5")     # 新聞摘要

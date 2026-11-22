@@ -379,7 +379,7 @@ def has_announcement_label(announcement_id: str, prompt_version: str) -> bool:
 
 
 def insert_announcement_label(row: dict) -> None:
-    """① 公告分類的結果新增一列（欄位見 schema/ai.sql）。同一則、同一版已經有了就不動（同一個任務被送了兩次）。"""
+    """公告分類的結果新增一列（欄位見 schema/ai.sql）。同一則、同一版已經有了就不動（同一個任務被送了兩次）。"""
     insert_one("ai_announcement_label", row, "ON CONFLICT (announcement_id, prompt_version) DO NOTHING")
 
 

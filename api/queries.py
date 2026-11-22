@@ -125,7 +125,8 @@ def announcements(conn: sqlalchemy.Connection, stock_id: str, start: datetime.da
     """期間內的公司重大訊息（舊的在前）。"""
     sql = """
         SELECT stock_id, announce_date, announce_time, company_name, subject, is_during_session,
-               is_correction, is_explanation, announce_clause, clause_name, fact_date, content
+               is_correction, is_explanation, category, has_news, is_negative, ai_summary,
+               announce_clause, clause_name, fact_date, content
         FROM app_announcement
         WHERE stock_id = :stock_id AND announce_date BETWEEN :start AND :end
         ORDER BY announce_date, announce_time
