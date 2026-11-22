@@ -44,9 +44,7 @@ COMMENT ON COLUMN ai_llm_call.called_at IS '呼叫時間（台灣時間）';
 
 -- ① 公告分類：每則公告每個 prompt 版本一列；同一版已經有就不再問
 CREATE TABLE IF NOT EXISTS ai_announcement_label (
-    company_id      VARCHAR(10)  NOT NULL,
-    enter_date      DATE         NOT NULL,
-    serial_number   INT          NOT NULL,
+    announcement_id CHAR(32)     NOT NULL,
     prompt_version  VARCHAR(20)  NOT NULL,
     category        VARCHAR(20)  NOT NULL,
     is_correction   BOOLEAN      NOT NULL,
@@ -56,12 +54,10 @@ CREATE TABLE IF NOT EXISTS ai_announcement_label (
     summary_ok      BOOLEAN      NOT NULL,
     model           VARCHAR(50)  NOT NULL,
     labeled_at      TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
-    PRIMARY KEY (company_id, enter_date, serial_number, prompt_version)
+    PRIMARY KEY (announcement_id, prompt_version)
 );
 COMMENT ON TABLE ai_announcement_label IS '公告分類：每則重大訊息的類型、標記、白話摘要（LLM 結構化輸出）';
-COMMENT ON COLUMN ai_announcement_label.company_id IS '公司代號（主鍵前三欄和 stage_announcement 一樣）';
-COMMENT ON COLUMN ai_announcement_label.enter_date IS '輸入日期';
-COMMENT ON COLUMN ai_announcement_label.serial_number IS '輸入日期當天的序號';
+COMMENT ON COLUMN ai_announcement_label.announcement_id IS '公告代號（stage_announcement.announcement_id）';
 COMMENT ON COLUMN ai_announcement_label.prompt_version IS 'prompt 版本（ai/classifier.py 的 PROMPT_VERSION）；改 prompt 換版本才重跑';
 COMMENT ON COLUMN ai_announcement_label.category IS '類型（13 類選一，見 ai/classifier.py 的 CATEGORIES）';
 COMMENT ON COLUMN ai_announcement_label.is_correction IS '更正、補充、修正先前的公告';
@@ -76,7 +72,7 @@ COMMENT ON COLUMN ai_announcement_label.labeled_at IS '分類時間（台灣時�
 CREATE TABLE IF NOT EXISTS ai_news_summary (
     news_id         CHAR(32)     NOT NULL,
     prompt_version  VARCHAR(20)  NOT NULL,
-    summary         VARCHAR(400) NOT NULL,
+    summary         VARCHAR(1200) NOT NULL,
     summary_ok      BOOLEAN      NOT NULL,
     model           VARCHAR(50)  NOT NULL,
     summarized_at   TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
@@ -85,7 +81,7 @@ CREATE TABLE IF NOT EXISTS ai_news_summary (
 COMMENT ON TABLE ai_news_summary IS '新聞摘要：LLM 讀新聞全文（當場抓，不存）用自己的話寫的摘要';
 COMMENT ON COLUMN ai_news_summary.news_id IS '新聞代號（stage_news.news_id）';
 COMMENT ON COLUMN ai_news_summary.prompt_version IS 'prompt 版本（ai/summarizer.py 的 PROMPT_VERSION）；改 prompt 換版本才重跑';
-COMMENT ON COLUMN ai_news_summary.summary IS '摘要，2～4 句（程式限制 250 字，超過會請 LLM 縮短一次；不是新聞內容的為空字串）';
-COMMENT ON COLUMN ai_news_summary.summary_ok IS '摘要通過程式檢查：不是空的、不超過 250 字、數字都出現在原文裡；否的話不顯示';
+COMMENT ON COLUMN ai_news_summary.summary IS '摘要（上限依文章長度：文章的三成，80～1200 字，超過會請 LLM 縮短一次；不是新聞內容的為空字串）';
+COMMENT ON COLUMN ai_news_summary.summary_ok IS '摘要通過程式檢查：不是空的、不超過這篇的上限、數字都出現在原文裡；否的話不顯示';
 COMMENT ON COLUMN ai_news_summary.model IS '模型';
 COMMENT ON COLUMN ai_news_summary.summarized_at IS '摘要時間（台灣時間）';

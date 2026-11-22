@@ -12,10 +12,11 @@ from ai import classifier, client, summarizer
 from ai import producer as pa
 from ai import task as ai_task
 from common import date_utils, repository, runner
+from common.hash_utils import key_md5
 from crawler import client as crawler_client
 
 ANNOUNCEMENT = {
-    "company_id": "6108", "company_name": "競國", "announce_date": datetime.date(2026, 11, 14),
+    "announcement_id": key_md5("6108", "20261114", 3), "company_id": "6108", "company_name": "競國", "announce_date": datetime.date(2026, 11, 14),
     "subject": "本公司115年10月營收", "announce_clause": "第51款", "clause_name": "其他重大事項",
     "fact_date": datetime.date(2026, 11, 14), "content": "10月營收為1,520萬元，較去年同期增加31%。",
 }
@@ -43,17 +44,17 @@ def test_user_message_wraps_announcement_as_data():
 
 
 def test_label_row_checks_numbers_against_announcement():
-    row = classifier.to_label_row(ANNOUNCEMENT, datetime.date(2026, 11, 14), 3, ANSWER, "claude-haiku-5-5")
-    assert row["summary_ok"] and row["prompt_version"] == classifier.PROMPT_VERSION and row["serial_number"] == 3
-    made_up = classifier.to_label_row(ANNOUNCEMENT, datetime.date(2026, 11, 14), 3,
-                                      {**ANSWER, "summary": "10月營收0.15億元"}, "claude-haiku-5-5")
+    row = classifier.to_label_row(ANNOUNCEMENT, ANSWER, "claude-haiku-5-5")
+    assert row["summary_ok"] and row["prompt_version"] == classifier.PROMPT_VERSION
+    assert row["announcement_id"] == ANNOUNCEMENT["announcement_id"]
+    made_up = classifier.to_label_row(ANNOUNCEMENT, {**ANSWER, "summary": "10月營收0.15億元"}, "claude-haiku-5-5")
     assert not made_up["summary_ok"]   # 自己換算的數字抓得到
 
 
 def test_label_row_rejects_summary_over_limit():
     long = {**ANSWER, "summary": "10月營收1520萬元，年增31%" + "，持續成長" * 6}
     assert classifier.too_long(long["summary"])
-    assert not classifier.to_label_row(ANNOUNCEMENT, datetime.date(2026, 11, 14), 3, long, "claude-haiku-5-5")["summary_ok"]
+    assert not classifier.to_label_row(ANNOUNCEMENT, long, "claude-haiku-5-5")["summary_ok"]
 
 
 # ---------- client（假的 Anthropic，不花錢）----------
@@ -122,10 +123,9 @@ def test_claude_api_errors_retry_only_when_temporary():
 # ---------- classify_announcement 任務 ----------
 @pytest.fixture
 def labels(monkeypatch):
-    """假的 ai_announcement_label、ai_llm_call：記下寫入的列；已經有的 (公司, 輸入日期, 序號) 放在 existing。"""
+    """假的 ai_announcement_label、ai_llm_call：記下寫入的列；已經有的 announcement_id 放在 existing。"""
     store = types.SimpleNamespace(rows=[], calls=[], existing=set())
-    monkeypatch.setattr(repository, "has_announcement_label",
-                        lambda company_id, enter_date, serial_number, version: (company_id, enter_date, serial_number) in store.existing)
+    monkeypatch.setattr(repository, "has_announcement_label", lambda announcement_id, version: announcement_id in store.existing)
     monkeypatch.setattr(repository, "insert_announcement_label", store.rows.append)
     monkeypatch.setattr(repository, "save_llm_call", lambda row, problem=None: store.calls.append(row))
     return store
@@ -147,7 +147,7 @@ def test_classify_writes_label_and_records_call(monkeypatch, labels):
     answer_with(monkeypatch, ANSWER)
     result = ai_task.classify_announcement("6108", "20261114", 3)
     assert result == "ai_announcement_label/6108_20261114_3：營收、自結損益（有新消息）"
-    assert labels.rows[0]["category"] == "營收、自結損益" and labels.rows[0]["enter_date"] == datetime.date(2026, 11, 14)
+    assert labels.rows[0]["category"] == "營收、自結損益" and labels.rows[0]["announcement_id"] == ANNOUNCEMENT["announcement_id"]
     assert labels.calls[0]["ref_key"] == "6108_20261114_3" and labels.calls[0]["prompt_version"] == classifier.PROMPT_VERSION
 
 
@@ -187,7 +187,7 @@ def test_classify_skips_labeled_and_missing_detail(monkeypatch, labels):
     def no_call(messages):
         raise AssertionError("不該呼叫 LLM")
     monkeypatch.setattr(client, "fetch_announcement_label", no_call)
-    labels.existing.add(("6108", datetime.date(2026, 11, 14), 3))
+    labels.existing.add(key_md5("6108", "20261114", 3))
     assert "已經分類過" in ai_task.classify_announcement("6108", "20261114", 3)
     monkeypatch.setattr(repository, "read_announcement", lambda *key: None)
     assert "還沒有全文" in ai_task.classify_announcement("6108", "20261114", 4)
@@ -213,16 +213,22 @@ LONG_ANSWER = {"summary": "健策10月營收30.73億元，" + "年增81％，" *
 
 def test_news_summary_row_checks_numbers_and_never_keeps_text():
     """摘要裡的數字要出現在原文；存的那列只有摘要，沒有全文。"""
-    row = summarizer.to_summary_row(NEWS["news_id"], {"summary": " 健策10月營收30.73億元，年增81％ "}, ARTICLE_TEXT, "claude-haiku-5-5")
+    row = summarizer.to_summary_row(NEWS["news_id"], {"summary": " 健策10月營收30.73億元，年增81％ "}, ARTICLE_TEXT, 80, "claude-haiku-5-5")
     assert row["summary"] == "健策10月營收30.73億元，年增81％" and row["summary_ok"] and row["prompt_version"] == summarizer.PROMPT_VERSION
     assert ARTICLE_TEXT not in str(row)
-    assert not summarizer.to_summary_row(NEWS["news_id"], {"summary": "營收3073000萬元"}, ARTICLE_TEXT, "m")["summary_ok"]
+    assert not summarizer.to_summary_row(NEWS["news_id"], {"summary": "營收3073000萬元"}, ARTICLE_TEXT, 80, "m")["summary_ok"]
+
+
+def test_news_summary_limit_scales_with_article():
+    """上限是文章的三成：短文章摘要短、長文章最多 1200 字（欄位大小）；上限寫在給 LLM 的訊息最後。"""
+    assert summarizer.summary_limit("字" * 600) == 180 and summarizer.summary_limit("字" * 9000) == summarizer.SUMMARY_MAX_CHARS
+    assert summarizer.build_user_message(NEWS, "字" * 600, 180).endswith("summary 最多 180 個字。")
 
 
 def test_news_summary_message_wraps_article_and_cuts_long_text():
-    message = summarizer.build_user_message(NEWS, "字" * (summarizer.MAX_TEXT_CHARS + 500))
-    assert message.startswith("<article>\n標題：健策前十月獲利靚") and message.endswith("</article>")
-    assert message.count("字") == summarizer.MAX_TEXT_CHARS
+    message = summarizer.build_user_message(NEWS, "甲" * (summarizer.MAX_TEXT_CHARS + 500), 1200)
+    assert message.startswith("<article>\n標題：健策前十月獲利靚") and "</article>" in message
+    assert message.count("甲") == summarizer.MAX_TEXT_CHARS
 
 
 # ---------- 新聞摘要：client ----------
@@ -276,7 +282,8 @@ def test_summarize_news_asks_once_more_when_too_long(summaries):
     """摘要太長：帶著上次的回答請它縮短，只重問一次。"""
     summaries.answers = [LONG_ANSWER, SHORT_ANSWER]
     ai_task.summarize_news(NEWS["news_id"])
-    assert len(summaries.asked) == 2 and "超過 250 個字" in summaries.asked[1][-1]["content"]
+    limit = summarizer.summary_limit(ARTICLE_TEXT)
+    assert len(summaries.asked) == 2 and f"超過 {limit} 個字" in summaries.asked[1][-1]["content"]
     assert summaries.rows[0]["summary"] == SHORT_ANSWER["summary"] and summaries.rows[0]["summary_ok"]
 
 

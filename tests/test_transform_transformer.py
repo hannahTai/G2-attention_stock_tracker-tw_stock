@@ -226,6 +226,7 @@ def test_announcement_serial_and_joined_subject():
     row = clean_announcement(announcement_to_frame(announcement_raw(data))).iloc[0]
     assert (row["announce_date"], row["enter_date"], row["serial_number"]) == (
         datetime.date(2026, 9, 1), datetime.date(2026, 9, 1), 2)
+    assert row["announcement_id"] == hashlib.md5(b"1303_20260901_2").hexdigest()   # 主鍵三欄合成的代號
     assert row["subject"] == "因本公司有價證券達標準，故公布重大訊息"
 
 
@@ -265,7 +266,8 @@ def test_announcement_detail_keys_from_raw_key_and_no_spokesperson():
              "第31款", "115/11/05", "1.提報董事會日期:115/11/05\r\n2.其他應敘明事項:無\n"]]
     raw = {"meta": {"key": "9908_20261102_1"}, "body": {"code": 200, "result": {"titles": DETAIL_TITLES, "data": data}}}
     out = clean_announcement_detail(announcement_detail_to_frame(raw))
-    assert list(out.columns) == ["company_id", "enter_date", "serial_number", "announce_clause", "fact_date", "content"]
+    assert list(out.columns) == ["company_id", "enter_date", "serial_number", "announcement_id", "announce_clause", "fact_date", "content"]
+    assert out.loc[0, "announcement_id"] == hashlib.md5(b"9908_20261102_1").hexdigest()   # ＝ raw_key 的 md5
     row = out.iloc[0]
     assert (row["company_id"], row["enter_date"], row["serial_number"]) == ("9908", datetime.date(2026, 11, 2), 1)
     assert (row["announce_clause"], row["fact_date"]) == ("第31款", datetime.date(2026, 11, 5))

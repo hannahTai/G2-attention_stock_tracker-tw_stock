@@ -13,7 +13,7 @@ import pandas as pd
 import trafilatura
 
 from common.date_utils import DATE_FMT, TAIPEI, roc_compact_to_dates, roc_date_in, roc_to_dates
-from common.hash_utils import url_md5
+from common.hash_utils import key_md5, url_md5
 from transform.parsing import (
     chinese_number, mops_rows_to_frame, require_columns, strip_html, to_number, twse_rows_to_frame,
 )
@@ -256,7 +256,7 @@ def clean_announcement(df: pd.DataFrame) -> pd.DataFrame:
     """→ stage_announcement
 
     序號是依「輸入日期」（enterDate）編的，不是依發言日期：
-    同一天發言的兩則公告可能序號相同，所以主鍵用（公司, 輸入日期, 序號）。
+    同一天發言的兩則公告可能序號相同，所以主鍵用（公司, 輸入日期, 序號）；announcement_id 是這三欄合成的一個代號。
     """
     params = df["詳細資料"].str["parameters"]
     out = pd.DataFrame({
@@ -268,7 +268,13 @@ def clean_announcement(df: pd.DataFrame) -> pd.DataFrame:
         "company_name": df["公司名稱"].str.strip(),
         "subject": df["主旨"].str.replace(r"\s*\n\s*", "", regex=True).str.strip(),  # 接回被換行切斷的主旨
     })
+    out.insert(4, "announcement_id", announcement_ids(out))
     return out.sort_values(STAGE_KEYS["stage_announcement"], kind="stable").reset_index(drop=True)
+
+
+def announcement_ids(df: pd.DataFrame) -> list[str]:
+    """（公司, 輸入日期, 序號）→ announcement_id（common/hash_utils.py 的 key_md5）。"""
+    return [key_md5(c, d.strftime(DATE_FMT), s) for c, d, s in zip(df["company_id"], df["enter_date"], df["serial_number"])]
 
 
 # ---------- 重大訊息全文 → stage_announcement_detail ----------
@@ -305,6 +311,7 @@ def clean_announcement_detail(df: pd.DataFrame) -> pd.DataFrame:
         "fact_date": roc_to_dates(df["事實發生日"].str.strip()),             # 例如 "115/11/05"
         "content": df["說明"].str.replace("\r\n", "\n").str.strip(),         # 說明全文
     })
+    out.insert(3, "announcement_id", announcement_ids(out))
     return out.sort_values(STAGE_KEYS["stage_announcement_detail"], kind="stable").reset_index(drop=True)
 
 

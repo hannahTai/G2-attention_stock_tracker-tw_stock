@@ -18,7 +18,7 @@ import sqlalchemy
 from analyze import task as analyze_task
 from common import repository, runner
 from common.config import DB_NAME, MAX_RETRIES
-from common.hash_utils import url_md5
+from common.hash_utils import key_md5, url_md5
 from tests.test_transform_transformer import (
     PUNISH_API_FIELDS, PUNISH_ROW, ROW_ANDES, ROW_TENGHUI, envelope,
 )
@@ -303,7 +303,7 @@ def test_news_id_must_be_md5_of_link(db):
 # ---------- ai_*：只新增 ----------
 def test_announcement_label_inserted_twice_keeps_first(db):
     """同一個任務被送了兩次：同一則、同一版只留第一次的結果，不報錯。"""
-    label = {"company_id": "6108", "enter_date": datetime.date(2026, 11, 14), "serial_number": 3, "prompt_version": "v2",
+    label = {"announcement_id": key_md5("6108", "20261114", 3), "prompt_version": "v2",
              "category": "營運", "is_correction": False, "has_news": True, "summary": "第一次", "reason": "r",
              "summary_ok": True, "model": "claude-haiku-5-5"}
     repository.insert_announcement_label(label)
@@ -328,3 +328,20 @@ def test_news_summary_listed_once_and_shown_in_view(db):
     assert repository.list_unsummarized_news(day, day, "v1", 200) == []
     with db.connect() as conn:
         assert conn.execute(sqlalchemy.text("SELECT ai_summary FROM app_stock_news")).scalar() == "台積電財報亮眼"
+
+
+def test_announcement_id_matches_sql_and_joins_detail(db):
+    """Python 算的 announcement_id 過得了 CHECK（等於 SQL 的 md5）；app_announcement 用它接上全文。"""
+    announcement = pd.DataFrame({"company_id": ["9908"], "announce_date": [datetime.date(2026, 11, 2)],
+                                 "enter_date": [datetime.date(2026, 11, 2)], "serial_number": [1],
+                                 "announce_time": ["14:39:07"], "company_name": ["大台北"], "subject": ["公告第三季財報"]})
+    announcement.insert(4, "announcement_id", transformer.announcement_ids(announcement))
+    detail = announcement[["company_id", "enter_date", "serial_number", "announcement_id"]].assign(
+        announce_clause="第31款", fact_date=datetime.date(2026, 11, 5), content="全文")
+    transform_task.upsert_stage({"stage_announcement": announcement, "stage_announcement_detail": detail}, V1)
+    with db.connect() as conn:
+        row = conn.execute(sqlalchemy.text("SELECT announcement_id, content FROM app_announcement")).one()
+    assert row.announcement_id == key_md5("9908", "20261102", 1) and row.content == "全文"
+    with pytest.raises(sqlalchemy.exc.IntegrityError, match="stage_announcement_id_is_md5"):
+        with db.begin() as conn:
+            conn.execute(sqlalchemy.text("UPDATE stage_announcement SET announcement_id = :bad"), {"bad": "0" * 32})

@@ -170,7 +170,7 @@ raw 是有主鍵又只新增：主鍵含 `fetched_at`（精確到微秒），每
 | 項目 | 任務 | 一次處理 | 範圍 | 摘要上限 | 寫入 |
 |---|---|---|---|---|---|
 | ① 公告分類 | `classify_announcement` | 一則公告 | 區間內發言的公告，加上全文在區間內才寫進來的（新被關注的公司，crawler 會補抓當月和上個月的公告） | 40 字 | `ai_announcement_label` |
-| 新聞摘要 | `summarize_news` | 一則新聞 | 區間內（往前多 `NEWS_LOOKBACK_DAYS` 天）有抓到網頁、全文至少 200 字的新聞 | 250 字 | `ai_news_summary`（網站讀 `app_stock_news.ai_summary`） |
+| 新聞摘要 | `summarize_news` | 一則新聞 | 區間內（往前多 `NEWS_LOOKBACK_DAYS` 天）有抓到網頁、全文至少 200 字的新聞 | 文章的三成（80～1200 字） | `ai_news_summary`（網站讀 `app_stock_news.ai_summary`） |
 
 - 只讀 stage 表、呼叫 Claude、結果存進自己的 `ai_*` 表。沒設 `ANTHROPIC_API_KEY` 就整批跳過。模型：`.env` 的 `AI_CLASSIFY_MODEL`、`AI_SUMMARY_MODEL`（預設 `claude-haiku-5-5`），結構化輸出（照 JSON schema 回答）。
 - 例外：新聞摘要要全文，但全文不存進資料庫（著作權），所以任務當場再打開網頁一次（用 `crawler/client.py` 的函式），全文交給 Claude 後就丟掉。打不開（被擋）、全文太短就跳過，不問 Claude。

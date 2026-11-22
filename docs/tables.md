@@ -146,6 +146,7 @@ erDiagram
         date announce_date
         date enter_date PK
         int serial_number PK
+        char announcement_id UK
         time announce_time
         varchar company_name
         text subject
@@ -354,12 +355,13 @@ erDiagram
 | announce_date | DATE | 發言日期 | 民國 → 西元 |
 | enter_date | DATE | 詳細資料 的 `parameters.enterDate` | `1151102` → 日期；輸入日期 |
 | serial_number | INT | 詳細資料 的 `parameters.serialNumber` | 輸入日期當天第幾則 |
+| announcement_id | CHAR(32) | （主鍵三欄） | 公告代號：md5(`公司_輸入日期_序號`)，例如 md5(`9908_20261102_1`)（`common/hash_utils.py` 的 `key_md5`）。主鍵三欄合成一欄，重建也不變；`ai_announcement_label`、API 用它對應，表上的 CHECK 確認和 SQL 算的一樣 |
 | announce_time | TIME | 發言時間 | 判斷收盤前／後 |
 | company_name | VARCHAR(50) | 公司名稱 | — |
 | subject | TEXT | 主旨 | 接回被換行切斷的字 |
 
 - 只有被列注意或處置的公司，查當月和上個月。
-- 序號依輸入日期編，同一天發言的公告可能同號，所以主鍵用 enter_date。
+- 序號依輸入日期編，同一天發言的公告可能同號，所以主鍵用 enter_date。主鍵三欄另外合成一欄 `announcement_id`，給其他表、API 對應。
 
 ### stage_announcement_detail　重大訊息全文
 
@@ -373,6 +375,7 @@ erDiagram
 | company_id | VARCHAR(10) | （raw_key） | — |
 | enter_date | DATE | （raw_key） | `20261102` → 日期 |
 | serial_number | INT | （raw_key） | 輸入日期當天第幾則 |
+| announcement_id | CHAR(32) | （raw_key） | 公告代號，和 `stage_announcement.announcement_id` 一樣（＝ raw_key 的 md5） |
 | announce_clause | VARCHAR(20) | 符合條款 | 例如 `第31款`（觀測站的公告分類；和注意股的款次 `stage_notice_clause.clause` 是不同東西） |
 | fact_date | DATE | 事實發生日 | 民國 → 西元 |
 | content | TEXT | 說明 | 全文；換行統一成 `\n` |
@@ -523,7 +526,7 @@ VIEW 是存起來的查詢，不複製資料；網頁查的時候資料庫才去
 | `app_notice_history` | 注意紀錄格子 | 每檔每個被列注意的交易日：`clauses`、`is_counted`（true＝累計）、`reason_text`（那天被列的原因全文）。沒被列的日子沒有列；早於 `count_start` 的是「已計入前次處置」 |
 | `app_punish_history` | 處置紀錄 | `stage_punish` 的欄位 |
 | `app_stock_news` | 新聞資訊（之後 ②、③ 也讀這裡） | `stage_stock_news` 每一列，用 `news_id` JOIN `stage_news` 帶出標題、媒體（`publisher`）、時間、連結，LEFT JOIN `stage_news_detail` 帶出 `lead`（導言）；3 則以上新聞共用的同一句導言（網站介紹、個股概覽頁）當成沒有，為 NULL。`ai_summary`：`ai_news_summary` 最新一版、通過檢查的摘要 |
-| `app_announcement` | 公開資訊 | `stage_announcement`，加上 `is_during_session`（14:30 前＝交易時段內）、`is_correction`（更正）、`is_explanation`（說明、澄清；排除法人說明會）；LEFT JOIN `stage_announcement_detail` 帶出 `announce_clause`、`fact_date`、`content`（還沒抓到全文的為 NULL），再 JOIN `stage_announcement_clause` 帶出 `clause_name`（例如 財務報告） |
+| `app_announcement` | 公開資訊 | `stage_announcement`（含 `announcement_id`），加上 `is_during_session`（14:30 前＝交易時段內）、`is_correction`（更正）、`is_explanation`（說明、澄清；排除法人說明會）；用 `announcement_id` LEFT JOIN `stage_announcement_detail` 帶出 `announce_clause`、`fact_date`、`content`（還沒抓到全文的為 NULL），再 JOIN `stage_announcement_clause` 帶出 `clause_name`（例如 財務報告） |
 
 ## ai 層
 
@@ -536,7 +539,7 @@ AI 項目的結果（由 `ai/task.py` 寫入）。和 `app_*` 分開：`app_*` �
 
 | 欄位 | 型別 | 說明 |
 |---|---|---|
-| company_id、enter_date、serial_number | VARCHAR(10)、DATE、INT | 主鍵前三欄，和 `stage_announcement` 一樣 |
+| announcement_id | CHAR(32) | 主鍵之一；公告代號（`stage_announcement.announcement_id`） |
 | prompt_version | VARCHAR(20) | 主鍵之一，例如 `v2` |
 | category | VARCHAR(20) | 13 類選一：注意股例行說明、澄清／回應媒體、營收、自結損益、財務報告、訂單、合約、合作、新產品、認證、許可、投資、資產買賣、籌資、股利、庫藏股、人事異動、股東會、董事會、法說會、負面事件、其他 |
 | is_correction | BOOLEAN | 更正、補充、修正先前的公告 |
@@ -557,8 +560,8 @@ AI 項目的結果（由 `ai/task.py` 寫入）。和 `app_*` 分開：`app_*` �
 |---|---|---|
 | news_id | CHAR(32) | 主鍵之一；`stage_news.news_id` |
 | prompt_version | VARCHAR(20) | 主鍵之一，例如 `v2` |
-| summary | VARCHAR(400) | 摘要，2～4 句；程式限制 250 字（`SUMMARY_MAX_CHARS`），超過就請 LLM 縮短，只重問一次；不是新聞內容（登入頁、網站介紹）的為空字串 |
-| summary_ok | BOOLEAN | 摘要通過程式檢查：不是空的、不超過 250 字、數字都出現在原文裡；否的話不顯示（`app_stock_news.ai_summary` 為 NULL） |
+| summary | VARCHAR(1200) | 摘要；上限依文章長度：文章的三成，最少 80、最多 1200 字（`summarizer.summary_limit`），超過就請 LLM 縮短，只重問一次；不是新聞內容（登入頁、網站介紹）的為空字串 |
+| summary_ok | BOOLEAN | 摘要通過程式檢查：不是空的、不超過這篇的上限、數字都出現在原文裡；否的話不顯示（`app_stock_news.ai_summary` 為 NULL） |
 | model | VARCHAR(50) | 模型 |
 | summarized_at | TIMESTAMP(0) | 摘要時間（台灣時間） |
 

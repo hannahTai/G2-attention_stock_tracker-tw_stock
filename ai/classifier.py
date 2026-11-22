@@ -124,14 +124,14 @@ def too_long(summary: str) -> bool:
     return len(summary.strip()) > SUMMARY_MAX_CHARS
 
 
-def shorten_messages(user_message: str, answer: dict) -> list[dict]:
+def shorten_messages(user_message: str, answer: dict, limit: int = SUMMARY_MAX_CHARS) -> list[dict]:
     """摘要太長時重問的對話：原本的公告、LLM 上次的回答、請它縮短（其他欄位照樣回答，可以沿用）。"""
     summary = answer["summary"].strip()
     return [
         {"role": "user", "content": user_message},
         {"role": "assistant", "content": json.dumps(answer, ensure_ascii=False)},
-        {"role": "user", "content": f"summary 有 {len(summary)} 個字，超過 {SUMMARY_MAX_CHARS} 個字。"
-                                    f"請把 summary 縮短到 {SUMMARY_MAX_CHARS} 個字以內，其他欄位照原本的判斷，重新回答一次。"},
+        {"role": "user", "content": f"summary 有 {len(summary)} 個字，超過 {limit} 個字。"
+                                    f"請把 summary 縮短到 {limit} 個字以內，其他欄位照原本的判斷，重新回答一次。"},
     ]
 
 
@@ -146,13 +146,11 @@ def summary_ok(summary: str, source: str) -> bool:
     return not too_long(summary) and verifier.numbers_ok(summary, source)
 
 
-def to_label_row(row: dict, enter_date: datetime.date, serial_number: int, answer: dict, model: str) -> dict:
-    """LLM 的回答 → ai_announcement_label 的一列。"""
+def to_label_row(row: dict, answer: dict, model: str) -> dict:
+    """LLM 的回答 → ai_announcement_label 的一列。row：repository.read_announcement() 讀到的公告。"""
     summary = answer["summary"].strip()
     return {
-        "company_id": row["company_id"],
-        "enter_date": enter_date,
-        "serial_number": serial_number,
+        "announcement_id": row["announcement_id"],
         "prompt_version": PROMPT_VERSION,
         "category": answer["category"],
         "is_correction": answer["is_correction"],

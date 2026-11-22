@@ -143,6 +143,7 @@ FROM stage_punish;
 CREATE VIEW app_announcement AS
 SELECT
     a.company_id AS stock_id,
+    a.announcement_id,              -- 公告代號（API、ai_announcement_label 用它對應）
     a.announce_date,
     a.announce_time,
     a.company_name,
@@ -166,9 +167,7 @@ SELECT
     d.content                       -- 說明全文
 FROM stage_announcement a
 LEFT JOIN stage_announcement_detail d
-    ON d.company_id = a.company_id
-   AND d.enter_date = a.enter_date
-   AND d.serial_number = a.serial_number
+    ON d.announcement_id = a.announcement_id
 LEFT JOIN stage_announcement_clause c
     ON c.announce_clause = d.announce_clause;
 

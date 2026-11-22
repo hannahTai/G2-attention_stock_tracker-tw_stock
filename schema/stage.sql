@@ -190,17 +190,22 @@ CREATE TABLE IF NOT EXISTS stage_announcement (
     announce_date     DATE        NOT NULL,
     enter_date        DATE        NOT NULL,
     serial_number     INT         NOT NULL,
+    announcement_id   CHAR(32)    NOT NULL,
     announce_time     TIME        NOT NULL,
     company_name      VARCHAR(50) NOT NULL,
     subject           TEXT        NOT NULL,
     loaded_at         TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
     source_fetched_at TIMESTAMP(6),
-    PRIMARY KEY (company_id, enter_date, serial_number)
+    PRIMARY KEY (company_id, enter_date, serial_number),
+    UNIQUE (announcement_id),
+    CONSTRAINT stage_announcement_id_is_md5
+        CHECK (announcement_id = md5(company_id || '_' || to_char(enter_date, 'YYYYMMDD') || '_' || serial_number))
 );
 COMMENT ON TABLE stage_announcement IS '公司重大訊息';
 COMMENT ON COLUMN stage_announcement.announce_date IS '發言日期';
 COMMENT ON COLUMN stage_announcement.enter_date IS '輸入日期（序號依這天編，可能早於發言日期）';
 COMMENT ON COLUMN stage_announcement.serial_number IS '輸入日期當天的序號';
+COMMENT ON COLUMN stage_announcement.announcement_id IS '公告代號：主鍵三欄合成一欄，md5(公司_輸入日期_序號)，例如 md5(''9908_20261102_1'')；重建也不變，其他表、API 用它對應';
 COMMENT ON COLUMN stage_announcement.announce_time IS '發言時間（判斷收盤前／後用）';
 COMMENT ON COLUMN stage_announcement.subject IS '主旨';
 COMMENT ON COLUMN stage_announcement.loaded_at IS '寫入時間（台灣時間）';
@@ -210,16 +215,21 @@ CREATE TABLE IF NOT EXISTS stage_announcement_detail (
     company_id        VARCHAR(10) NOT NULL,
     enter_date        DATE        NOT NULL,
     serial_number     INT         NOT NULL,
+    announcement_id   CHAR(32)    NOT NULL,
     announce_clause   VARCHAR(20) NOT NULL,
     fact_date         DATE,
     content           TEXT  NOT NULL,
     loaded_at         TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
     source_fetched_at TIMESTAMP(6),
-    PRIMARY KEY (company_id, enter_date, serial_number)
+    PRIMARY KEY (company_id, enter_date, serial_number),
+    UNIQUE (announcement_id),
+    CONSTRAINT stage_announcement_detail_id_is_md5
+        CHECK (announcement_id = md5(company_id || '_' || to_char(enter_date, 'YYYYMMDD') || '_' || serial_number))
 );
 COMMENT ON TABLE stage_announcement_detail IS '公司重大訊息全文';
 COMMENT ON COLUMN stage_announcement_detail.enter_date IS '輸入日期（和 stage_announcement 同一個主鍵）';
 COMMENT ON COLUMN stage_announcement_detail.serial_number IS '輸入日期當天的序號';
+COMMENT ON COLUMN stage_announcement_detail.announcement_id IS '公告代號（和 stage_announcement.announcement_id 一樣）';
 COMMENT ON COLUMN stage_announcement_detail.announce_clause IS '符合條款，例如 第31款（觀測站的公告分類；和注意股的款次 stage_notice_clause.clause 是不同東西）';
 COMMENT ON COLUMN stage_announcement_detail.fact_date IS '事實發生日';
 COMMENT ON COLUMN stage_announcement_detail.content IS '說明全文（不含發言人姓名、電話）';

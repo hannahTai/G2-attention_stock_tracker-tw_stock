@@ -349,11 +349,10 @@ def list_unlabeled_announcements(start: datetime.date, end: datetime.date, promp
     rows = query_rows(
         "SELECT a.company_id, a.enter_date, a.serial_number "
         "FROM tw_stock.stage_announcement a "
-        "JOIN tw_stock.stage_announcement_detail d USING (company_id, enter_date, serial_number) "
+        "JOIN tw_stock.stage_announcement_detail d USING (announcement_id) "
         "WHERE (a.announce_date BETWEEN :start AND :end OR CAST(d.loaded_at AS DATE) BETWEEN :start AND :end) "
         "  AND NOT EXISTS (SELECT 1 FROM tw_stock.ai_announcement_label l "
-        "                  WHERE (l.company_id, l.enter_date, l.serial_number) = (a.company_id, a.enter_date, a.serial_number) "
-        "                    AND l.prompt_version = :version) "
+        "                  WHERE l.announcement_id = a.announcement_id AND l.prompt_version = :version) "
         "ORDER BY a.announce_date, a.company_id, a.enter_date, a.serial_number",
         {"start": start, "end": end, "version": prompt_version})
     return [(row.company_id, row.enter_date, row.serial_number) for row in rows]
@@ -362,27 +361,26 @@ def list_unlabeled_announcements(start: datetime.date, end: datetime.date, promp
 def read_announcement(company_id: str, enter_date: datetime.date, serial_number: int) -> dict | None:
     """一則公告：主旨、發言日期、符合條款（含簡稱）、事實發生日、全文。還沒有全文就回傳 None。"""
     rows = query_rows(
-        "SELECT a.company_id, a.company_name, a.announce_date, a.subject, "
+        "SELECT a.announcement_id, a.company_id, a.company_name, a.announce_date, a.subject, "
         "       d.announce_clause, c.short_name AS clause_name, d.fact_date, d.content "
         "FROM tw_stock.stage_announcement a "
-        "JOIN tw_stock.stage_announcement_detail d USING (company_id, enter_date, serial_number) "
+        "JOIN tw_stock.stage_announcement_detail d USING (announcement_id) "
         "LEFT JOIN tw_stock.stage_announcement_clause c ON c.announce_clause = d.announce_clause "
         "WHERE a.company_id = :company_id AND a.enter_date = :enter_date AND a.serial_number = :serial_number",
         {"company_id": company_id, "enter_date": enter_date, "serial_number": serial_number})
     return rows[0]._asdict() if rows else None
 
 
-def has_announcement_label(company_id: str, enter_date: datetime.date, serial_number: int, prompt_version: str) -> bool:
+def has_announcement_label(announcement_id: str, prompt_version: str) -> bool:
     """這則公告、這個 prompt 版本已經分類過了嗎（分類過就不再花錢問）。"""
     return bool(query_rows(
-        "SELECT 1 FROM tw_stock.ai_announcement_label WHERE company_id = :company_id AND enter_date = :enter_date "
-        "AND serial_number = :serial_number AND prompt_version = :version",
-        {"company_id": company_id, "enter_date": enter_date, "serial_number": serial_number, "version": prompt_version}))
+        "SELECT 1 FROM tw_stock.ai_announcement_label WHERE announcement_id = :announcement_id AND prompt_version = :version",
+        {"announcement_id": announcement_id, "version": prompt_version}))
 
 
 def insert_announcement_label(row: dict) -> None:
     """① 公告分類的結果新增一列（欄位見 schema/ai.sql）。同一則、同一版已經有了就不動（同一個任務被送了兩次）。"""
-    insert_one("ai_announcement_label", row, "ON CONFLICT (company_id, enter_date, serial_number, prompt_version) DO NOTHING")
+    insert_one("ai_announcement_label", row, "ON CONFLICT (announcement_id, prompt_version) DO NOTHING")
 
 
 def list_unsummarized_news(start: datetime.date, end: datetime.date, prompt_version: str, min_text_chars: int) -> list[str]:
