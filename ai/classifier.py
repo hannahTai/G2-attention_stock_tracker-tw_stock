@@ -102,10 +102,10 @@ SYSTEM_PROMPT = f"""你替台灣上市公司的重大訊息分類。使用者會
 一句話說明為什麼選這個類型（給人檢查用）。"""
 
 
-def ref_key(company_id: str, enter_date: datetime.date, serial_number: int) -> str:
-    """一則公告的代號（和 raw_announcement_detail 的 raw_key 一樣）。
+def announcement_key(company_id: str, enter_date: datetime.date, serial_number: int) -> str:
+    """一則公告看得懂的代號（和 raw_announcement_detail 的 raw_key 一樣），任務的結果那一行用；announcement_id 是它的 md5。
 
-    >>> ref_key("9908", datetime.date(2026, 11, 2), 1)
+    >>> announcement_key("9908", datetime.date(2026, 11, 2), 1)
     '9908_20261102_1'
     """
     return f"{company_id}_{to_yyyymmdd(enter_date)}_{serial_number}"

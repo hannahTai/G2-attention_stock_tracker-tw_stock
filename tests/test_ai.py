@@ -103,8 +103,8 @@ def test_save_llm_call_records_problem_then_raises(monkeypatch):
     """和 save_raw 一樣：有問題的也記，記完丟 FetchError（不重試）。"""
     rows = []
     monkeypatch.setattr(repository, "insert_one", lambda table, row, on_conflict="": rows.append((table, row)))
-    record = {"task": "classify_announcement", "ref_key": "6108_20261114_3"}
-    assert repository.save_llm_call(record) == "ai_llm_call/6108_20261114_3"
+    record = {"task": "classify_announcement", "ref_key": ANNOUNCEMENT["announcement_id"]}
+    assert repository.save_llm_call(record) == f"ai_llm_call/{ANNOUNCEMENT['announcement_id']}"
     with pytest.raises(repository.FetchError) as error:
         repository.save_llm_call(record, "沒有正常結束（stop_reason=refusal）")
     assert not error.value.retryable
@@ -148,7 +148,8 @@ def test_classify_writes_label_and_records_call(monkeypatch, labels):
     result = ai_task.classify_announcement("6108", "20261114", 3)
     assert result == "ai_announcement_label/6108_20261114_3：營收、自結損益（有新消息）"
     assert labels.rows[0]["category"] == "營收、自結損益" and labels.rows[0]["announcement_id"] == ANNOUNCEMENT["announcement_id"]
-    assert labels.calls[0]["ref_key"] == "6108_20261114_3" and labels.calls[0]["prompt_version"] == classifier.PROMPT_VERSION
+    assert labels.calls[0]["ref_key"] == ANNOUNCEMENT["announcement_id"]   # ref_key 記結果表的代號
+    assert labels.calls[0]["prompt_version"] == classifier.PROMPT_VERSION
 
 
 def test_classify_asks_once_more_when_summary_too_long(monkeypatch, labels):

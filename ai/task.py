@@ -7,6 +7,7 @@
     1. response = client.fetch_xxx(...)：呼叫 Claude API
     2. problem = client.xxx_problem(response)：檢查回應
     3. repository.save_llm_call(紀錄, problem)：每次呼叫都記一列 ai_llm_call（token、花費）；有問題的存完丟 FetchError
+       ref_key 一律記結果表的代號（公告 announcement_id、新聞 news_id），JOIN 結果表都是 ref_key ＝ 代號
 同一個 prompt 版本已經有結果的就跳過（不重複花錢）；還沒有全文的公告也跳過，下次再分類。
 摘要超過上限（公告 60 字；新聞依文章長度，見 summarizer.summary_limit）：帶著上次的回答請 LLM 縮短，只重問一次；
 還是太長、或縮短失敗就用手上的回答照存，summary_ok＝否。
@@ -36,12 +37,12 @@ def shorten_once(ask, key: str, user_message: str, answer: dict, model: str, lim
         return answer, model, f"；縮短失敗，用第一次的回答（{type(e).__name__}）"
 
 
-def label_once(key: str, messages: list[dict]) -> tuple[dict, str]:
-    """問一次 公告分類，記一列 ai_llm_call，回傳 (回答, 實際回答的模型)。"""
+def label_once(announcement_id: str, messages: list[dict]) -> tuple[dict, str]:
+    """問一次公告分類，記一列 ai_llm_call（ref_key＝announcement_id），回傳 (回答, 實際回答的模型)。"""
     started = date_utils.now()
     response = client.fetch_announcement_label(messages)
     problem = client.announcement_label_problem(response)
-    repository.save_llm_call(client.call_record("classify_announcement", key, classifier.PROMPT_VERSION, response, started), problem)
+    repository.save_llm_call(client.call_record("classify_announcement", announcement_id, classifier.PROMPT_VERSION, response, started), problem)
     return client.parse_answer(response), response.model
 
 
@@ -49,16 +50,17 @@ def label_once(key: str, messages: list[dict]) -> tuple[dict, str]:
 def classify_announcement(company_id: str, enter_yyyymmdd: str, serial_number: int) -> str:
     """一則重大訊息 → ai_announcement_label（類型、更正、有新消息、白話摘要）。"""
     enter_date = parse_yyyymmdd(enter_yyyymmdd)
-    key = classifier.ref_key(company_id, enter_date, serial_number)   # 9908_20261102_1（log、ai_llm_call 看得懂）
-    if repository.has_announcement_label(key_md5(company_id, enter_yyyymmdd, serial_number), classifier.PROMPT_VERSION):
+    key = classifier.announcement_key(company_id, enter_date, serial_number)   # 9908_20261102_1：結果那一行看得懂
+    announcement_id = key_md5(company_id, enter_yyyymmdd, serial_number)          # ai_llm_call.ref_key 記這個
+    if repository.has_announcement_label(announcement_id, classifier.PROMPT_VERSION):
         return f"{key} 已經分類過（{classifier.PROMPT_VERSION}），跳過"
     row = repository.read_announcement(company_id, enter_date, serial_number)
     if row is None:
         return f"{key} 還沒有全文，跳過"
 
     user_message = classifier.build_user_message(row)
-    answer, model = label_once(key, [{"role": "user", "content": user_message}])
-    answer, model, note = shorten_once(label_once, key, user_message, answer, model,
+    answer, model = label_once(announcement_id, [{"role": "user", "content": user_message}])
+    answer, model, note = shorten_once(label_once, announcement_id, user_message, answer, model,
                                        classifier.SUMMARY_MAX_CHARS, classifier.shorten_messages)
     label = classifier.to_label_row(row, answer, model)
     repository.insert_announcement_label(label)
@@ -67,7 +69,7 @@ def classify_announcement(company_id: str, enter_yyyymmdd: str, serial_number: i
 
 
 def summary_once(news_id: str, messages: list[dict]) -> tuple[dict, str]:
-    """問一次新聞摘要，記一列 ai_llm_call，回傳 (回答, 實際回答的模型)。"""
+    """問一次新聞摘要，記一列 ai_llm_call（ref_key＝news_id），回傳 (回答, 實際回答的模型)。"""
     started = date_utils.now()
     response = client.fetch_news_summary(messages)
     problem = client.news_summary_problem(response)

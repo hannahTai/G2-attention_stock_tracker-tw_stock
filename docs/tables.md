@@ -575,7 +575,7 @@ AI 項目的結果（由 `ai/task.py` 寫入）。和 `app_*` 分開：`app_*` �
 |---|---|---|
 | call_id | BIGINT | 流水號（主鍵） |
 | task | VARCHAR(80) | 哪個任務，例如 `classify_announcement`、`summarize_news` |
-| ref_key | VARCHAR(80) | 處理哪一筆，例如 `9908_20261102_1`（公告）、新聞的 news_id |
+| ref_key | VARCHAR(80) | 處理哪一筆：結果表的代號（公告分類記 `announcement_id`、新聞摘要記 `news_id`），JOIN 結果表一律是 `ref_key ＝ 代號` |
 | model、prompt_version | VARCHAR | 模型、prompt 版本 |
 | status | VARCHAR(10) | `success`／`failure`（拒答、被截斷、格式不對） |
 | stop_reason | VARCHAR(20) | 例如 `end_turn`、`max_tokens`、`refusal` |
@@ -596,14 +596,13 @@ SELECT category, COUNT(*), COUNT(*) FILTER (WHERE has_news) FROM tw_stock.ai_ann
 SELECT l.announcement_id, l.category, c.call_id, c.status, c.input_tokens, c.output_tokens, c.cost_usd, c.called_at
 FROM tw_stock.ai_announcement_label l
 JOIN tw_stock.ai_llm_call c
-  ON c.task = 'classify_announcement'
- AND md5(c.ref_key) = l.announcement_id        -- ref_key 是看得懂的 9908_20261102_1，announcement_id 是它的 md5
- AND c.prompt_version = l.prompt_version
+  ON c.task = 'classify_announcement' AND c.ref_key = l.announcement_id AND c.prompt_version = l.prompt_version
 ORDER BY c.called_at;
--- 新聞摘要：ref_key 就是 news_id，直接對
+-- 新聞摘要：同樣的寫法
 SELECT s.news_id, s.summary_ok, c.call_id, c.cost_usd
 FROM tw_stock.ai_news_summary s
-JOIN tw_stock.ai_llm_call c ON c.task = 'summarize_news' AND c.ref_key = s.news_id AND c.prompt_version = s.prompt_version;
+JOIN tw_stock.ai_llm_call c
+  ON c.task = 'summarize_news' AND c.ref_key = s.news_id AND c.prompt_version = s.prompt_version;
 ```
 
-- 分類、摘要和呼叫紀錄不用外鍵連：一個結果可能來自 1～2 次呼叫（縮短重問），失敗的呼叫沒有結果。用上面的 JOIN 對。
+- 分類、摘要和呼叫紀錄不用外鍵連：一個結果可能來自 1～2 次呼叫（縮短重問），失敗的呼叫沒有結果。`ref_key` 一律記結果表的代號，用上面的 JOIN 對。

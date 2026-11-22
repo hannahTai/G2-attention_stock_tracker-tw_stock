@@ -27,7 +27,7 @@ CREATE INDEX IF NOT EXISTS idx_ai_llm_call_called ON ai_llm_call (called_at);   
 COMMENT ON TABLE ai_llm_call IS '每次呼叫 LLM 一列（token、花費、延遲）';
 COMMENT ON COLUMN ai_llm_call.call_id IS '流水號';
 COMMENT ON COLUMN ai_llm_call.task IS '哪個任務，例如 classify_announcement、summarize_news';
-COMMENT ON COLUMN ai_llm_call.ref_key IS '處理哪一筆，例如 9908_20261102_1（公司_輸入日期_序號）、新聞的 news_id';
+COMMENT ON COLUMN ai_llm_call.ref_key IS '處理哪一筆：結果表的代號（公告 announcement_id、新聞 news_id），JOIN 結果表就是 ref_key ＝ 代號';
 COMMENT ON COLUMN ai_llm_call.model IS '模型，例如 claude-haiku-5-5';
 COMMENT ON COLUMN ai_llm_call.prompt_version IS 'prompt 版本，例如 v2';
 COMMENT ON COLUMN ai_llm_call.status IS 'success＝拿到可用的結果；failure＝拒答、被截斷、格式不對';
