@@ -1,11 +1,13 @@
 """crawler/task.py：抓完存進 raw 表前的檢查（用假的回應和記憶體裡的假 raw 表）。"""
 import datetime
 import json
+import types
 
 import pytest
 import requests
 
-from common import date_utils, repository
+from common import date_utils, repository, runner
+from common.hash_utils import url_md5
 from crawler import client, task
 
 
@@ -108,3 +110,84 @@ def test_notice_before_published_saved_as_failure(raw_store, monkeypatch, now, s
         with pytest.raises(repository.FetchError, match="還沒公布完整"):
             task.crawl_notice("20261113")
     assert raw_store.last("notice", "20261113").ok is saved_ok
+
+
+def test_stock_news_problem_reads_status_in_body():
+    """FinMind 次數用完時 HTTP 可能還是 200，要看內容的 status。"""
+    assert client.stock_news_problem({"msg": "success", "status": 200, "data": []}) is None
+    assert client.stock_news_problem({"msg": "Requests reach the upper limit", "status": 402}) == "FinMind 回傳 402：Requests reach the upper limit"
+    assert client.stock_news_problem({"msg": "success", "status": 200}) == "FinMind 回應沒有 data（格式可能改了）"
+
+
+def test_stock_news_over_limit_saved_as_failure(raw_store, monkeypatch):
+    """FinMind 次數用完（HTTP 200、內容 status 402）→ 存成失敗的列，不能當成那天沒有新聞。"""
+    monkeypatch.setattr(client, "fetch_stock_news",
+                        lambda stock_id, day: fake_response({"msg": "Requests reach the upper limit", "status": 402}))
+
+    with pytest.raises(repository.FetchError, match="FinMind 回傳 402") as error:
+        task.crawl_stock_news("2330", "20261120")
+
+    row = raw_store.last("stock_news", "2330_20261120")
+    assert not row.ok and "402" in row.problem
+    assert not error.value.retryable   # 內容不對，重試也一樣
+
+
+# ---------- 新聞網頁：raw_news_detail 只存 <head>，全文不存 ----------
+ARTICLE = ("<html><head><meta charset='big5'><title>健策前十月獲利靚</title>"
+           "<meta property='og:description' content='健策10月營收30.73億元，年增81％。'></head>"
+           "<body><nav>首頁 財經</nav><article><h1>健策前十月獲利靚</h1>"
+           + "<p>健策公告10月自結財務資訊，單月營收30.73億元，年增81％，稅後純益9.84億元。</p>" * 5
+           + "</article></body></html>").encode("big5")
+LINK = "https://www.ctee.com.tw/news/1"
+
+
+def test_news_detail_head_and_text_handle_big5():
+    """給 bytes：Big5 網頁也不會變亂碼；<head> 不含正文，正文去掉選單。"""
+    head = client.news_detail_head(ARTICLE)
+    assert "健策10月營收30.73億元" in head and "稅後純益" not in head
+    text = client.news_detail_text(ARTICLE)
+    assert "稅後純益9.84億元" in text and "首頁" not in text
+
+
+def page_response(status=200, content=ARTICLE, content_type="text/html; charset=big5"):
+    return types.SimpleNamespace(url=LINK, status_code=status, ok=status < 400,
+                                 content=content, headers={"Content-Type": content_type})
+
+
+def test_crawl_news_detail_saves_head_not_text(raw_store, monkeypatch):
+    monkeypatch.setattr(client, "fetch_news_detail", lambda link: page_response())
+    assert task.crawl_news_detail(LINK).startswith(f"raw_news_detail/{url_md5(LINK)}：全文")
+    row = raw_store.last("news_detail", url_md5(LINK))
+    body = json.loads(row.body)
+    assert row.ok and row.url == LINK and body["final_url"] == LINK
+    assert "og:description" in body["head"] and body["text_chars"] > 100
+    assert "稅後純益" not in row.body   # 全文不存，只記有幾個字
+
+
+def test_crawl_news_detail_stores_permanent_failures_without_failing(raw_store, monkeypatch):
+    """永久的失敗存一列（ok＝否，之後不再抓），任務不算失敗：Google 轉址不打、被擋 403、不是網頁。"""
+    def no_fetch(link):
+        raise AssertionError("轉址連結不該打")
+    monkeypatch.setattr(client, "fetch_news_detail", no_fetch)
+    task.crawl_news_detail("https://news.google.com/rss/articles/abc")
+    monkeypatch.setattr(client, "fetch_news_detail", lambda link: page_response(status=403))
+    task.crawl_news_detail("https://example.com/news/1")
+    monkeypatch.setattr(client, "fetch_news_detail", lambda link: page_response(content=b"%PDF", content_type="application/pdf"))
+    task.crawl_news_detail("https://example.com/report.pdf")
+    rows = [r for s, r in raw_store.rows if s == "news_detail"]
+    assert [(r.ok, r.http_status, r.problem) for r in rows] == [
+        (False, None, "news.google.com 的轉址連結，抓不到原文"), (False, 403, "HTTP 403"), (False, 200, "不是網頁（application/pdf）")]
+
+
+def test_crawl_news_detail_temporary_failures_raise_for_retry(raw_store, monkeypatch):
+    """逾時：沒有回應可存，直接丟錯誤；5xx：存完丟 FetchError 讓 runner／Celery 重試。"""
+    def timeout(link):
+        raise requests.Timeout("read timed out")
+    monkeypatch.setattr(client, "fetch_news_detail", timeout)
+    with pytest.raises(requests.Timeout):
+        task.crawl_news_detail(LINK)
+    assert raw_store.rows == []
+    monkeypatch.setattr(client, "fetch_news_detail", lambda link: page_response(status=503))
+    with pytest.raises(repository.FetchError) as error:
+        task.crawl_news_detail(LINK)
+    assert runner.is_retryable(error.value) and raw_store.last("news_detail", url_md5(LINK)).http_status == 503

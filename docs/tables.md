@@ -1,15 +1,16 @@
 # 資料表說明
 
-資料庫分三層：
+資料庫分四層：
 
 | 層 | 表名開頭 | 內容 | 建表 SQL |
 |---|---|---|---|
 | raw | `raw_` | API 回應原文 | [`schema/raw.sql`](../schema/raw.sql) |
 | stage | `stage_` | raw 整理後的官方資料，不做業務判斷 | [`schema/stage.sql`](../schema/stage.sql) |
 | app | `app_` | 規則引擎算出的結果，給網頁讀 | [`schema/app.sql`](../schema/app.sql) |
-| app（VIEW） | `app_` | 網頁需要的 stage 欄位，網頁只讀 `app_*` | [`schema/view.sql`](../schema/view.sql) |
+| app（VIEW） | `app_` | 網頁需要的 stage（和 ai）欄位，網頁只讀 `app_*` | [`schema/view.sql`](../schema/view.sql) |
+| ai | `ai_` | AI 項目的結果、LLM 呼叫紀錄 | [`schema/ai.sql`](../schema/ai.sql) |
 
-每天只處理當天的資料（見 [`flow.md`](flow.md)）；每張表另有 `loaded_at`（寫入時間）。時間欄位（`fetched_at`、`loaded_at`）都是 TIMESTAMP（不含時區）、台灣時間。期間為 2026/11/14 的資料。
+每天只處理當天的資料；每張表另有 `loaded_at`（寫入時間）。時間欄位（`fetched_at`、`loaded_at`）都是 TIMESTAMP（不含時區）、台灣時間。期間為 2026/11/14 的資料。
 
 ## raw 層
 
@@ -26,6 +27,8 @@
 | request_body | TEXT | POST 的參數（JSON 字串）；GET 為 NULL |
 | body | TEXT | API 回應原文（JSON 字串） |
 
+- 例外：`raw_news_detail`（新聞網頁）的 `body` 不是回應原文，是 `crawl_news_detail` 組的 JSON（`<head>`、轉址後的網址、全文有幾個字），全文不存；`raw_key` 是 32 個字的 news_id；沒打的轉址連結 `http_status` 為 NULL。
+
 | 表 | raw_key | 整理成 |
 |---|---|---|
 | `raw_notice` | 查詢日期 | `stage_notice`、`stage_notice_clause`、`stage_notice_day` |
@@ -37,13 +40,15 @@
 | `raw_company` | 抓取日期 | `stage_company` |
 | `raw_announcement` | 公司代號_月份 | `stage_announcement` |
 | `raw_announcement_detail` | 公司代號_輸入日期_序號 | `stage_announcement_detail` |
+| `raw_stock_news` | 證券代號_日期 | `stage_news`、`stage_stock_news` |
+| `raw_news_detail` | news_id（連結的 md5） | `stage_news_detail`（只存 `<head>`，全文不存） |
 
 - 只新增、不修改：主鍵（raw_key, fetched_at），同一個 raw_key 每抓一次多一列，成功、失敗都留。transform 只讀每個 raw_key 最新一份成功的，所以失敗不會蓋掉之前成功的。
 
 ## stage 層
 
 每張表（固定資料的 `stage_announcement_clause` 除外）最後都有兩欄：`loaded_at`（寫入時間）、`source_fetched_at`（TIMESTAMP(6)，
-這列來自哪次抓取，也就是 raw 的 `fetched_at`）。寫入時用主鍵更新，只讓 `source_fetched_at` 比較新（或一樣新）的覆蓋，見 [`flow.md`](flow.md)「去重與冪等」。
+這列來自哪次抓取，也就是 raw 的 `fetched_at`）。寫入時用主鍵更新，只讓 `source_fetched_at` 比較新（或一樣新）的覆蓋：好幾個 worker、好幾輪同時整理，誰先寫完結果都一樣。
 
 | 表 | 一列是 | 主鍵 | 期間 |
 |---|---|---|---|
@@ -60,6 +65,9 @@
 | `stage_announcement` | 一則重大訊息 | company_id, enter_date, serial_number | 04/01–11/20（發言日期；7,391 則） |
 | `stage_announcement_detail` | 一則重大訊息的全文 | company_id, enter_date, serial_number | 同上（輸入日期最早 03/17） |
 | `stage_announcement_clause` | 一個符合條款（固定資料，51 列） | announce_clause | — |
+| `stage_news` | 一則新聞：標題、連結、媒體、時間（FinMind；好幾檔都有的新聞也只有一列） | news_id | 11/20 起（每天被關注的上市公司） |
+| `stage_stock_news` | 哪檔有哪則新聞（FinMind；同一則新聞好幾檔就好幾列） | stock_id, news_id | 同上 |
+| `stage_news_detail` | 一則新聞的網頁：導言、全文有幾個字（新聞網站本身；全文不存，抓不到的沒有列） | news_id | 同上 |
 
 ## 關聯圖
 
@@ -71,6 +79,9 @@ erDiagram
     stage_company ||--o{ stage_announcement : "company_id"
     stage_announcement ||--o| stage_announcement_detail : "company_id + enter_date + serial_number"
     stage_announcement_clause ||--o{ stage_announcement_detail : "announce_clause"
+    stage_company |o--o{ stage_stock_news : "stock_id"
+    stage_news ||--o{ stage_stock_news : "news_id"
+    stage_news ||--o| stage_news_detail : "news_id"
     stage_notice ||--|{ stage_notice_clause : "trade_date + stock_id"
     stage_trading_day ||--o{ stage_notice : "trade_date"
     stage_notice_day ||--o{ stage_notice : "query_date = trade_date"
@@ -379,9 +390,47 @@ erDiagram
 | short_name | VARCHAR(20) | 簡短名稱（卡片標籤），例如 `財務報告`、`法人說明會`、`其他重大事項` |
 | description | VARCHAR(200) | 條文摘要 |
 
+### stage_news　新聞
+
+- 來源：`raw_stock_news`（FinMind `GET /api/v4/data?dataset=TaiwanStockNews&data_id=<代號>&start_date=<日期>`，一檔一天）
+- 只抓當天被關注的上市公司（注意股、處置股，和重大訊息同一批），每檔那天和往前 7 天，由 `crawler/producer.py` 抓。
+- 一則新聞一列：FinMind 一檔一檔查，好幾檔都有的新聞，時間、標題以最新一次抓到的為準。只有標題、連結、媒體、時間，不存內文（著作權）。
+
+| 欄位 | 型別 | API 欄位 | 轉換／說明 |
+|---|---|---|---|
+| news_id | CHAR(32) | link | 主鍵；連結（去掉前後空白）的 md5（`common/hash_utils.py` 的 `url_md5`）。連結太長（最長好幾百字）不好當主鍵；表上的 CHECK 確認等於 SQL 的 `md5(link)` |
+| link | TEXT | link | Google 新聞的轉址連結可能好幾百字 |
+| news_time | TIMESTAMP(0) | date | FinMind 給 UTC，轉成台灣時間；所以查 11/20 拿到的是台灣時間 11/20 08:00～11/21 08:00 |
+| news_date | DATE | date | news_time 的日期 |
+| publisher | VARCHAR(50) | source | 發布的媒體，例如 自由時報、CMoney（FinMind 叫 source，但它是媒體，不是資料來源） |
+| title | TEXT | title | 去掉結尾的「 - 媒體」 |
+
+- 同一份回應裡同一個連結出現兩次（不同時間或標題）：只留最早的一則。
+
+### stage_stock_news　哪檔有哪則新聞
+
+- 來源：`raw_stock_news`（FinMind），和 `stage_news` 同一個任務整理。新聞本身在 `stage_news`，用 `news_id` 對應。
+
+| 欄位 | 型別 | API 欄位 | 轉換／說明 |
+|---|---|---|---|
+| stock_id | VARCHAR(10) | stock_id | |
+| news_id | CHAR(32) | link | `stage_news.news_id` |
+
+### stage_news_detail　新聞網頁
+
+- 來源：`raw_news_detail`（新聞網站本身：`crawl_news_detail` 打開每則新聞的連結）。raw 只存 `<head>`（標題、meta 摘要）：`<body>` 就是新聞全文，不存進資料庫（著作權）；全文只在記憶體裡抽，這裡只記有幾個字。
+- 抓不到的（被擋 4xx、不是網頁、Google 轉址）沒有列，原因在 `raw_news_detail.problem`。
+
+| 欄位 | 型別 | raw 欄位 | 轉換／說明 |
+|---|---|---|---|
+| news_id | CHAR(32) | （raw_key） | `stage_news.news_id` |
+| final_url | TEXT | final_url | 轉址後實際打開的網址 |
+| lead | TEXT | head | 導言：`<head>` 裡的 meta 摘要（og:description、description），新聞網站自己寫的一兩句。有些網站每則都放同一句網站介紹（例如富聯網），`app_stock_news` 會排除 |
+| text_chars | INT | text_chars | 抽出來的全文有幾個字（全文本身不存）；抽不到為 NULL |
+
 ## app 層
 
-規則引擎（`analyze/engine.py`）的結果，規則見 [`rules.md`](rules.md)。只有最近 30 個營業日被列過注意的股票才有一列。
+規則引擎（`analyze/engine.py`）的結果。只有最近 30 個營業日被列過注意的股票才有一列。
 
 每個交易日的結果都留著；重跑某天只換掉那天的列，`process_date` 記最後一次是哪天算的。
 
@@ -465,7 +514,7 @@ SELECT task, COUNT(*), ROUND(AVG(seconds), 2), COUNT(*) FILTER (WHERE status = '
 
 ### VIEW（給網頁讀）
 
-VIEW 是存起來的查詢，不複製資料；網頁查的時候資料庫才去讀 stage 表。網頁的 SQL 只寫 `app_*`，stage 欄位改了只要改 VIEW。
+VIEW 是存起來的查詢，不複製資料；網頁查的時候資料庫才去讀 stage（和 ai）表。網頁的 SQL 只寫 `app_*`，stage 欄位改了只要改 VIEW。
 
 | VIEW | 給哪個畫面 | 內容 |
 |---|---|---|
@@ -473,4 +522,70 @@ VIEW 是存起來的查詢，不複製資料；網頁查的時候資料庫才去
 | `app_trading_day` | 注意紀錄格子、公告和處置紀錄的起日 | `stage_trading_day` 裡有交易的日子（`trade_date`） |
 | `app_notice_history` | 注意紀錄格子 | 每檔每個被列注意的交易日：`clauses`、`is_counted`（true＝累計）、`reason_text`（那天被列的原因全文）。沒被列的日子沒有列；早於 `count_start` 的是「已計入前次處置」 |
 | `app_punish_history` | 處置紀錄 | `stage_punish` 的欄位 |
+| `app_stock_news` | 新聞資訊（之後 ②、③ 也讀這裡） | `stage_stock_news` 每一列，用 `news_id` JOIN `stage_news` 帶出標題、媒體（`publisher`）、時間、連結，LEFT JOIN `stage_news_detail` 帶出 `lead`（導言）；3 則以上新聞共用的同一句導言（網站介紹、個股概覽頁）當成沒有，為 NULL。`ai_summary`：`ai_news_summary` 最新一版、通過檢查的摘要 |
 | `app_announcement` | 公開資訊 | `stage_announcement`，加上 `is_during_session`（14:30 前＝交易時段內）、`is_correction`（更正）、`is_explanation`（說明、澄清；排除法人說明會）；LEFT JOIN `stage_announcement_detail` 帶出 `announce_clause`、`fact_date`、`content`（還沒抓到全文的為 NULL），再 JOIN `stage_announcement_clause` 帶出 `clause_name`（例如 財務報告） |
+
+## ai 層
+
+AI 項目的結果（由 `ai/task.py` 寫入）。和 `app_*` 分開：`app_*` 隨時可以從 stage 免費重算；AI 結果重跑要花錢、同樣的輸入每次答案可能不同，所以拿到就留著。重算 stage、app（`run_rebuild.bat`）不碰 `ai_*` 表。
+
+### ai_announcement_label　公告分類
+
+- 每則重大訊息每個 prompt 版本一列；同一版已經有就不再問 LLM。改了 prompt 就換版本（`ai/classifier.py` 的 `PROMPT_VERSION`），新版本另外存。
+- 由 `classify_announcement` 寫入：模型 `claude-haiku-5-5`（`.env` 的 `AI_CLASSIFY_MODEL`），結構化輸出（JSON schema，`category` 用 enum 限定 13 類）。
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| company_id、enter_date、serial_number | VARCHAR(10)、DATE、INT | 主鍵前三欄，和 `stage_announcement` 一樣 |
+| prompt_version | VARCHAR(20) | 主鍵之一，例如 `v2` |
+| category | VARCHAR(20) | 13 類選一：注意股例行說明、澄清／回應媒體、營收、自結損益、財務報告、訂單、合約、合作、新產品、認證、許可、投資、資產買賣、籌資、股利、庫藏股、人事異動、股東會、董事會、法說會、負面事件、其他 |
+| is_correction | BOOLEAN | 更正、補充、修正先前的公告 |
+| has_news | BOOLEAN | 有新的資訊；例行、依規定才公布的為否 |
+| summary | VARCHAR(100) | 一句白話摘要；程式限制 40 字（`SUMMARY_MAX_CHARS`），超過就帶著上次的回答請 LLM 縮短，只重問一次 |
+| reason | TEXT | LLM 給的一句理由（評估、除錯用） |
+| summary_ok | BOOLEAN | 摘要通過程式檢查：不超過 40 字、數字都出現在公告裡；否的話網站不該顯示摘要（網站還沒接上 ai_announcement_label） |
+| model | VARCHAR(50) | 模型 |
+| labeled_at | TIMESTAMP(0) | 分類時間（台灣時間） |
+
+### ai_news_summary　新聞摘要
+
+- 每則新聞每個 prompt 版本一列；同一版已經有就不再問 LLM。改了 prompt 就換版本（`ai/summarizer.py` 的 `PROMPT_VERSION`）。
+- 由 `summarize_news` 寫入：模型 `claude-haiku-5-5`（`.env` 的 `AI_SUMMARY_MODEL`）。全文不存進資料庫（著作權），任務當場打開網頁抽全文、交給 LLM，用完就丟；存的只有 LLM 用自己的話寫的摘要。
+- 只摘要有抓到網頁（`stage_news_detail` 有列）、全文至少 200 字的新聞；當場打不開（被擋）、全文太短就跳過，不問 LLM。
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| news_id | CHAR(32) | 主鍵之一；`stage_news.news_id` |
+| prompt_version | VARCHAR(20) | 主鍵之一，例如 `v2` |
+| summary | VARCHAR(400) | 摘要，2～4 句；程式限制 250 字（`SUMMARY_MAX_CHARS`），超過就請 LLM 縮短，只重問一次；不是新聞內容（登入頁、網站介紹）的為空字串 |
+| summary_ok | BOOLEAN | 摘要通過程式檢查：不是空的、不超過 250 字、數字都出現在原文裡；否的話不顯示（`app_stock_news.ai_summary` 為 NULL） |
+| model | VARCHAR(50) | 模型 |
+| summarized_at | TIMESTAMP(0) | 摘要時間（台灣時間） |
+
+### ai_llm_call　LLM 呼叫紀錄
+
+- 每次呼叫 LLM 一列（`repository.save_llm_call`，和 raw 表的 `save_raw` 一樣：有問題的也記，記完丟 `FetchError`）；只新增。
+- API 錯誤（429、5xx、連線失敗）沒有回應，不記在這裡，記在任務歷史 `job_run`。
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| call_id | BIGINT | 流水號（主鍵） |
+| task | VARCHAR(80) | 哪個任務，例如 `classify_announcement`、`summarize_news` |
+| ref_key | VARCHAR(80) | 處理哪一筆，例如 `9908_20261102_1`（公告）、新聞的 news_id |
+| model、prompt_version | VARCHAR | 模型、prompt 版本 |
+| status | VARCHAR(10) | `success`／`failure`（拒答、被截斷、格式不對） |
+| stop_reason | VARCHAR(20) | 例如 `end_turn`、`max_tokens`、`refusal` |
+| input_tokens、output_tokens | INT | 輸入（不含快取）、輸出（含思考）token |
+| cache_read_tokens、cache_write_tokens | INT | 從快取讀、寫進快取的輸入 token |
+| cost_usd | DECIMAL(12,6) | 估計花費（美元），用 `ai/client.py` 的 `PRICES` 算 |
+| seconds | DECIMAL(10,3) | 花了幾秒 |
+| request_id | VARCHAR(80) | API 的 request-id |
+| error | TEXT | 失敗原因 |
+| called_at | TIMESTAMP(3) | 呼叫時間（台灣時間） |
+
+```sql
+-- 每天花多少
+SELECT called_at::date, task, COUNT(*), SUM(cost_usd) FROM tw_stock.ai_llm_call GROUP BY 1, 2 ORDER BY 1 DESC;
+-- 各類型幾則
+SELECT category, COUNT(*), COUNT(*) FILTER (WHERE has_news) FROM tw_stock.ai_announcement_label GROUP BY 1 ORDER BY 2 DESC;
+```

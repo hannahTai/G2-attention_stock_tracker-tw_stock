@@ -6,8 +6,8 @@
 
 任務清單的每一項是 (任務函式, 參數 dict)，例如 (task.crawl_notice, {"date_yyyymmdd": "20261113"})，
 交給 common/runner.py 執行（每個任務間隔一下、暫時性的失敗重試）。
-分三批：證交所先跑完，觀測站才能依當天的注意股、處置股決定要查哪些公司；
-有了公告清單，才知道要查哪幾則公告的全文。
+分五批：證交所先跑完，觀測站才能依當天的注意股、處置股決定要查哪些公司；
+有了公告清單，才知道要查哪幾則公告的全文。新聞同樣兩步：FinMind 新聞清單（同一批公司），再打開每則新聞的網頁。
 
 已經抓完整的不再抓（加 --refetch 就全部重抓）。「完整」＝在那份資料不會再變之後抓的，見 is_complete()。
 注意累計名單、上市公司清單只有當下一份，每次都抓。
@@ -16,8 +16,13 @@ import calendar
 import datetime
 
 from common import cli, repository, runner
-from common.config import SLEEP_SECONDS, SLEEP_SECONDS_MOPS
-from common.date_utils import dates_between, holiday_years, months_between, parse_yyyymmdd, prev_month, today_yyyymmdd
+from common.config import (
+    NEWS_LOOKBACK_DAYS, SLEEP_SECONDS, SLEEP_SECONDS_FINMIND, SLEEP_SECONDS_MOPS, SLEEP_SECONDS_NEWS_DETAIL,
+)
+from common.date_utils import (
+    dates_between, days_before, holiday_years, months_between, parse_yyyymmdd, prev_month, today_yyyymmdd,
+)
+from common.hash_utils import url_md5
 from crawler import client, task
 
 
@@ -79,15 +84,23 @@ def watched_stocks(date_yyyymmdd: str) -> set[str]:
     return ids
 
 
+def watched_companies(start: str, end: str) -> dict[str, set[str]]:
+    """區間內每天被關注的上市公司：{日期: {公司}}。權證、ETF 不是上市公司，沒有重大訊息，也不查新聞。
+
+    還沒抓到過公司清單（例如全新的資料庫、證交所擋掉）：回傳空的，這輪先不查。
+    """
+    company_keys = repository.list_raw_keys("company")
+    if not company_keys:
+        return {}
+    companies = client.company_ids(repository.read_raw("company", company_keys[-1])["body"])
+    return {date_yyyymmdd: watched_stocks(date_yyyymmdd) & companies for date_yyyymmdd in dates_between(start, end)}
+
+
 def announcement_targets(start: str, end: str) -> list[tuple[str, str]]:
     """區間內每天被關注的上市公司，要查哪些 (公司, 月份)：那天的當月和上個月（重複的只算一次）。"""
-    company_keys = repository.list_raw_keys("company")
-    if not company_keys:   # 還沒抓到過公司清單（例如全新的資料庫、證交所擋掉）：這輪先不查
-        return []
-    companies = client.company_ids(repository.read_raw("company", company_keys[-1])["body"])
     targets = set()
-    for date_yyyymmdd in dates_between(start, end):
-        for stock_id in watched_stocks(date_yyyymmdd) & companies:   # 權證、ETF 不是上市公司，沒有重大訊息
+    for date_yyyymmdd, stock_ids in watched_companies(start, end).items():
+        for stock_id in stock_ids:
             targets |= {(stock_id, date_yyyymmdd[:6]), (stock_id, prev_month(date_yyyymmdd))}
     return sorted(targets)
 
@@ -116,6 +129,40 @@ def build_detail_jobs(start: str, end: str, refetch: bool = False) -> list[tuple
     return jobs
 
 
+# ---------- 第四批：新聞清單（FinMind；和重大訊息同一批公司）----------
+def stock_news_ready_at(date_yyyymmdd: str) -> datetime.datetime:
+    """一天的新聞清單：FinMind 的「一天」是 UTC 的一天（台灣時間那天 08:00 到隔天 08:00），隔天 08:00 以後抓的就不會再變。"""
+    return datetime.datetime.combine(parse_yyyymmdd(date_yyyymmdd) + datetime.timedelta(days=1), datetime.time(8, 0))
+
+
+def stock_news_targets(start: str, end: str) -> list[tuple[str, str]]:
+    """要查哪些 (公司, 日期)：區間內每天被關注的上市公司，那天和往前 NEWS_LOOKBACK_DAYS 天（重複的只算一次）。
+
+    往前抓：第一次被關注的股票也有最近幾天的新聞；之前抓過的日子 build_stock_news_jobs 會跳過。
+    """
+    targets = set()
+    for date_yyyymmdd, stock_ids in watched_companies(start, end).items():
+        first = days_before(date_yyyymmdd, NEWS_LOOKBACK_DAYS)
+        targets |= {(stock_id, day) for stock_id in stock_ids for day in dates_between(first, date_yyyymmdd)}
+    return sorted(targets)
+
+
+def build_stock_news_jobs(start: str, end: str, refetch: bool = False) -> list[tuple]:
+    """新聞清單：每個 (公司, 日期) 一個任務；那天過完（隔天 08:00）以後抓的就不再抓。"""
+    fetched = {} if refetch else repository.raw_fetched_times("stock_news")
+    return [(task.crawl_stock_news, {"stock_id": s, "date_yyyymmdd": d}) for s, d in stock_news_targets(start, end)
+            if not is_complete(fetched, f"{s}_{d}", stock_news_ready_at(d))]
+
+
+# ---------- 第五批：新聞網頁（要先有第四批的新聞清單）----------
+def build_news_detail_jobs(start: str, end: str, refetch: bool = False) -> list[tuple]:
+    """第四批清單裡的每則新聞打開網頁一次（存 <head>）；成功或永久失敗（被擋、轉址）的不再抓，5xx、429 下次再試。"""
+    keys = [f"{s}_{d}" for s, d in stock_news_targets(start, end)]   # 例如 2330_20261120
+    done = set() if refetch else repository.raw_keys_done("news_detail")
+    links = {link for raw in repository.read_raws("stock_news", keys) for link in client.stock_news_links(raw["body"])}
+    return [(task.crawl_news_detail, {"link": link}) for link in sorted(links) if url_md5(link) not in done]
+
+
 # ---------- 執行 ----------
 def main() -> None:
     args = cli.parse_args()   # daily：今天；backfill：--start～--end，--refetch 全部重抓
@@ -125,6 +172,8 @@ def main() -> None:
     failed = runner.run_jobs(build_twse_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS, queue="crawl_twse")
     failed += runner.run_jobs(build_mops_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_MOPS, queue="crawl_mops")
     failed += runner.run_jobs(build_detail_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_MOPS, queue="crawl_mops")
+    failed += runner.run_jobs(build_stock_news_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_FINMIND, queue="crawl_finmind")
+    failed += runner.run_jobs(build_news_detail_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_NEWS_DETAIL, queue="crawl_finmind")
     runner.finish(failed)
 
 

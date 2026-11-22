@@ -32,7 +32,7 @@ AI 三個項目（只讀 stage、app 表，結果寫進 ai_* 表）
   │     LLM（小型模型）結構化輸出
   │     → ai_announcement_label
   ├─ ② 新聞 RAG（給 ③ 用）
-  │     FinMind 新聞 → raw_stock_news → stage_stock_news
+  │     FinMind 新聞 → raw_stock_news → stage_news、stage_stock_news；新聞網頁 → raw_news_detail（只存 <head>）→ stage_news_detail
   │     標題轉成向量（embedding）存進 PostgreSQL（pgvector）→ ai_news_embedding
   │     向量檢索：同一件事的報導合併成一則，再挑跟「被注意的原因、公告」最相關的幾則，交給 ③ 的 LLM
   └─ ③ 卡片 AI 摘要（用 ① 的標籤、② 的新聞）

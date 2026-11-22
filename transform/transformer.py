@@ -10,8 +10,10 @@ import datetime
 import warnings
 
 import pandas as pd
+import trafilatura
 
-from common.date_utils import DATE_FMT, roc_compact_to_dates, roc_date_in, roc_to_dates
+from common.date_utils import DATE_FMT, TAIPEI, roc_compact_to_dates, roc_date_in, roc_to_dates
+from common.hash_utils import url_md5
 from transform.parsing import (
     chinese_number, mops_rows_to_frame, require_columns, strip_html, to_number, twse_rows_to_frame,
 )
@@ -30,6 +32,9 @@ STAGE_KEYS = {
     "stage_company": ["company_id"],
     "stage_announcement": ["company_id", "enter_date", "serial_number"],
     "stage_announcement_detail": ["company_id", "enter_date", "serial_number"],
+    "stage_news": ["news_id"],
+    "stage_stock_news": ["stock_id", "news_id"],
+    "stage_news_detail": ["news_id"],
 }
 
 
@@ -301,3 +306,87 @@ def clean_announcement_detail(df: pd.DataFrame) -> pd.DataFrame:
         "content": df["說明"].str.replace("\r\n", "\n").str.strip(),         # 說明全文
     })
     return out.sort_values(STAGE_KEYS["stage_announcement_detail"], kind="stable").reset_index(drop=True)
+
+
+# ---------- 個股新聞（FinMind）→ stage_news、stage_stock_news ----------
+STOCK_NEWS_FIELDS = ["date", "stock_id", "link", "source", "title"]
+
+
+def stock_news_to_frame(raw: dict) -> pd.DataFrame:
+    """FinMind 的格式：data 是一串 dict（欄名就是 key）。那天沒有新聞時 data 是空的，回傳空表。"""
+    data = raw["body"].get("data") or []
+    return require_columns(pd.DataFrame(data, columns=None if data else STOCK_NEWS_FIELDS), STOCK_NEWS_FIELDS, "個股新聞")
+
+
+def stock_news_ids(raw: dict) -> set[str]:
+    """一份個股新聞裡每則新聞的 news_id（transform 的 producer 用來找要整理哪些新聞網頁）。"""
+    return {url_md5(link) for link in stock_news_to_frame(raw)["link"]}
+
+
+def strip_publisher_suffix(title: str, publisher: str) -> str:
+    """標題結尾的「 - 媒體」去掉（Google 新聞的格式）。
+
+    >>> strip_publisher_suffix("台積電收跌100元 - 自由時報", "自由時報")
+    '台積電收跌100元'
+    >>> strip_publisher_suffix("台積電收跌100元", "自由時報")
+    '台積電收跌100元'
+    """
+    suffix = f" - {publisher}"
+    return title[:-len(suffix)].strip() if publisher and title.endswith(suffix) else title.strip()
+
+
+def clean_stock_news(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """→ (stage_news, stage_stock_news)：新聞本身一則一列（主鍵 news_id＝md5(link)），和「這檔有這則新聞」。
+
+    同一個連結出現兩次（時間或標題不同）只留最早的一則。
+    FinMind 的時間是 UTC（標題寫「09:19 即時新聞」的，date 是 01:20），轉成台灣時間；
+    所以查 start_date＝11/20 拿到的是台灣時間 11/20 08:00 到 11/21 08:00 的新聞。
+    """
+    times = pd.to_datetime(df["date"]).dt.tz_localize("UTC").dt.tz_convert(TAIPEI).dt.tz_localize(None)
+    links = df["link"].str.strip()
+    out = pd.DataFrame({
+        "stock_id": df["stock_id"].astype(str).str.strip(),
+        "news_id": [url_md5(link) for link in links],
+        "link": links,
+        "news_time": times,
+        "news_date": times.dt.date,
+        "publisher": df["source"].str.strip(),   # FinMind 的 source 是發布的媒體，不是資料來源
+        "title": [strip_publisher_suffix(t, p) for t, p in zip(df["title"], df["source"].str.strip())],
+    })
+    out = out.sort_values("news_time", kind="stable").drop_duplicates(STAGE_KEYS["stage_stock_news"], keep="first")
+    out = out.sort_values(["stock_id", "news_time"], kind="stable").reset_index(drop=True)   # news_id 是亂碼，照時間排比較好看
+    news = out.drop(columns="stock_id").drop_duplicates("news_id", keep="first").reset_index(drop=True)
+    return news, out[STAGE_KEYS["stage_stock_news"]]
+
+
+# ---------- 新聞網頁（raw_news_detail 只存 <head>）→ stage_news_detail ----------
+NEWS_DETAIL_FIELDS = ["final_url", "head", "text_chars"]
+
+
+def news_detail_to_frame(raw: dict) -> pd.DataFrame:
+    """raw_news_detail 的 body 是 crawl_news_detail 組的 dict（不是 API 回應）；news_id 取自 raw_key。"""
+    df = require_columns(pd.DataFrame([raw["body"]]), NEWS_DETAIL_FIELDS, "新聞網頁")
+    return df.assign(news_id=raw["meta"]["key"])
+
+
+def lead_from_head(head: str | None) -> str | None:
+    """<head> 裡的 meta 摘要（og:description、description）：新聞網站自己給搜尋引擎、社群分享顯示的一兩句，通常就是導言。
+
+    >>> lead_from_head("<head><meta property='og:description' content=' 健策10月營收年增81％。 '></head>")
+    '健策10月營收年增81％。'
+    >>> lead_from_head("") is None
+    True
+    """
+    metadata = trafilatura.extract_metadata(f"<html>{head}<body></body></html>") if head else None   # 只有 head 解析不出來，要包成整頁
+    lead = metadata.description.strip() if metadata and metadata.description else ""
+    return lead or None
+
+
+def clean_news_detail(df: pd.DataFrame) -> pd.DataFrame:
+    """→ stage_news_detail"""
+    return pd.DataFrame({
+        "news_id": df["news_id"],
+        "final_url": df["final_url"],
+        "lead": df["head"].map(lead_from_head),
+        "text_chars": df["text_chars"].astype("Int64"),
+    })

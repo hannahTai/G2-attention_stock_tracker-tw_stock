@@ -1,20 +1,27 @@
 """client 層：只負責跟 API 拿資料，不整理、不存檔（存進 raw 表的是 task.py）。API 的格式只有這裡知道。
 
   fetch_xxx()：打 API，回傳原始回應
-  xxx_stock_ids()、watchlist_date()、company_ids()、announcement_ids()：從回應取出 producer、task 要用的值
+  xxx_stock_ids()、watchlist_date()、company_ids()、announcement_ids()、stock_news_links()：從回應取出 producer、task 要用的值
+  news_detail_head()、news_detail_text()：從新聞網頁取 <head>（存進 raw）、抽全文（全文只在記憶體裡，不存）
   xxx_problem()：檢查回應，有問題回傳原因（task 存成失敗），沒問題回傳 None
 
   證交所：注意股、處置股、注意累計名單、每日市場成交、每日收盤行情、開休市日期、上市公司清單
   公開資訊觀測站：公司重大訊息（一家公司一個月一個請求）、重大訊息全文（一則一個請求）
+  FinMind：個股新聞（一檔一天一個請求）
+  新聞網站：新聞網頁（一則一個請求；只存 <head>）
 """
 import calendar
 import datetime
+import re
+import urllib.parse
 
 import pandas as pd
 import requests
+import trafilatura
+import trafilatura.utils
 
 from common import date_utils
-from common.config import MOPS_BASE, TWSE_BASE, TWSE_OPENAPI_BASE
+from common.config import FINMIND_BASE, FINMIND_TOKEN, MOPS_BASE, TWSE_BASE, TWSE_OPENAPI_BASE
 from common.date_utils import DATE_FMT, roc_compact_to_yyyymmdd, roc_date_in, yyyymmdd_to_roc_compact
 
 # ---------- HTTP ----------
@@ -26,8 +33,8 @@ HEADERS = {   # 不像瀏覽器的請求會被擋
 TIMEOUT = 30   # 秒
 
 
-def http_get(url: str, params: dict) -> requests.Response:
-    return requests.get(url, params=params, headers=HEADERS, timeout=TIMEOUT)
+def http_get(url: str, params: dict, headers: dict | None = None) -> requests.Response:
+    return requests.get(url, params=params, headers={**HEADERS, **(headers or {})}, timeout=TIMEOUT)
 
 
 def http_post(url: str, body: dict) -> requests.Response:
@@ -117,6 +124,23 @@ def fetch_announcement_detail(stock_id: str, enter_yyyymmdd: str, serial_number:
     })
 
 
+def fetch_stock_news(stock_id: str, date_yyyymmdd: str) -> requests.Response:
+    """個股新聞（FinMind TaiwanStockNews），一檔一天（UTC 的一天）。一次只能查一天（給 end_date 會被拒絕）。
+
+    token 放在 header（不放網址），存進 raw 表的網址才不會帶著 token；沒設 FINMIND_TOKEN 也抓得到，只是次數上限比較低。
+    """
+    headers = {"Authorization": f"Bearer {FINMIND_TOKEN}"} if FINMIND_TOKEN else None
+    day = date_utils.parse_yyyymmdd(date_yyyymmdd)
+    return http_get(f"{FINMIND_BASE}/data", {
+        "dataset": "TaiwanStockNews", "data_id": stock_id, "start_date": day.isoformat(),
+    }, headers)
+
+
+def fetch_news_detail(link: str) -> requests.Response:
+    """一則新聞的網頁（HTML）。"""
+    return http_get(link, {}, {"Accept": "text/html,application/xhtml+xml"})
+
+
 # ---------- 從回應取值：producer、task 要用的值 ----------
 def notice_stock_ids(body) -> set[str]:
     """注意股回應裡的證券代號（data 每列第 2 欄）。"""
@@ -144,6 +168,19 @@ def company_ids(body) -> set[str]:
     return {company["公司代號"].strip() for company in body}
 
 
+# 論壇貼文的連結（不是新聞，不抓網頁）
+FORUM_PATH = "cmoney.tw/forum/"
+
+
+def stock_news_links(body) -> list[str]:
+    """個股新聞回應裡每則新聞的連結（查網頁要用）；CMoney 股市爆料同學會是論壇貼文，不是新聞，不算。
+
+    >>> stock_news_links({"data": [{"link": " https://udn.com/1 "}, {"link": "https://www.cmoney.tw/forum/article/2"}]})
+    ['https://udn.com/1']
+    """
+    return [row["link"].strip() for row in body.get("data") or [] if FORUM_PATH not in row["link"]]   # 和 transform 一樣去空白，md5 才對得上
+
+
 def announcement_ids(body) -> list[tuple[str, str, int, str]]:
     """重大訊息回應裡每則公告的 (公司代號, 輸入日期 YYYYMMDD, 序號, 全文 API)，查全文要用。
 
@@ -157,6 +194,24 @@ def announcement_ids(body) -> list[tuple[str, str, int, str]]:
         enter_yyyymmdd = roc_compact_to_yyyymmdd(params["enterDate"])   # "1151102" → "20261102"
         ids.append((params["companyId"].strip(), enter_yyyymmdd, int(params["serialNumber"]), row[-1]["apiName"]))
     return ids
+
+
+def news_detail_head(page: bytes) -> str:
+    """新聞網頁的 <head>：標題、meta 摘要（og:description）、發布時間，不含正文。存進 raw_news_detail（transform 從這裡取導言）。
+
+    給 bytes 不給 str：trafilatura 自己判斷編碼（Big5、沒標編碼的 UTF-8 網頁才不會變亂碼）。
+
+    >>> news_detail_head("<html><head><title>健策</title></head><body>正文</body></html>".encode("big5"))
+    '<head><title>健策</title></head>'
+    """
+    match = re.search(r"<head\b.*?</head>", trafilatura.utils.decode_file(page), re.S | re.I)
+    return match.group(0) if match else ""
+
+
+def news_detail_text(page: bytes) -> str | None:
+    """新聞網頁的正文（去掉選單、廣告、推薦文章）。只在記憶體裡用，不存進資料庫（著作權）：
+    crawl_news_detail 只記有幾個字，ai 的 summarize_news 當場交給 LLM 摘要。"""
+    return trafilatura.extract(page, include_comments=False, include_tables=False)
 
 
 # ---------- 檢查回應：有問題回傳原因（task 存成失敗），沒問題回傳 None ----------
@@ -181,6 +236,41 @@ def holiday_problem(body, year: int) -> str | None:
     if isinstance(body, dict) and body.get("queryYear") != year:
         return f"要 {year} 年，回傳的是 {body.get('queryYear')} 年"
     return None
+
+
+def stock_news_problem(body) -> str | None:
+    """FinMind 的回應 status 不是 200（例如次數用完 402）或沒有 data（格式改了）→ 回傳原因。HTTP 狀態碼可能還是 200，所以要看內容。"""
+    if isinstance(body, dict) and body.get("status") != 200:
+        return f"FinMind 回傳 {body.get('status')}：{body.get('msg')}"
+    if isinstance(body, dict) and "data" not in body:
+        return "FinMind 回應沒有 data（格式可能改了）"
+    return None
+
+
+def news_detail_problem(resp: requests.Response) -> str | None:
+    """新聞網頁打開了但不能用（HTTP 錯誤、不是網頁，例如 PDF、影片）→ 回傳原因。5xx、429 由 task 存完再重試。"""
+    if not resp.ok:
+        return f"HTTP {resp.status_code}"
+    content_type = resp.headers.get("Content-Type", "")
+    if "html" not in content_type:
+        return f"不是網頁（{content_type or '沒有 Content-Type'}）"
+    return None
+
+
+# 抓不到原文的連結：Google 新聞的轉址要跑 JavaScript 才會跳到原文
+UNREACHABLE_HOSTS = ("news.google.com",)
+
+
+def unreachable_link_problem(link: str) -> str | None:
+    """連過去也拿不到原文的連結 → 回傳原因（不打）。
+
+    >>> unreachable_link_problem("https://news.google.com/rss/articles/abc")
+    'news.google.com 的轉址連結，抓不到原文'
+    >>> unreachable_link_problem("https://udn.com/news/1") is None
+    True
+    """
+    host = urllib.parse.urlparse(link).netloc
+    return f"{host} 的轉址連結，抓不到原文" if host in UNREACHABLE_HOSTS else None
 
 
 def announcement_detail_problem(body) -> str | None:

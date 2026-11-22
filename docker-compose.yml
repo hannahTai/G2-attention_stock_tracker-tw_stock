@@ -3,9 +3,9 @@
 #   docker compose up -d --build        # 啟動（第一次或改了套件加 --build）
 #   本機開發時 .env 的 COMPOSE_FILE 會把 docker-compose.local.yml 疊上來：程式碼直接掛進容器，api、web 存檔就自動重載（見那個檔）
 #   docker compose ps                   # 看狀態
-#   docker compose logs -f celery-process   # 看 log（服務名稱見下面；log 檔另外存在 data/logs/）
+#   docker compose logs -f celery-transform   # 看 log（服務名稱見下面；log 檔另外存在 data/logs/）
 #   docker compose down                 # 停掉（資料留在 volume pgdata）
-#   docker compose run --rm producer python main.py                       # 跑一次每日資料線（抓 → 整理 → 計算）
+#   docker compose run --rm producer python main.py                       # 跑一次每日資料線（抓 → 整理 → 計算 → AI）
 #   docker compose run --rm producer python main.py backfill --start 20261101   # 回補
 #
 # 網址（本機）：
@@ -20,7 +20,7 @@
 # 帳號密碼沒在 .env 設的話用預設值（資料庫 postgres／postgres、RabbitMQ rabbitmq／rabbitmq），只適合本機開發；放上雲端一定要在 .env 設。
 # 不要用 docker compose down -v：-v 會連 volume 一起刪，資料庫就沒了。
 
-# 專案程式的共同設定：setup、api、web、producer、三個 Celery worker 都用同一個 image（Dockerfile），只是指令不同
+# 專案程式的共同設定：setup、api、web、producer、六個 Celery worker 都用同一個 image（Dockerfile），只是指令不同
 x-app: &app
   build: .
   image: attention-stock-tracker
@@ -118,11 +118,29 @@ services:
     command: ["celery", "-A", "common.worker", "worker", "-Q", "crawl_mops", "--concurrency", "1",
               "--hostname", "crawl_mops@tw_stock", "--loglevel", "INFO"]
 
-  # transform、analyze：只讀寫自己的資料庫，同時做 4 個
-  celery-process:
+  # 新聞：FinMind 新聞清單、新聞網頁的 <head>（導言），一次只做一個，每個任務後等一下（FinmindJob、NewsDetailJob）
+  celery-crawl-finmind:
     <<: *celery
-    command: ["celery", "-A", "common.worker", "worker", "-Q", "process", "--concurrency", "4",
-              "--hostname", "process@tw_stock", "--loglevel", "INFO"]
+    command: ["celery", "-A", "common.worker", "worker", "-Q", "crawl_finmind", "--concurrency", "1",
+              "--hostname", "crawl_finmind@tw_stock", "--loglevel", "INFO"]
+
+  # transform（raw → stage）：只讀寫自己的資料庫，同時做 4 個
+  celery-transform:
+    <<: *celery
+    command: ["celery", "-A", "common.worker", "worker", "-Q", "transform", "--concurrency", "4",
+              "--hostname", "transform@tw_stock", "--loglevel", "INFO"]
+
+  # analyze（stage → app）：每天讀往前 30 個營業日，天和天之間互不依賴，同時做 2 個
+  celery-analyze:
+    <<: *celery
+    command: ["celery", "-A", "common.worker", "worker", "-Q", "analyze", "--concurrency", "2",
+              "--hostname", "analyze@tw_stock", "--loglevel", "INFO"]
+
+  # AI（ai/）：呼叫 Claude API，同時做 2 個（API 有每分鐘的次數限制）；金鑰 ANTHROPIC_API_KEY 從 .env 讀
+  celery-ai:
+    <<: *celery
+    command: ["celery", "-A", "common.worker", "worker", "-Q", "ai", "--concurrency", "2",
+              "--hostname", "ai@tw_stock", "--loglevel", "INFO"]
 
   # Flower：網頁上看 worker、任務的執行狀況（帳號密碼和上面的 RabbitMQ 同一組）
   flower:
@@ -151,7 +169,13 @@ services:
         condition: service_started
       celery-crawl-mops:
         condition: service_started
-      celery-process:
+      celery-crawl-finmind:
+        condition: service_started
+      celery-transform:
+        condition: service_started
+      celery-analyze:
+        condition: service_started
+      celery-ai:
         condition: service_started
 
   # ---------- 網站 ----------

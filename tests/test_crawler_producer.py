@@ -1,6 +1,8 @@
-"""crawler/producer.py 決定要抓哪些重大訊息：用記憶體裡的假 raw 表（raw_store），不連網路、不連資料庫。執行：uv run pytest"""
+"""crawler/producer.py 決定要抓哪些重大訊息、新聞：用記憶體裡的假 raw 表（raw_store），不連網路、不連資料庫。執行：uv run pytest"""
 import pytest
 
+from common import repository
+from common.hash_utils import url_md5
 from crawler import client
 from crawler import producer as pc
 
@@ -129,3 +131,33 @@ def test_detail_refetch_includes_fetched(raw_store):
     assert keys(pc.build_detail_jobs("20261113", "20261113")) == []
     assert keys(pc.build_detail_jobs("20261113", "20261113", refetch=True)) == [("2330", "20261102", 1, "t05st01_detail")]
 
+
+# ---------- 新聞（第四、五批）----------
+def test_news_targets_look_back_for_watched_companies(raw_store, monkeypatch):
+    """被關注的上市公司：那天和往前 NEWS_LOOKBACK_DAYS 天各抓一次；ETF（0050）不抓。"""
+    monkeypatch.setattr(pc, "NEWS_LOOKBACK_DAYS", 2)
+    setup_day(raw_store)
+    assert keys(pc.build_stock_news_jobs("20261113", "20261113")) == [("2330", "20261111"), ("2330", "20261112"), ("2330", "20261113")]
+
+
+def test_news_complete_after_next_morning_8am(raw_store, monkeypatch):
+    """FinMind 的一天是 UTC（台灣時間 08:00 到隔天 08:00）：隔天 08:00 以後抓的才算完整，之前抓的要再抓。"""
+    monkeypatch.setattr(pc, "NEWS_LOOKBACK_DAYS", 1)
+    setup_day(raw_store)
+    raw_store.put("stock_news", "2330_20261112", {"data": []}, fetched_at="2026-11-13T08:30:00+08:00")   # 隔天 08:30：完整
+    raw_store.put("stock_news", "2330_20261113", {"data": []}, fetched_at="2026-11-14T07:00:00+08:00")   # 隔天 07:00：還沒
+    assert keys(pc.build_stock_news_jobs("20261113", "20261113")) == [("2330", "20261113")]
+    assert len(pc.build_stock_news_jobs("20261113", "20261113", refetch=True)) == 2
+
+
+def test_news_detail_jobs_from_stock_news(raw_store, monkeypatch):
+    """新聞清單裡的每個連結打開一次：論壇貼文不抓、抓過的（成功、永久失敗）不再抓、好幾檔共用的連結只抓一次。"""
+    monkeypatch.setattr(pc, "NEWS_LOOKBACK_DAYS", 0)
+    setup_day(raw_store)
+    raw_store.put("notice", "20261113", {"data": [["1", "2330"], ["2", "2317"]]})
+    raw_store.put("stock_news", "2330_20261113", {"data": [
+        {"link": "https://udn.com/1"}, {"link": "https://www.cmoney.tw/forum/article/9"}, {"link": "https://ltn.com.tw/2"}]})
+    raw_store.put("stock_news", "2317_20261113", {"data": [{"link": "https://udn.com/1"}, {"link": "https://ctee.com.tw/3"}]})
+    monkeypatch.setattr(repository, "raw_keys_done", lambda source: {url_md5("https://ltn.com.tw/2")})
+    assert [kw["link"] for _, kw in pc.build_news_detail_jobs("20261113", "20261113")] == ["https://ctee.com.tw/3", "https://udn.com/1"]
+    assert len(pc.build_news_detail_jobs("20261113", "20261113", refetch=True)) == 3   # --refetch：抓過的也重開

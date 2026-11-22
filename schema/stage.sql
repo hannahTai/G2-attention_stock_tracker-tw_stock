@@ -299,3 +299,60 @@ INSERT INTO stage_announcement_clause (announce_clause, clause_no, short_name, d
     ('第51款', 51, '其他重大事項', '其他董事會決議的重大決策，或對股東權益、證券價格有重大影響的事（概括條款）')
 ON CONFLICT (announce_clause) DO UPDATE SET clause_no = EXCLUDED.clause_no, short_name = EXCLUDED.short_name,
     description = EXCLUDED.description, loaded_at = LOCALTIMESTAMP(0);
+
+-- 新聞（資料來源：FinMind TaiwanStockNews 的新聞清單）：一則一列；好幾檔都有的新聞也只有一列
+CREATE TABLE IF NOT EXISTS stage_news (
+    news_id           CHAR(32)     NOT NULL,
+    link              TEXT         NOT NULL,
+    news_time         TIMESTAMP(0) NOT NULL,
+    news_date         DATE         NOT NULL,
+    publisher         VARCHAR(50),
+    title             TEXT         NOT NULL,
+    loaded_at         TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
+    source_fetched_at TIMESTAMP(6),
+    PRIMARY KEY (news_id),
+    CONSTRAINT stage_news_id_is_md5 CHECK (news_id = md5(link))   -- transform 用 Python 算，這裡確認和資料庫算的一樣
+);
+CREATE INDEX IF NOT EXISTS idx_stage_news_date ON stage_news (news_date);
+COMMENT ON TABLE stage_news IS '新聞（資料來源：FinMind 新聞清單）：標題、連結、媒體、時間，不存內文';
+COMMENT ON COLUMN stage_news.news_id IS '新聞代號：md5(link)，連結太長（最長好幾百字）不好當主鍵';
+COMMENT ON COLUMN stage_news.link IS '新聞連結（Google 新聞的轉址連結可能好幾百字）';
+COMMENT ON COLUMN stage_news.news_time IS '新聞時間（台灣時間；FinMind 給的是 UTC，整理時轉成台灣時間）';
+COMMENT ON COLUMN stage_news.news_date IS '新聞日期（台灣時間）';
+COMMENT ON COLUMN stage_news.publisher IS '發布的媒體，例如 自由時報、CMoney（FinMind 的 source 欄）';
+COMMENT ON COLUMN stage_news.title IS '標題（去掉結尾的「 - 媒體」）';
+COMMENT ON COLUMN stage_news.loaded_at IS '寫入時間（台灣時間）';
+COMMENT ON COLUMN stage_news.source_fetched_at IS '來自哪次抓取（raw 的 fetched_at）；寫入時只讓比較新的覆蓋';
+
+-- 哪檔有哪則新聞（資料來源：FinMind；一檔一檔查，同一則新聞出現在好幾檔就好幾列）
+CREATE TABLE IF NOT EXISTS stage_stock_news (
+    stock_id          VARCHAR(10)  NOT NULL,
+    news_id           CHAR(32)     NOT NULL,
+    loaded_at         TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
+    source_fetched_at TIMESTAMP(6),
+    PRIMARY KEY (stock_id, news_id)
+);
+COMMENT ON TABLE stage_stock_news IS '哪檔有哪則新聞（資料來源：FinMind；新聞本身在 stage_news）';
+COMMENT ON COLUMN stage_stock_news.stock_id IS '證券代號';
+COMMENT ON COLUMN stage_stock_news.news_id IS '新聞代號（stage_news.news_id）';
+COMMENT ON COLUMN stage_stock_news.loaded_at IS '寫入時間（台灣時間）';
+COMMENT ON COLUMN stage_stock_news.source_fetched_at IS '來自哪次抓取（raw 的 fetched_at）；寫入時只讓比較新的覆蓋';
+
+-- 新聞網頁（資料來源：新聞網站本身，打開每則新聞的連結；raw_news_detail 只存 <head>）：導言、全文有幾個字
+-- 抓不到的（被擋、轉址）沒有列，原因在 raw_news_detail.problem
+CREATE TABLE IF NOT EXISTS stage_news_detail (
+    news_id           CHAR(32)     NOT NULL,
+    final_url         TEXT,
+    lead              TEXT,
+    text_chars        INT,
+    loaded_at         TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
+    source_fetched_at TIMESTAMP(6),
+    PRIMARY KEY (news_id)
+);
+COMMENT ON TABLE stage_news_detail IS '新聞網頁（資料來源：新聞網站本身）：導言（meta 摘要）、全文有幾個字（全文不存）';
+COMMENT ON COLUMN stage_news_detail.news_id IS '新聞代號（stage_news.news_id）';
+COMMENT ON COLUMN stage_news_detail.final_url IS '轉址後實際打開的網址';
+COMMENT ON COLUMN stage_news_detail.lead IS '導言：網頁 <head> 的 meta 摘要（og:description、description），新聞網站自己寫的一兩句；有些網站每則都放同一句網站介紹，app_stock_news 會排除';
+COMMENT ON COLUMN stage_news_detail.text_chars IS '抽出來的全文有幾個字（全文本身不存）；抽不到為 NULL';
+COMMENT ON COLUMN stage_news_detail.loaded_at IS '寫入時間（台灣時間）';
+COMMENT ON COLUMN stage_news_detail.source_fetched_at IS '來自哪次抓取（raw 的 fetched_at）；寫入時只讓比較新的覆蓋';

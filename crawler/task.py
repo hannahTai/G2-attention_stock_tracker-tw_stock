@@ -5,12 +5,15 @@
     2. key：這份存成哪個 raw_key（要檢查內容的，多一行 problem = client.xxx_problem(...)）
     3. return repository.save_raw(來源, key, resp)：成功、失敗都存；失敗的存完丟 FetchError
 這裡不整理資料：原文先存進 raw 表，整理在 transform/task.py 做（ELT）。
+例外：crawl_news_detail 不存整份回應（<body> 就是新聞全文，不存進資料庫），只存 <head> 和全文有幾個字。
 任務的輸入都是字串、數字，不依賴其他任務。
-每個函式都用 @app.task 註冊成 Celery 任務（見 common/worker.py）：證交所的用 TwseJob、觀測站的用 MopsJob，做完等一下再拿下一個。
+每個函式都用 @app.task 註冊成 Celery 任務（見 common/worker.py）：證交所的用 TwseJob、觀測站的用 MopsJob、FinMind 的用 FinmindJob、
+新聞網站的用 NewsDetailJob，做完等一下再拿下一個。
 """
 from common import repository
 from common.date_utils import today_yyyymmdd
-from common.worker import MopsJob, TwseJob, app
+from common.hash_utils import url_md5
+from common.worker import FinmindJob, MopsJob, NewsDetailJob, TwseJob, app
 from crawler import client
 
 
@@ -95,3 +98,45 @@ def crawl_announcement_detail(stock_id: str, enter_yyyymmdd: str, serial_number:
     key = f"{stock_id}_{enter_yyyymmdd}_{serial_number}"
     problem = client.announcement_detail_problem(repository.parse_body(resp.text))
     return repository.save_raw("announcement_detail", key, resp, problem)
+
+
+# ---------- FinMind ----------
+@app.task(base=FinmindJob)
+def crawl_stock_news(stock_id: str, date_yyyymmdd: str) -> str:
+    """個股新聞：一檔一天 → raw_stock_news（key 2330_20261120）。FinMind 回傳的 status 不是 200 就當失敗。"""
+    resp = client.fetch_stock_news(stock_id, date_yyyymmdd)
+    key = f"{stock_id}_{date_yyyymmdd}"
+    problem = client.stock_news_problem(repository.parse_body(resp.text))
+    return repository.save_raw("stock_news", key, resp, problem)
+
+
+# ---------- 新聞網站 ----------
+@app.task(base=NewsDetailJob)
+def crawl_news_detail(link: str) -> str:
+    """一則新聞的網頁 → raw_news_detail（key＝news_id，也就是 md5(link)）。
+
+    只存 <head>（標題、meta 摘要）、轉址後的網址、全文有幾個字；<body> 就是新聞全文，不存資料庫（著作權），
+    全文只在記憶體裡抽（之後 ② 在這裡轉向量）。
+    永久的失敗（轉址抓不到、被擋 4xx、不是網頁、解析不出來）也存一列（ok＝否），之後不再抓；
+    不算任務失敗：新聞網站常擋，不該讓每天的資料線失敗。
+    暫時性的失敗：HTTP 5xx、429 存完丟 FetchError 重試；逾時、連線失敗沒有回應可存，requests 的錯誤直接丟出去（會重試）。
+    """
+    key = url_md5(link)   # news_id
+    problem = client.unreachable_link_problem(link)
+    if problem:
+        return f"{repository.save_raw_record('news_detail', key, url=link, http_status=None, body={}, problem=problem)}：{problem}"
+
+    resp = client.fetch_news_detail(link)
+    body = {"final_url": resp.url, "content_type": resp.headers.get("Content-Type", "")}
+    problem = client.news_detail_problem(resp)
+    if problem is None:
+        try:
+            body["head"] = client.news_detail_head(resp.content)
+            text = client.news_detail_text(resp.content)   # 全文用完就丟
+            body["text_chars"] = len(text) if text else None
+        except Exception as e:   # 網頁太怪、解析器出錯：記下來，不要每一輪都重抓
+            problem = f"解析失敗：{type(e).__name__}"
+    where = repository.save_raw_record("news_detail", key, url=link, http_status=resp.status_code, body=body, problem=problem)
+    if problem and repository.is_temporary_status(resp.status_code):
+        raise repository.FetchError(f"news_detail {key} 抓取失敗（{problem}），回應已存到 {where}", retryable=True)
+    return f"{where}：{problem}（不再抓）" if problem else f"{where}：全文 {body['text_chars'] or 0} 字"

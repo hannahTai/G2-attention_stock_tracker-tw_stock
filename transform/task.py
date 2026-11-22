@@ -17,7 +17,8 @@ from transform import transformer
 from transform.parsing import fetched_at
 from transform.transformer import STAGE_KEYS
 
-# 每張 stage 表都有這個欄位：這列來自哪次抓取（raw 的 fetched_at）。寫入時用它比新舊，只讓比較新的覆蓋，
+# 每張 stage 表都有這個欄位（固定資料的 stage_announcement_clause 除外）：
+# 這列來自哪次抓取（raw 的 fetched_at）。寫入時用它比新舊，只讓比較新的覆蓋，
 # 好幾個 worker、好幾輪同時整理，誰先寫完都一樣
 STAGE_VERSION_COLUMN = "source_fetched_at"
 
@@ -179,4 +180,32 @@ def transform_announcement_detail(stock_id: str, enter_yyyymmdd: str, serial_num
     if raw is None:
         return skipped("announcement_detail", key)
     tables = {"stage_announcement_detail": transformer.clean_announcement_detail(transformer.announcement_detail_to_frame(raw))}
+    return save(raw, tables)
+
+
+# ---------- FinMind ----------
+@app.task(base=Job)
+def transform_stock_news(stock_id: str, date_yyyymmdd: str) -> str:
+    """一檔一天的新聞 → stage_news（新聞本身，主鍵 news_id＝md5(link)）、stage_stock_news（這檔有這則新聞）。
+
+    同一則新聞好幾檔都有：stage_news 只有一列，時間、標題以最新一次抓到的為準。
+    """
+    key = f"{stock_id}_{date_yyyymmdd}"
+    raw = repository.read_raw("stock_news", key)
+    if raw is None:
+        return skipped("stock_news", key)
+    news, stock_news = transformer.clean_stock_news(transformer.stock_news_to_frame(raw))
+    tables = {"stage_news": news, "stage_stock_news": stock_news}
+    return save(raw, tables)
+
+
+# ---------- 新聞網站 ----------
+@app.task(base=Job)
+def transform_news_detail(news_id: str) -> str:
+    """一則新聞網頁（raw_news_detail 存的 <head>）→ stage_news_detail：導言（meta 摘要）、轉址後的網址、全文有幾個字。"""
+    key = news_id
+    raw = repository.read_raw("news_detail", key)
+    if raw is None:
+        return skipped("news_detail", key)
+    tables = {"stage_news_detail": transformer.clean_news_detail(transformer.news_detail_to_frame(raw))}
     return save(raw, tables)

@@ -1,12 +1,13 @@
-"""一次跑完整條資料線：crawler（API → raw）→ transform（raw → stage）→ analyze（stage → app）。
+"""一次跑完整條資料線：crawler（API → raw）→ transform（raw → stage）→ analyze（stage → app）→ ai（AI 項目）。
 
     python main.py                              # 只處理今天（daily）
     python main.py backfill --start 20260701        # 處理一段期間（可加 --end 20261031）
     python main.py backfill --start 20260701 --refetch  # 同上，crawler 已經抓完整的也重抓
 
-期間在這裡算一次（例如 backfill 沒給 --end 就是今天），再明確傳給三步：跑過午夜，三步的「今天」也一樣。
+期間在這裡算一次（例如 backfill 沒給 --end 就是今天），再明確傳給四步：跑過午夜，四步的「今天」也一樣。
 - crawler 有任務失敗：照樣往下跑。transform 會跳過沒抓到的 raw；analyze 會檢查需要的 stage，缺了那天就不算。
-- transform 有任務失敗（程式錯誤）：不跑 analyze。
+- transform 有任務失敗（程式錯誤）：不跑 analyze、ai。
+- ai 最後跑：失敗只影響 AI 的結果，網站照常。
 有任何一步失敗，最後結束代碼是 1。每一步也可以單獨執行，見 docs/flow.md。
 
 同一時間只跑一輪：開始前鎖住 data/pipeline.lock 這個檔案（作業系統的檔案鎖，不是資料庫）。
@@ -84,11 +85,12 @@ def run_pipeline(args: list[str]) -> None:
     crawler_code = run("crawler.producer", args)
     transform_code = run("transform.producer", args)
     if transform_code:
-        print("\ntransform 有任務失敗，不跑 analyze")
+        print("\ntransform 有任務失敗，不跑 analyze、ai")
         raise SystemExit(1)
     analyze_code = run("analyze.producer", args)
+    ai_code = run("ai.producer", args)
 
-    if crawler_code or analyze_code:
+    if crawler_code or analyze_code or ai_code:
         raise SystemExit(1)
 
 

@@ -1,12 +1,19 @@
 """repository 層：只負責把資料存進 PostgreSQL、從 PostgreSQL 讀回來，不知道資料從哪個 API 來、被整理過什麼。
 
   連線、建表   get_engine()、create_database()、drop_database()、create_tables()
-  raw 表       寫：save_raw()（只新增、不修改）
-               讀：read_raw()、read_raws()、list_raw_keys()、raw_fetched_times()（每個 raw_key 只看最新一份成功的）
+  raw 表       寫：save_raw()、save_raw_record()（只新增、不修改）
+               讀：read_raw()、read_raws()、list_raw_keys()、raw_fetched_times()（每個 raw_key 只看最新一份成功的）、
+                   raw_keys_done()（成功或永久失敗的，不用再抓）
+  查詢         query_rows()（AI 讀資料用）
   stage、app   insert_rows()、delete_where_in()、has_newer_rows()、upsert_rows()
   任務歷史     insert_job_run()（job_run 表，只新增）
+  一列寫入     insert_one()（任務一次寫一列：raw、ai_* 表）
+  AI（ai/）    讀：list_unlabeled_announcements()、read_announcement()、has_announcement_label()、
+                   list_unsummarized_news()、read_news()、has_news_summary()
+               寫：insert_announcement_label()、insert_news_summary()、save_llm_call()（ai_* 表只新增，不修改）
 
 寫入的函式都收 conn：呼叫的人用 `with get_engine().begin() as conn:` 開一個交易，全部成功才寫入。
+例外：任務一次只寫一列的（raw 表、ai_* 表、job_run）自己開交易——沒有別的寫入要跟它一起成功。
 連線設定從 .env 讀（見 config.py）。
 """
 import datetime
@@ -22,7 +29,7 @@ import sqlalchemy.dialects.postgresql
 from common import date_utils
 from common.config import DB_HOST, DB_NAME, DB_PASSWORD, DB_PORT, DB_USER, PROJECT_ROOT
 
-# 建表的 SQL 檔：schema/ 底下所有 .sql，依檔名執行（app → raw → stage → view；view 要用到 stage 表，排最後）
+# 建表的 SQL 檔：schema/ 底下所有 .sql，依檔名執行（ai → app → log → raw → stage → view；view 要用到 stage 表，排最後）
 SQL_FILES = sorted((PROJECT_ROOT / "schema").glob("*.sql"))
 
 # 每個資料庫裡的表都放在這個 schema；連線時設成 search_path，SQL 直接寫表名就找得到（也可以寫 tw_stock.<表名>）
@@ -30,7 +37,7 @@ SCHEMA = "tw_stock"
 
 # raw 表：一個來源一張，表名 raw_<來源>
 SOURCES = ("notice", "punish", "punish_watchlist", "market_daily", "stock_price", "holiday", "company", "announcement",
-           "announcement_detail")
+           "announcement_detail", "stock_news", "news_detail")
 RAW_COLUMNS = ["raw_key", "fetched_at", "http_status", "ok", "problem", "url", "request_body", "body"]
 
 
@@ -93,6 +100,15 @@ class FetchError(RuntimeError):
         self.retryable = retryable
 
 
+def is_temporary_status(status_code: int) -> bool:
+    """HTTP 狀態碼是暫時性的失敗（伺服器錯誤 5xx、請求太多 429）：等一下再試可能會好。
+
+    >>> is_temporary_status(503), is_temporary_status(429), is_temporary_status(404)
+    (True, True, False)
+    """
+    return status_code >= 500 or status_code == 429
+
+
 def raw_table_name(source: str) -> str:
     """來源 → 表名，例如 notice → raw_notice。只接受 SOURCES 裡的來源（表名會拼進 SQL）。"""
     if source not in SOURCES:
@@ -121,10 +137,7 @@ def insert_raw_row(source: str, raw_key: str, *, fetched_at: datetime.datetime, 
         "request_body": request_body,
         "body": body,
     }
-    columns = ", ".join(RAW_COLUMNS)
-    values = ", ".join(f":{c}" for c in RAW_COLUMNS)
-    with get_engine().begin() as conn:
-        conn.execute(sqlalchemy.text(f"INSERT INTO {raw_table_name(source)} ({columns}) VALUES ({values})"), row)
+    insert_one(raw_table_name(source), row)
 
 
 def save_raw(source: str, raw_key: str, resp: requests.Response, problem: str | None = None) -> str:
@@ -145,9 +158,21 @@ def save_raw(source: str, raw_key: str, resp: requests.Response, problem: str | 
 
     where = f"{raw_table_name(source)}/{raw_key}"
     if not ok:
-        retryable = problem is None and (resp.status_code >= 500 or resp.status_code == 429)   # 內容不對的，重試也一樣
+        retryable = problem is None and is_temporary_status(resp.status_code)   # 內容不對的，重試也一樣
         raise FetchError(f"{source} {raw_key} 抓取失敗（{reason}），回應已存到 {where}", retryable)
     return where
+
+
+def save_raw_record(source: str, raw_key: str, *, url: str, http_status: int | None, body: dict,
+                    problem: str | None = None) -> str:
+    """不是整份回應原樣存的（新聞網頁：只存 <head>，見 crawler/task.py 的 crawl_news_detail）：body 自己組好再存，回傳存到哪裡。
+
+    problem：有給就存成失敗（ok＝否）。和 save_raw 不同，失敗不丟錯誤，要不要重試由呼叫的人決定。
+    http_status：沒打（例如轉址連結）為 None。
+    """
+    insert_raw_row(source, raw_key, fetched_at=date_utils.now(), http_status=http_status, ok=problem is None,
+                   problem=problem, url=url, request_body=None, body=json.dumps(body, ensure_ascii=False))
+    return f"{raw_table_name(source)}/{raw_key}"
 
 
 # ---------- raw 表：讀（每個 raw_key 只看最新一份成功的）----------
@@ -207,6 +232,22 @@ def raw_fetched_times(source: str) -> dict[str, datetime.datetime]:
         rows = conn.execute(sqlalchemy.text(
             f"SELECT raw_key, MAX(fetched_at) AS fetched_at FROM {raw_table_name(source)} WHERE ok GROUP BY raw_key"))
         return {row.raw_key: row.fetched_at for row in rows}
+
+
+def raw_keys_done(source: str) -> set[str]:
+    """不用再抓的 raw_key：有成功的，或失敗但不是暫時性的（被擋 4xx、轉址抓不到、不是網頁；HTTP 5xx、429 下次再試）。"""
+    with get_engine().connect() as conn:
+        rows = conn.execute(sqlalchemy.text(
+            f"SELECT DISTINCT raw_key FROM {raw_table_name(source)} "
+            "WHERE ok OR NOT (COALESCE(http_status, 0) >= 500 OR COALESCE(http_status, 0) = 429)"))   # 沒打的 NULL 算永久
+        return {row.raw_key for row in rows}
+
+
+# ---------- 查詢 ----------
+def query_rows(sql: str, params: dict) -> list:
+    """執行一句 SELECT，回傳每一列（row.欄位 取值）。AI 讀 stage 用。"""
+    with get_engine().connect() as conn:
+        return conn.execute(sqlalchemy.text(sql), params).fetchall()
 
 
 # ---------- stage、app 表 ----------
@@ -279,3 +320,109 @@ def insert_job_run(row: dict) -> None:
         "VALUES (:task, CAST(:args AS JSONB), :status, :result, :error, :attempt, :mode, :worker, :started_at, :finished_at, :seconds)")
     with get_engine().begin() as conn:
         conn.execute(statement, {**row, "args": json.dumps(row["args"], ensure_ascii=False, default=str)})
+
+
+# ---------- 一列寫入（任務一次寫一列）----------
+# 表名會拼進 SQL：只接受 raw 表和這些
+ONE_ROW_TABLES = ("ai_llm_call", "ai_announcement_label", "ai_news_summary")
+
+
+def insert_one(table: str, row: dict, on_conflict: str = "") -> None:
+    """新增一列，自己開一個交易（任務一次只寫一列，沒有別的寫入要跟它一起成功）。
+
+    on_conflict：主鍵撞到時怎麼辦，例如 "ON CONFLICT (...) DO NOTHING"；沒給就是一般 INSERT（撞到會報錯）。
+    """
+    if table not in ONE_ROW_TABLES and table not in {raw_table_name(s) for s in SOURCES}:
+        raise ValueError(f"insert_one 不寫這張表：{table}")
+    columns = ", ".join(row)
+    values = ", ".join(f":{c}" for c in row)
+    with get_engine().begin() as conn:
+        conn.execute(sqlalchemy.text(f"INSERT INTO tw_stock.{table} ({columns}) VALUES ({values}) {on_conflict}"), row)
+
+
+# ---------- AI（ai/）----------
+def list_unlabeled_announcements(start: datetime.date, end: datetime.date, prompt_version: str) -> list[tuple[str, datetime.date, int]]:
+    """這個 prompt 版本還沒分類、已經有全文的公告：(公司, 輸入日期, 序號)。
+
+    範圍：區間內發言的，加上全文在區間內才寫進來的（新被關注的公司，crawler 會補抓當月和上個月的公告，發言日期比較早）。
+    """
+    rows = query_rows(
+        "SELECT a.company_id, a.enter_date, a.serial_number "
+        "FROM tw_stock.stage_announcement a "
+        "JOIN tw_stock.stage_announcement_detail d USING (company_id, enter_date, serial_number) "
+        "WHERE (a.announce_date BETWEEN :start AND :end OR CAST(d.loaded_at AS DATE) BETWEEN :start AND :end) "
+        "  AND NOT EXISTS (SELECT 1 FROM tw_stock.ai_announcement_label l "
+        "                  WHERE (l.company_id, l.enter_date, l.serial_number) = (a.company_id, a.enter_date, a.serial_number) "
+        "                    AND l.prompt_version = :version) "
+        "ORDER BY a.announce_date, a.company_id, a.enter_date, a.serial_number",
+        {"start": start, "end": end, "version": prompt_version})
+    return [(row.company_id, row.enter_date, row.serial_number) for row in rows]
+
+
+def read_announcement(company_id: str, enter_date: datetime.date, serial_number: int) -> dict | None:
+    """一則公告：主旨、發言日期、符合條款（含簡稱）、事實發生日、全文。還沒有全文就回傳 None。"""
+    rows = query_rows(
+        "SELECT a.company_id, a.company_name, a.announce_date, a.subject, "
+        "       d.announce_clause, c.short_name AS clause_name, d.fact_date, d.content "
+        "FROM tw_stock.stage_announcement a "
+        "JOIN tw_stock.stage_announcement_detail d USING (company_id, enter_date, serial_number) "
+        "LEFT JOIN tw_stock.stage_announcement_clause c ON c.announce_clause = d.announce_clause "
+        "WHERE a.company_id = :company_id AND a.enter_date = :enter_date AND a.serial_number = :serial_number",
+        {"company_id": company_id, "enter_date": enter_date, "serial_number": serial_number})
+    return rows[0]._asdict() if rows else None
+
+
+def has_announcement_label(company_id: str, enter_date: datetime.date, serial_number: int, prompt_version: str) -> bool:
+    """這則公告、這個 prompt 版本已經分類過了嗎（分類過就不再花錢問）。"""
+    return bool(query_rows(
+        "SELECT 1 FROM tw_stock.ai_announcement_label WHERE company_id = :company_id AND enter_date = :enter_date "
+        "AND serial_number = :serial_number AND prompt_version = :version",
+        {"company_id": company_id, "enter_date": enter_date, "serial_number": serial_number, "version": prompt_version}))
+
+
+def insert_announcement_label(row: dict) -> None:
+    """① 公告分類的結果新增一列（欄位見 schema/ai.sql）。同一則、同一版已經有了就不動（同一個任務被送了兩次）。"""
+    insert_one("ai_announcement_label", row, "ON CONFLICT (company_id, enter_date, serial_number, prompt_version) DO NOTHING")
+
+
+def list_unsummarized_news(start: datetime.date, end: datetime.date, prompt_version: str, min_text_chars: int) -> list[str]:
+    """這個 prompt 版本還沒摘要的新聞（news_id）：新聞日期在區間內、有抓到網頁、全文至少 min_text_chars 字。"""
+    rows = query_rows(
+        "SELECT n.news_id FROM tw_stock.stage_news n "
+        "JOIN tw_stock.stage_news_detail d USING (news_id) "
+        "WHERE n.news_date BETWEEN :start AND :end AND d.text_chars >= :min_chars "
+        "  AND NOT EXISTS (SELECT 1 FROM tw_stock.ai_news_summary s "
+        "                  WHERE s.news_id = n.news_id AND s.prompt_version = :version) "
+        "ORDER BY n.news_time, n.news_id",
+        {"start": start, "end": end, "min_chars": min_text_chars, "version": prompt_version})
+    return [row.news_id for row in rows]
+
+
+def read_news(news_id: str) -> dict | None:
+    """一則新聞：連結、標題、媒體、日期。不在 stage_news 就回傳 None。"""
+    rows = query_rows("SELECT news_id, link, title, publisher, news_date FROM tw_stock.stage_news WHERE news_id = :news_id",
+                      {"news_id": news_id})
+    return rows[0]._asdict() if rows else None
+
+
+def has_news_summary(news_id: str, prompt_version: str) -> bool:
+    """這則新聞、這個 prompt 版本已經摘要過了嗎（摘要過就不再花錢問）。"""
+    return bool(query_rows("SELECT 1 FROM tw_stock.ai_news_summary WHERE news_id = :news_id AND prompt_version = :version",
+                           {"news_id": news_id, "version": prompt_version}))
+
+
+def insert_news_summary(row: dict) -> None:
+    """新聞摘要的結果新增一列（欄位見 schema/ai.sql）。同一則、同一版已經有了就不動（同一個任務被送了兩次）。"""
+    insert_one("ai_news_summary", row, "ON CONFLICT (news_id, prompt_version) DO NOTHING")
+
+
+def save_llm_call(row: dict, problem: str | None = None) -> str:
+    """一次 LLM 呼叫記進 ai_llm_call，回傳記到哪裡；有問題的也記，記完丟 FetchError（和 save_raw 一樣）。
+
+    row：ai/client.py 的 call_record()。problem：ai/client.py 的 xxx_problem() 找到的問題（拒答、被截斷、不是 JSON），重問也一樣，不重試。
+    """
+    insert_one("ai_llm_call", {**row, "status": "failure" if problem else "success", "error": problem})
+    where = f"ai_llm_call/{row['ref_key']}"
+    if problem:
+        raise FetchError(f"{row['task']} {row['ref_key']} 失敗（{problem}），已記到 {where}", retryable=False)
+    return where

@@ -9,8 +9,9 @@ raw 沒抓到（crawler 失敗）的任務會自己跳過，不算失敗；要�
 """
 
 from common import cli, repository, runner
-from common.date_utils import dates_between, holiday_years, months_between, prev_month
-from transform import task
+from common.config import NEWS_LOOKBACK_DAYS
+from common.date_utils import dates_between, days_before, holiday_years, months_between, prev_month
+from transform import task, transformer
 
 
 def build_jobs(start: str, end: str) -> list[tuple]:
@@ -38,6 +39,17 @@ def build_jobs(start: str, end: str) -> list[tuple]:
         if enter_yyyymmdd[:6] in detail_months:
             jobs.append((task.transform_announcement_detail,
                          {"stock_id": stock_id, "enter_yyyymmdd": enter_yyyymmdd, "serial_number": int(serial_number)}))
+    # 新聞：crawler 往前多抓 NEWS_LOOKBACK_DAYS 天，這裡也往前多整理那幾天
+    news_from = days_before(start, NEWS_LOOKBACK_DAYS)
+    news_keys = [key for key in repository.list_raw_keys("stock_news")      # 例如 2330_20261120
+                 if news_from <= key.split("_")[1] <= end]
+    for key in news_keys:
+        stock_id, date_yyyymmdd = key.split("_")
+        jobs.append((task.transform_stock_news, {"stock_id": stock_id, "date_yyyymmdd": date_yyyymmdd}))
+    # 新聞網頁：這些新聞裡有抓到網頁的（raw_news_detail 的 key 是 news_id）
+    pages = set(repository.list_raw_keys("news_detail"))
+    news_ids = {i for raw in repository.read_raws("stock_news", news_keys) for i in transformer.stock_news_ids(raw)}
+    jobs += [(task.transform_news_detail, {"news_id": i}) for i in sorted(news_ids & pages)]
     return jobs
 
 
@@ -45,7 +57,7 @@ def main() -> None:
     args = cli.parse_args()   # daily：今天；backfill：--start～--end
     repository.create_tables()   # 建表（已經有就跳過）
 
-    failed = runner.run_jobs(build_jobs(args.start, args.end))
+    failed = runner.run_jobs(build_jobs(args.start, args.end), queue="transform")
     runner.finish(failed)
 
 

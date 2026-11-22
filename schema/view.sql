@@ -1,10 +1,10 @@
--- app 層的 VIEW（表名開頭 app_）：網頁只讀 app_*，需要的 stage 欄位從這裡拿
--- VIEW 是存起來的查詢，不複製資料，查的時候資料庫才去讀 stage 表，所以永遠是最新的
+-- app 層的 VIEW（表名開頭 app_）：網頁只讀 app_*，需要的 stage（和 ai）欄位從這裡拿
+-- VIEW 是存起來的查詢，不複製資料，查的時候資料庫才去讀 stage（和 ai）表，所以永遠是最新的
 -- 檔名排在 stage.sql 後面：create_tables() 依檔名順序執行，建 VIEW 時 stage 表已經在了
 -- 先 DROP 再 CREATE：重跑會用最新的定義蓋掉舊的，不影響資料
 -- （PostgreSQL 的 CREATE OR REPLACE VIEW 不能拿掉欄位、改欄位順序或型別，所以整個重建）
 
-DROP VIEW IF EXISTS app_card, app_trading_day, app_notice_history, app_punish_history, app_announcement;
+DROP VIEW IF EXISTS app_card, app_trading_day, app_notice_history, app_punish_history, app_announcement, app_stock_news;
 
 
 -- ---------- 卡片牆、個股頁最上面 ----------
@@ -171,3 +171,39 @@ LEFT JOIN stage_announcement_detail d
    AND d.serial_number = a.serial_number
 LEFT JOIN stage_announcement_clause c
     ON c.announce_clause = d.announce_clause;
+
+
+-- ---------- 新聞資訊 ----------
+-- 每檔每則新聞（stage_stock_news → stage_news），加上網頁的導言（stage_news_detail；還沒抓、抓不到的為 NULL）、
+-- AI 摘要（ai_news_summary；還沒摘要、沒通過檢查的為 NULL）
+-- 好幾則新聞共用同一句導言（富聯網的網站介紹、CMoney 個股概覽頁）不是這則新聞的內容，當成沒有
+CREATE VIEW app_stock_news AS
+SELECT
+    s.stock_id,
+    n.news_id,
+    n.news_time,
+    n.news_date,
+    n.publisher,
+    n.title,
+    n.link,
+    CASE WHEN shared.news_count >= 3 THEN NULL ELSE d.lead END AS lead,
+    summary.summary AS ai_summary
+FROM stage_stock_news s
+JOIN stage_news n
+    ON n.news_id = s.news_id
+LEFT JOIN stage_news_detail d
+    ON d.news_id = n.news_id
+LEFT JOIN (
+    SELECT lead, COUNT(*) AS news_count
+    FROM stage_news_detail
+    WHERE lead IS NOT NULL
+    GROUP BY lead
+) shared
+    ON shared.lead = d.lead
+LEFT JOIN LATERAL (   -- 最新一版、通過檢查的 AI 摘要
+    SELECT a.summary
+    FROM ai_news_summary a
+    WHERE a.news_id = n.news_id AND a.summary_ok
+    ORDER BY a.summarized_at DESC
+    LIMIT 1
+) summary ON TRUE;

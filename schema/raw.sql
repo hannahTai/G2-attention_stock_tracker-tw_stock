@@ -209,3 +209,51 @@ COMMENT ON COLUMN raw_announcement_detail.url IS '請求網址（含查詢參數
 COMMENT ON COLUMN raw_announcement_detail.request_body IS 'POST 的參數（JSON 字串）；GET 為 NULL';
 COMMENT ON COLUMN raw_announcement_detail.body IS 'API 回應原文（JSON 字串；被擋時可能是 HTML）';
 COMMENT ON COLUMN raw_announcement_detail.loaded_at IS '寫入時間（台灣時間）';
+
+CREATE TABLE IF NOT EXISTS raw_stock_news (
+    raw_key      VARCHAR(30) NOT NULL,
+    fetched_at   TIMESTAMP(6) NOT NULL,
+    http_status  SMALLINT    NOT NULL,
+    ok           BOOLEAN     NOT NULL,
+    problem      TEXT,
+    url          TEXT        NOT NULL,
+    request_body TEXT,
+    body         TEXT    NOT NULL,
+    loaded_at    TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
+    PRIMARY KEY (raw_key, fetched_at)
+);
+COMMENT ON TABLE raw_stock_news IS 'FinMind 個股新聞 TaiwanStockNews（一檔一天；只有標題、連結、來源、時間，沒有內文）';
+COMMENT ON COLUMN raw_stock_news.raw_key IS '證券代號_日期，例如 2330_20261120';
+COMMENT ON COLUMN raw_stock_news.fetched_at IS '抓取時間（台灣時間）';
+COMMENT ON COLUMN raw_stock_news.http_status IS 'HTTP 狀態碼';
+COMMENT ON COLUMN raw_stock_news.ok IS '成功且內容檢查通過；transform 只讀 ok 的列';
+COMMENT ON COLUMN raw_stock_news.problem IS '失敗原因；成功為 NULL';
+COMMENT ON COLUMN raw_stock_news.url IS '請求網址（含查詢參數；token 放在 header，不會出現在這裡）';
+COMMENT ON COLUMN raw_stock_news.request_body IS 'POST 的參數（JSON 字串）；GET 為 NULL';
+COMMENT ON COLUMN raw_stock_news.body IS 'API 回應原文（JSON 字串）';
+COMMENT ON COLUMN raw_stock_news.loaded_at IS '寫入時間（台灣時間）';
+
+-- 新聞網頁（crawl_news_detail）：不是整份回應原樣存——<body> 就是新聞全文，不存進資料庫（著作權）；
+-- body 是 crawl_news_detail 組的 JSON：<head>（標題、meta 摘要）、轉址後的網址、Content-Type、全文有幾個字
+CREATE TABLE IF NOT EXISTS raw_news_detail (
+    raw_key      VARCHAR(32) NOT NULL,
+    fetched_at   TIMESTAMP(6) NOT NULL,
+    http_status  SMALLINT,
+    ok           BOOLEAN     NOT NULL,
+    problem      TEXT,
+    url          TEXT        NOT NULL,
+    request_body TEXT,
+    body         TEXT    NOT NULL,
+    loaded_at    TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
+    PRIMARY KEY (raw_key, fetched_at)
+);
+COMMENT ON TABLE raw_news_detail IS '新聞網頁（資料來源：新聞網站本身，打開每則新聞的連結；只存 <head>，全文不存）';
+COMMENT ON COLUMN raw_news_detail.raw_key IS 'news_id：md5(link)，和 stage_news.news_id 一樣';
+COMMENT ON COLUMN raw_news_detail.fetched_at IS '抓取時間（台灣時間）';
+COMMENT ON COLUMN raw_news_detail.http_status IS 'HTTP 狀態碼；沒打（轉址連結）為 NULL';
+COMMENT ON COLUMN raw_news_detail.ok IS '成功且內容檢查通過；transform 只讀 ok 的列';
+COMMENT ON COLUMN raw_news_detail.problem IS '失敗原因（HTTP 403、不是網頁、轉址連結）；成功為 NULL。5xx、429 下次再抓，其他的不再抓';
+COMMENT ON COLUMN raw_news_detail.url IS '新聞連結';
+COMMENT ON COLUMN raw_news_detail.request_body IS '都是 GET，為 NULL';
+COMMENT ON COLUMN raw_news_detail.body IS 'JSON：head（<head> 原文）、final_url、content_type、text_chars（全文有幾個字，全文本身不存）';
+COMMENT ON COLUMN raw_news_detail.loaded_at IS '寫入時間（台灣時間）';

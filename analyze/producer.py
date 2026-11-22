@@ -21,7 +21,7 @@ def main() -> None:
     args = cli.parse_args()   # daily：今天；backfill：--start～--end
     repository.create_tables()   # 建表（已經有就跳過）
 
-    failed = runner.run_jobs(build_jobs(args.start, args.end))
+    failed = runner.run_jobs(build_jobs(args.start, args.end), queue="analyze")
     runner.finish(failed)
 
 

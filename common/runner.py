@@ -1,7 +1,7 @@
-"""三個 producer（crawler、transform、analyze）共用的任務執行方式。
+"""四個 producer（crawler、transform、analyze、ai）共用的任務執行方式。
 
-    failed = runner.run_jobs(jobs)              # 依序執行，回傳失敗的任務
-    failed = runner.run_jobs(jobs, sleep=1.0)   # crawler：每個任務之後再等一下（打 API 太快會被擋）
+    failed = runner.run_jobs(jobs, queue="transform")              # 依序執行（或送進佇列），回傳失敗的任務
+    failed = runner.run_jobs(jobs, sleep=1.0, queue="crawl_twse")   # crawler：每個任務之後再等一下（打 API 太快會被擋）
     runner.finish(failed)                       # 印出失敗清單；有失敗就結束代碼 1
 
 任務清單的每一項是 (任務函式, 參數 dict)，例如 (task.crawl_notice, {"date_yyyymmdd": "20261113"})。
@@ -12,6 +12,7 @@ USE_CELERY=1 時，同一批任務改成送進 RabbitMQ 給 worker 做：task.s(
 """
 import time
 
+import anthropic
 import requests
 import sqlalchemy
 
@@ -64,11 +65,14 @@ def is_retryable(error: Exception) -> bool:
 
     - 逾時、連線失敗（requests 的錯誤）
     - API 回 5xx、429（repository.FetchError 標成 retryable）
+    - Claude API 回 429、5xx、連線失敗（anthropic 的錯誤；ai/ 的任務）
     - 資料庫鎖衝突（好幾個 worker 同時寫，見 LOCK_ERRORS）
     內容不對、被擋（回 HTML）重試也一樣，不重試；太快重打反而更容易被擋。
     """
-    if isinstance(error, requests.RequestException):
+    if isinstance(error, (requests.RequestException, anthropic.RateLimitError, anthropic.APIConnectionError)):
         return True
+    if isinstance(error, anthropic.APIStatusError):
+        return error.status_code >= 500
     if isinstance(error, sqlalchemy.exc.OperationalError):
         return getattr(error.orig, "sqlstate", None) in LOCK_ERRORS
     return getattr(error, "retryable", False)
@@ -92,13 +96,16 @@ def run_with_retry(func, kwargs: dict, retries: int) -> str:
             return result
 
 
-def run_jobs(jobs: list[tuple], sleep: float = 0.0, retries: int = MAX_RETRIES, queue: str = "process") -> list[str]:
+def run_jobs(jobs: list[tuple], sleep: float = 0.0, retries: int = MAX_RETRIES, queue: str | None = None) -> list[str]:
     """執行一批任務，回傳失敗的任務名稱。
 
     sleep：每個任務之後等幾秒（打 API 太快會被擋）。retries：暫時性的失敗重試幾次（見 is_retryable）。
-    queue：USE_CELERY=1 時送到哪個佇列（crawl_twse、crawl_mops、process，見 common/worker.py）；沒開就在這裡依序執行。
+    queue：USE_CELERY=1 時送到哪個佇列（crawl_twse、crawl_mops、crawl_finmind、transform、analyze、ai，見 common/worker.py），
+    一定要給；沒開就在這裡依序執行，不用給。
     """
     if USE_CELERY:
+        if queue is None:
+            raise ValueError("USE_CELERY=1 要指定 queue（見 common/worker.py）")
         return run_jobs_on_workers(jobs, queue)
     failed = []
     for func, kwargs in jobs:

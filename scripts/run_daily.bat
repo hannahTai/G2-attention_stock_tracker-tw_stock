@@ -1,7 +1,7 @@
 @echo off
-rem Daily job: crawler (API -> raw) -> transform (raw -> stage) -> analyze (stage -> app), today only.
+rem Daily job: crawler (API -> raw) -> transform (raw -> stage) -> analyze (stage -> app) -> ai (LLM -> ai_* tables), today only.
 rem Runs main.py: a crawler failure does not stop the later steps (analyze checks its own inputs);
-rem a transform failure skips analyze.
+rem a transform failure skips analyze and ai.
 rem Called by Windows Task Scheduler; output is appended to data\logs\daily-YYYY-MM-DD.log
 rem (one file per day, files older than 30 days are deleted; same naming as the Celery worker logs, see common\logs.py)
 rem (Comments are in English on purpose: cmd may misread UTF-8 Chinese in .bat files.)

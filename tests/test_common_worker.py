@@ -2,17 +2,21 @@
 
 在 worker 上執行用 task.apply()（在本機照 worker 的方式跑一次）；送進佇列用假的 apply_async 代替。
 """
+import types
+
 import celery.canvas
 import pytest
 import requests
 
+from analyze import producer as analyze_producer
 from common import config, runner, worker
 from crawler import task as crawler_task
+from transform import producer as transform_producer
 
 
 def test_every_task_is_registered_by_module_and_name():
     """Flower、RabbitMQ 上看到的任務名稱＝模組.函式。"""
-    worker.app.loader.import_default_modules()   # 和 worker 啟動時一樣，載入 include 的三個模組
+    worker.app.loader.import_default_modules()   # 和 worker 啟動時一樣，載入 include 的四個模組
     names = set(worker.app.tasks)
     assert {"crawler.task.crawl_notice", "crawler.task.crawl_announcement_detail",
             "transform.task.transform_notice", "analyze.task.analyze_progress"} <= names
@@ -92,6 +96,26 @@ def test_run_jobs_sends_to_queue_and_collects_failures(monkeypatch):
     assert failed == ["crawl_notice(date_yyyymmdd='20261119')"]
     assert sent == [("crawler.task.crawl_notice", {"date_yyyymmdd": "20261119"}, "crawl_twse"),
                     ("crawler.task.crawl_notice", {"date_yyyymmdd": "20261120"}, "crawl_twse")]
+
+
+def test_run_jobs_on_workers_needs_a_queue(monkeypatch):
+    """USE_CELERY=1 沒指定佇列：直接報錯，不會送到沒有 worker 在聽的佇列、一直等下去。"""
+    monkeypatch.setattr(runner, "USE_CELERY", True)
+    with pytest.raises(ValueError, match="要指定 queue"):
+        runner.run_jobs([(crawler_task.crawl_notice, {"date_yyyymmdd": "20261120"})])
+
+
+def test_transform_and_analyze_use_their_own_queues(monkeypatch):
+    """transform、analyze 各自一個佇列（各一個 worker）。"""
+    queues = []
+    monkeypatch.setattr(runner, "run_jobs", lambda jobs, queue=None, **kw: queues.append(queue) or [])
+    for producer, name in ((transform_producer, "transform"), (analyze_producer, "analyze")):
+        monkeypatch.setattr(producer.repository, "create_tables", lambda: None)
+        monkeypatch.setattr(producer, "build_jobs", lambda start, end: [])
+        monkeypatch.setattr(producer.cli, "parse_args", lambda: types.SimpleNamespace(start="20261120", end="20261120"))
+        monkeypatch.setattr(producer.runner, "finish", lambda failed: None)
+        producer.main()
+    assert queues == ["transform", "analyze"]
 
 
 # ---------- 任務歷史（job_run）----------

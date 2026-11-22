@@ -18,6 +18,7 @@ import sqlalchemy
 from analyze import task as analyze_task
 from common import repository, runner
 from common.config import DB_NAME, MAX_RETRIES
+from common.hash_utils import url_md5
 from tests.test_transform_transformer import (
     PUNISH_API_FIELDS, PUNISH_ROW, ROW_ANDES, ROW_TENGHUI, envelope,
 )
@@ -252,3 +253,78 @@ def test_analyze_needs_every_day_in_window(db):
     assert analyze_task.missing_inputs(datetime.date(2026, 10, 30)) == ["stage_notice_day/20261030"]  # 資料還沒開始
     with pytest.raises(RuntimeError, match="缺少必要的資料"):
         analyze_task.analyze_progress("20261106")
+
+
+# ---------- 新聞：raw_stock_news → stage_news、stage_stock_news；raw_news_detail → stage_news_detail ----------
+NEWS_LINK = "https://udn.com/news/1"
+
+
+def stock_news_raw(stock_id):
+    return {"msg": "success", "status": 200, "data": [
+        {"date": "2026-11-20 01:00:00", "stock_id": stock_id, "link": NEWS_LINK, "source": "UDN", "title": "台積電 - UDN"}]}
+
+
+def test_news_shared_by_two_stocks_joins_page_in_view(db):
+    """同一則新聞兩檔都有：stage_news 一列、stage_stock_news 兩列；網頁的導言接得上（Python 算的 news_id 過得了 CHECK）；重跑筆數不變。"""
+    put_raw("stock_news", "2330_20261120", stock_news_raw("2330"), "2026-11-21T09:00:00+08:00")
+    put_raw("stock_news", "2317_20261120", stock_news_raw("2317"), "2026-11-21T09:01:00+08:00")
+    page = {"final_url": NEWS_LINK, "content_type": "text/html",
+            "head": "<head><meta property='og:description' content='台積電第三季財報驚豔。'></head>", "text_chars": 500}
+    put_raw("news_detail", url_md5(NEWS_LINK), page, "2026-11-21T09:05:00+08:00")
+    for _ in range(2):
+        transform_task.transform_stock_news("2330", "20261120")
+        transform_task.transform_stock_news("2317", "20261120")
+        transform_task.transform_news_detail(url_md5(NEWS_LINK))
+
+    assert (count(db, "stage_news"), count(db, "stage_stock_news"), count(db, "stage_news_detail")) == (1, 2, 1)
+    with db.connect() as conn:
+        rows = conn.execute(sqlalchemy.text("SELECT stock_id, title, lead FROM app_stock_news ORDER BY stock_id")).all()
+    assert [tuple(r) for r in rows] == [("2317", "台積電", "台積電第三季財報驚豔。"), ("2330", "台積電", "台積電第三季財報驚豔。")]
+
+
+def test_news_detail_done_skips_permanent_failures_only(db):
+    """成功、被擋（403）、轉址（沒打）的不再抓；5xx 下次再試。"""
+    repository.save_raw_record("news_detail", "ok", url="u1", http_status=200, body={"head": ""})
+    repository.save_raw_record("news_detail", "blocked", url="u2", http_status=403, body={}, problem="HTTP 403")
+    repository.save_raw_record("news_detail", "redirect", url="u3", http_status=None, body={}, problem="轉址連結")
+    repository.save_raw_record("news_detail", "down", url="u4", http_status=503, body={}, problem="HTTP 503")
+    assert repository.raw_keys_done("news_detail") == {"ok", "blocked", "redirect"}
+
+
+def test_news_id_must_be_md5_of_link(db):
+    """news_id 和 link 對不上（例如有一邊忘了去空白）：CHECK 擋下，不會默默接不起來。"""
+    with pytest.raises(sqlalchemy.exc.IntegrityError, match="stage_news_id_is_md5"):
+        with db.begin() as conn:
+            conn.execute(sqlalchemy.text(
+                "INSERT INTO stage_news (news_id, link, news_time, news_date, title) VALUES (:news_id, :link, :t, :d, 't')"),
+                {"news_id": url_md5(NEWS_LINK + "x"), "link": NEWS_LINK, "t": V1, "d": V1.date()})
+
+
+# ---------- ai_*：只新增 ----------
+def test_announcement_label_inserted_twice_keeps_first(db):
+    """同一個任務被送了兩次：同一則、同一版只留第一次的結果，不報錯。"""
+    label = {"company_id": "6108", "enter_date": datetime.date(2026, 11, 14), "serial_number": 3, "prompt_version": "v2",
+             "category": "營運", "is_correction": False, "has_news": True, "summary": "第一次", "reason": "r",
+             "summary_ok": True, "model": "claude-haiku-5-5"}
+    repository.insert_announcement_label(label)
+    repository.insert_announcement_label({**label, "summary": "第二次"})
+    with db.connect() as conn:
+        assert conn.execute(sqlalchemy.text("SELECT summary FROM ai_announcement_label")).scalars().all() == ["第一次"]
+
+
+def test_news_summary_listed_once_and_shown_in_view(db):
+    """有網頁、全文夠長的新聞才列出來摘要；摘要過就不再列；通過檢查的摘要出現在 app_stock_news。"""
+    put_raw("stock_news", "2330_20261120", stock_news_raw("2330"), "2026-11-21T09:00:00+08:00")
+    put_raw("news_detail", url_md5(NEWS_LINK), {"final_url": NEWS_LINK, "head": "", "text_chars": 500}, "2026-11-21T09:05:00+08:00")
+    transform_task.transform_stock_news("2330", "20261120")
+    transform_task.transform_news_detail(url_md5(NEWS_LINK))
+    day = datetime.date(2026, 11, 20)
+    assert repository.list_unsummarized_news(day, day, "v1", 200) == [url_md5(NEWS_LINK)]
+    assert repository.list_unsummarized_news(day, day, "v1", 1000) == []   # 全文太短
+
+    row = {"news_id": url_md5(NEWS_LINK), "prompt_version": "v1", "summary": "台積電財報亮眼", "summary_ok": True, "model": "m"}
+    repository.insert_news_summary(row)
+    repository.insert_news_summary({**row, "summary": "第二次"})   # 同一版再寫一次：不動
+    assert repository.list_unsummarized_news(day, day, "v1", 200) == []
+    with db.connect() as conn:
+        assert conn.execute(sqlalchemy.text("SELECT ai_summary FROM app_stock_news")).scalar() == "台積電財報亮眼"

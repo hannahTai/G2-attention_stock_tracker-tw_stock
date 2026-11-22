@@ -4,11 +4,12 @@
 crawler    API        → raw_* 表     抓資料，存原文
 transform  raw_* 表   → stage_* 表   整理成表
 analyze    stage_* 表 → app_* 表     規則引擎算進度
+ai         stage_* 表 → ai_* 表     呼叫 LLM、存結果（① 公告分類、新聞摘要）
 ```
 
 ## 每天怎麼跑
 
-排程每天 21:00 執行 `main.py`，依序做三件事（期間在 `main.py` 算一次再傳給三步，跑過午夜也是同一段）。以注意股為例。表只有一張，前一步寫入、下一步讀取；讀寫都透過函式：
+排程每天 21:00 執行 `main.py`，依序做四件事（期間在 `main.py` 算一次再傳給四步，跑過午夜也是同一段）。以注意股為例。表只有一張，前一步寫入、下一步讀取；讀寫都透過函式：
 
 | 任務 | 讀 | 寫 |
 |---|---|---|
@@ -18,7 +19,7 @@ analyze    stage_* 表 → app_* 表     規則引擎算進度
 
 **1. crawler：抓資料**
 
-打證交所、觀測站的 API，每份回應原封不動寫入 raw_* 表（例：`crawl_notice` 寫入 `raw_notice`）。
+打證交所、觀測站、FinMind（新聞）的 API 和新聞網站，每份回應原封不動寫入 raw_* 表（例：`crawl_notice` 寫入 `raw_notice`；新聞網頁例外：只存 `<head>`，見下面）。
 
 - 某一份抓失敗（網路不穩、被擋）：記下來，繼續抓下一份，最後列出失敗清單。
 
@@ -35,6 +36,14 @@ analyze    stage_* 表 → app_* 表     規則引擎算進度
 
 - 開始算之前，先確認三張 stage 表今天都有一列：`stage_trading_day`（交易日）、`stage_notice_day`（注意股）、`stage_punish_day`（處置股）。少任何一張，算出來的進度會是錯的，所以今天不算。
 - 其他資料（重大訊息、公司清單等）只用在卡片顯示，少了不影響進度。
+
+**4. ai：AI 項目**
+
+只讀 stage 表、呼叫 LLM、把結果存進 ai_* 表。失敗只影響 AI 的結果，網站照常。
+
+- ① 公告分類：還沒分類、有全文的公告，每則一個任務 `classify_announcement` → `ai_announcement_label`。
+- 新聞摘要：有抓到網頁、全文夠長、還沒摘要的新聞，每則一個任務 `summarize_news` → `ai_news_summary`。
+- 沒設 `ANTHROPIC_API_KEY` 就整批跳過。
 
 **有失敗時怎麼查、怎麼補**
 
@@ -55,9 +64,10 @@ analyze    stage_* 表 → app_* 表     規則引擎算進度
    uv run python -m crawler.producer   backfill --start 20261113 --end 20261113   # 1. 抓資料（打 API）
    uv run python -m transform.producer backfill --start 20261113 --end 20261113   # 2. 整理資料
    uv run python -m analyze.producer   backfill --start 20261113 --end 20261113   # 3. 算離處置還差幾次
+   uv run python -m ai.producer        backfill --start 20261113 --end 20261113   # 4. AI 項目
    ```
 
-   例如 raw 都有抓到、只是 transform 出錯：修好程式後跑 2、3，不用重打 API。
+   例如 raw 都有抓到、只是 transform 出錯：修好程式後跑 2、3、4，不用重打 API（4 只問還沒分類、還沒摘要過的）。
 
    改了規則或 transform 之後要從 raw 重算一段期間：`scripts\run_rebuild.bat 20260701`（先跑測試，沒過就不動資料；再跑 2、3，不打 API；log 在 `data/rebuild.log`）。
 
@@ -74,14 +84,19 @@ analyze    stage_* 表 → app_* 表     規則引擎算進度
 | 注意累計名單 | `announcement/notetrans`（只有最新一份） | 一天 | 名單日期 |
 | 重大訊息 | 觀測站 `t05st01`（POST） | 一家一個月 | `1303_202611` |
 | 重大訊息全文 | 觀測站 `t05st01_detail`（POST；存託憑證 DR 是 `t59sb01_detail`，照清單上寫的打） | 一則公告 | `9908_20261102_1`（公司_輸入日期_序號） |
+| 個股新聞 | FinMind `TaiwanStockNews` | 一檔一天（UTC 的一天） | `2330_20261120` |
+| 新聞網頁 | 每則新聞的連結 | 一則新聞 | news_id＝連結的 md5，例如 `5583cdf4…`（只存 `<head>`，見下面） |
 
 - 先抓證交所，再查重大訊息：當天被關注的上市公司，查當月和上個月。
 - 最後查全文：重大訊息清單裡的每則公告查一次；全文不會變，抓過的不再抓。
+- 新聞同樣兩步，公司和重大訊息同一批（當天被關注的上市公司）：
+  - 新聞清單：每檔抓那天和往前 7 天（`.env` 的 `NEWS_LOOKBACK_DAYS`），第一次被關注的股票也有最近幾天的新聞。FinMind 的「一天」是 UTC（台灣時間那天 08:00 到隔天 08:00），隔天 08:00 以後抓的才算完整。回應的 `status` 不是 200（例如次數用完 402）存成失敗。
+  - 新聞網頁：清單裡每個連結打開一次 → `raw_news_detail`。不是整份原樣存：`<body>` 就是新聞全文，不存進資料庫（著作權），只存 `<head>`（標題、meta 摘要）、轉址後的網址、全文有幾個字；全文只在記憶體裡抽。論壇貼文（CMoney 股市爆料同學會）不抓。被擋、不是網頁、Google 轉址這類永久的失敗也存一列（`ok`＝0），之後不再抓（加 `--refetch` 才重開），也不算任務失敗（新聞網站常擋）；5xx、429 存完重試，逾時、連線失敗直接重試。
 - 開休市日期一年一份，抓過就不再抓；期間到了 11 月以後也抓下一年（證交所 11 月起公布）。颱風假不在裡面，是從市場成交看出來的。要重抓：`uv run python -c "from crawler import task; print(task.crawl_holiday(2026))"`。
 - 單一任務失敗不中斷，最後列出失敗清單。暫時性的失敗（逾時、連線失敗、HTTP 5xx、429）先等 5 秒重試，最多 3 次（`.env` 的 `MAX_RETRIES`、`RETRY_DELAY_SECONDS`）；內容不對、被擋不重試。
 - raw 只新增、不修改：同一個 raw_key 每抓一次多一列，成功、失敗都留（失敗的 `ok`＝0、`problem` 寫原因）；讀的時候只拿最新一份成功的，所以失敗不會蓋掉之前成功的。
 - 已經抓完整的不再抓（daily、backfill 都是）；加 `--refetch` 就全部重抓。「完整」＝在資料不會再變之後抓的：
-  - 注意股、處置股、收盤行情：那天 20:00 以後抓的（實測收盤後 17:30～17:45 才公布，留點緩衝）。20:00 以前抓的存成失敗（`還沒公布完整`）：那時回傳的空名單不是「沒人被列」。
+  - 注意股、處置股、收盤行情：那天 20:00 以後抓的（收盤後 17:30～17:45 才公布，留點緩衝）。20:00 以前抓的存成失敗（`還沒公布完整`）：那時回傳的空名單不是「沒人被列」。
   - 市場成交：那個月最後一天 20:00 以後抓的；重大訊息清單：那個月過完以後抓的。當月的照樣抓。
   - 開休市日期、重大訊息全文：抓過就算。注意累計名單、上市公司清單只有當下一份，每次都抓。
 
@@ -91,6 +106,8 @@ analyze    stage_* 表 → app_* 表     規則引擎算進度
 - 只讀 ok 的 raw，沒有就跳過；用主鍵更新 stage 表，其他日期不動。任務之間互不依賴。
 - 注意股、款次：當天先清掉再寫入。上市公司：依 company_id 更新，下市的留著。
 - 重大訊息全文：一則一個任務 `transform_announcement_detail(stock_id, enter_yyyymmdd, serial_number)`，整理輸入日期在當月、上個月和再前一個月的（輸入日期可能比發言日期早，例如 5/29 輸入、6/1 發言）。
+- 個股新聞：一檔一天一個任務 `transform_stock_news(stock_id, date_yyyymmdd)` → `stage_news`（新聞本身，一則一列）、`stage_stock_news`（哪檔有哪則），往前多整理 `NEWS_LOOKBACK_DAYS` 天（crawler 也往前多抓那幾天）。主鍵 `news_id`＝連結的 md5（`common/hash_utils.py` 的 `url_md5`；表上的 CHECK 確認和 SQL 的 `md5(link)` 一樣）。
+- 新聞網頁：這些新聞裡有抓到網頁的，一則一個任務 `transform_news_detail(news_id)` → `stage_news_detail`（從存下來的 `<head>` 取導言）。
 - 重大訊息條款對照表（`stage_announcement_clause`，第 1～51 款的名稱）是固定資料，不用爬：寫在 `schema/stage.sql`，transform 開始建表時一併寫入。條文修正時改那裡。
 
 ## 去重與冪等
@@ -144,17 +161,34 @@ raw 是有主鍵又只新增：主鍵含 `fetched_at`（精確到微秒），每
   每一天都有 `stage_trading_day`，其中的營業日都有 `stage_notice_day`、`stage_punish_day`（沒人被列也有一列，0 檔）。
   缺一天，那天會被當成「沒被列」，進度就算錯，所以那天不算、列進失敗清單；其他天照算。
   重大訊息、公司清單等只給卡片顯示，缺了不影響進度。
-- 讀 stage（往前 30 個營業日），算每檔每天離處置還差幾次，規則見 [`rules.md`](rules.md)。
+- 讀 stage（往前 30 個營業日），算每檔每天離處置還差幾次（規則寫在 `analyze/engine.py`）。
 - 每個交易日每檔一列；重跑只換掉那天，`process_date` 記哪天算的。
 - 非營業日沒有東西要算。
+
+## ai：stage → ai
+
+| 項目 | 任務 | 一次處理 | 範圍 | 摘要上限 | 寫入 |
+|---|---|---|---|---|---|
+| ① 公告分類 | `classify_announcement` | 一則公告 | 區間內發言的公告，加上全文在區間內才寫進來的（新被關注的公司，crawler 會補抓當月和上個月的公告） | 40 字 | `ai_announcement_label` |
+| 新聞摘要 | `summarize_news` | 一則新聞 | 區間內（往前多 `NEWS_LOOKBACK_DAYS` 天）有抓到網頁、全文至少 200 字的新聞 | 250 字 | `ai_news_summary`（網站讀 `app_stock_news.ai_summary`） |
+
+- 只讀 stage 表、呼叫 Claude、結果存進自己的 `ai_*` 表。沒設 `ANTHROPIC_API_KEY` 就整批跳過。模型：`.env` 的 `AI_CLASSIFY_MODEL`、`AI_SUMMARY_MODEL`（預設 `claude-haiku-5-5`），結構化輸出（照 JSON schema 回答）。
+- 例外：新聞摘要要全文，但全文不存進資料庫（著作權），所以任務當場再打開網頁一次（用 `crawler/client.py` 的函式），全文交給 Claude 後就丟掉。打不開（被擋）、全文太短就跳過，不問 Claude。
+- 兩個項目同樣的規則：
+  - 同一個 prompt 版本已經有結果的不再問（不重複花錢）。
+  - 每次呼叫都記一列 `ai_llm_call`（token、花費）。
+  - 摘要超過上限：請 Claude 縮短，只重問一次；還是太長、或縮短那次失敗，就用第一次的回答照存，標 `summary_ok`＝否（網站不顯示）。
+  - 摘要裡的數字都要出現在原文裡，才算 `summary_ok`＝是（抓出編出來的數字）。新聞摘要另外要求用自己的話寫，引用原文不超過 10 個字。
+  - 請求太多（429）、伺服器錯誤（5xx）、連線失敗：等一下重做；拒答、被截斷：不重做（重問也一樣）。
+- AI 結果放 `ai_*` 表：重算 stage、app 不會刪掉（重問要花錢，答案也可能不同）。
 
 ## 常用指令
 
 ```
-uv run python main.py                                   # 三步一次跑完（今天）
-uv run python main.py backfill --start 20260701             # 三步一次跑完（一段期間，可加 --end）；抓完整的跳過
-uv run python main.py backfill --start 20260701 --refetch   # 同上，但全部重抓（只影響 crawler）
-uv run python -m crawler.producer [backfill --start ...]    # 只跑一步，transform、analyze 同樣
+uv run python main.py                                   # 四步一次跑完（今天）
+uv run python main.py backfill --start 20260701             # 四步一次跑完（一段期間，可加 --end）；抓完整的跳過
+uv run python main.py backfill --start 20260701 --refetch   # 同上，但全部重抓（只影響 crawler，新聞網頁也重開）
+uv run python -m crawler.producer [backfill --start ...]    # 只跑一步，transform、analyze、ai 同樣
 uv run python -m analyze.backtest                       # 回測
 uv run pytest                                           # 測試（含整合測試；連不到 PostgreSQL 會自動跳過）
 uv run pytest -m "not integration"                      # 只跑不連資料庫的測試
@@ -188,7 +222,7 @@ gzip -dc data/backup/tw_stock_20261114_233000.sql.gz | wsl docker exec -i postgr
 | `G2-attention_stock_tracker-backup` | 週一～五 23:30 | `scripts\run_backup.bat` | `data/backup.log` |
 
 - 用 `conhost.exe --headless` 背景執行；錯過時開機後補跑；電腦關機或睡眠時不會跑。
-- log 每天一個檔，只留 30 天（worker 的 log 也一樣：`data/logs/crawl_twse-…`、`crawl_mops-…`、`process-…`）；永久的紀錄是任務歷史 `tw_stock.job_run`（每個任務每跑一次一列）。
+- log 每天一個檔，只留 30 天（worker 的 log 也一樣：`data/logs/crawl_twse-…`、`crawl_mops-…`、`crawl_finmind-…`、`transform-…`、`analyze-…`、`ai-…`）；永久的紀錄是任務歷史 `tw_stock.job_run`（每個任務每跑一次一列）。
 - `Start-ScheduledTask <工作名稱>` 手動跑一次；`Get-ScheduledTaskInfo <工作名稱>` 看結果（0＝成功）。
 
 重灌時重建（backup 把檔名、時間換掉，並加 `-ExecutionTimeLimit (New-TimeSpan -Hours 1)`）：

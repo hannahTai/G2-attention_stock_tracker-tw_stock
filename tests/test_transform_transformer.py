@@ -1,5 +1,6 @@
 """transform/transformer.py 的測試：用真實回應的資料列，不連網路、不讀 data/。執行：uv run pytest"""
 import datetime
+import hashlib
 import math
 import warnings
 
@@ -11,7 +12,8 @@ from transform.parsing import chinese_number, strip_html, to_number
 from transform.transformer import (
     announcement_detail_to_frame, announcement_to_frame, clean_announcement_detail, holiday_to_frame, market_daily_to_frame, notice_to_frame, punish_to_frame,
     punish_watchlist_to_frame, clean_announcement, clean_company, company_to_frame, clean_holiday, clean_notice,
-    clean_punish, clean_punish_watchlist, clean_stock_price, clean_trading_day, stock_price_to_frame,
+    clean_news_detail, clean_punish, clean_punish_watchlist, clean_stock_news, clean_stock_price, clean_trading_day, news_detail_to_frame, stock_news_to_frame,
+    stock_price_to_frame,
 )
 
 
@@ -315,3 +317,44 @@ def test_stock_price_picks_the_price_table_and_drops_untraded():
 def test_stock_price_on_closed_day_is_empty():
     raw = {"meta": {"fetched_at": "2026-11-22T21:00:00+08:00"}, "body": {"stat": "很抱歉，沒有符合條件的資料!"}}
     assert clean_stock_price(stock_price_to_frame(raw), datetime.date(2026, 11, 22)).empty
+
+
+# ---------- 個股新聞（FinMind）----------
+def news_envelope(rows):
+    return {"meta": {"fetched_at": "2026-11-21T09:00:00+08:00"}, "body": {"msg": "success", "status": 200, "data": rows}}
+
+
+def test_stock_news_strips_source_and_keeps_earliest_of_same_link():
+    """同一個連結出現兩次（時間、標題不同）只留最早的；標題結尾的「 - 來源」去掉。"""
+    rows = [
+        {"date": "2026-11-20 09:30:00", "stock_id": "2330", "link": "https://a/1", "source": "自由時報",
+         "title": "台積電收跌100元（更新） - 自由時報"},
+        {"date": "2026-11-20 01:07:00", "stock_id": "2330", "link": " https://a/1\n", "source": "自由時報",   # 前後有空白：去掉後是同一則
+         "title": "台積電收跌100元 - 自由時報"},
+        {"date": "2026-11-20 00:33:35", "stock_id": "2330", "link": "https://b/2", "source": "CMoney",
+         "title": "2330 台積電 - 股市早報 - CMoney"},
+    ]
+    news, stock_news = clean_stock_news(stock_news_to_frame(news_envelope(rows)))
+    ids = [hashlib.md5(b"https://b/2").hexdigest(), hashlib.md5(b"https://a/1").hexdigest()]
+    assert news["link"].tolist() == ["https://b/2", "https://a/1"]   # 照時間排
+    assert news["news_id"].tolist() == ids and "stock_id" not in news
+    assert news["title"].tolist() == ["2330 台積電 - 股市早報", "台積電收跌100元"]
+    assert news.loc[1, "news_time"] == pd.Timestamp("2026-11-20 09:07:00")   # FinMind 給 UTC，轉成台灣時間
+    assert news.loc[1, "news_date"] == datetime.date(2026, 11, 20)
+    assert stock_news.values.tolist() == [["2330", ids[0]], ["2330", ids[1]]]
+
+
+def test_news_detail_lead_from_saved_head():
+    """raw_news_detail 存的是 <head>：導言取 meta 摘要；沒有 head（抽不到）就是 NULL。"""
+    def page(key, head):
+        return {"meta": {"key": key, "fetched_at": "2026-11-21T09:00:00+08:00"},
+                "body": {"final_url": "https://www.ctee.com.tw/news/1", "content_type": "text/html", "head": head, "text_chars": 500}}
+    head = "<head><title>健策</title><meta property='og:description' content='健策10月營收30.73億元，年增81％。'></head>"
+    df = clean_news_detail(news_detail_to_frame(page("abc", head)))
+    assert df.loc[0, "news_id"] == "abc" and df.loc[0, "lead"] == "健策10月營收30.73億元，年增81％。" and df.loc[0, "text_chars"] == 500
+    assert clean_news_detail(news_detail_to_frame(page("def", ""))).loc[0, "lead"] is None
+
+
+def test_stock_news_day_without_news_is_empty():
+    news, stock_news = clean_stock_news(stock_news_to_frame(news_envelope([])))
+    assert news.empty and stock_news.empty

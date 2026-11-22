@@ -14,13 +14,26 @@ def now() -> datetime.datetime:
     return datetime.datetime.now(TAIPEI)
 
 
+def now_naive() -> datetime.datetime:
+    """現在的台灣時間，不帶時區（寫進 TIMESTAMP 欄位用）。"""
+    return now().replace(tzinfo=None)
+
+
 def today() -> datetime.date:
     return now().date()
 
 
 def today_yyyymmdd() -> str:
     """今天的日期字串，例如 "20261113"。"""
-    return today().strftime(DATE_FMT)
+    return to_yyyymmdd(today())
+
+
+def to_yyyymmdd(day: datetime.date) -> str:
+    """
+    >>> to_yyyymmdd(datetime.date(2026, 11, 13))
+    '20261113'
+    """
+    return day.strftime(DATE_FMT)
 
 
 def parse_yyyymmdd(text: str) -> datetime.date:
@@ -114,6 +127,15 @@ def prev_month(month_yyyymm: str) -> str:
     ('202610', '202512')
     """
     return (pd.Period(f"{month_yyyymm[:4]}-{month_yyyymm[4:6]}", "M") - 1).strftime("%Y%m")
+
+
+def days_before(date_yyyymmdd: str, days: int) -> str:
+    """往前 days 天（YYYYMMDD），跨月、跨年也對。
+
+    >>> days_before("20261103", 7)
+    '20261027'
+    """
+    return to_yyyymmdd(parse_yyyymmdd(date_yyyymmdd) - datetime.timedelta(days=days))
 
 
 def holiday_years(start: str, end: str) -> list[int]:

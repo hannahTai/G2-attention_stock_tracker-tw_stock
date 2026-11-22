@@ -1,11 +1,11 @@
-"""三個 producer（crawler、transform、analyze）共用的指令參數。
+"""四個 producer（crawler、transform、analyze、ai）共用的指令參數。
 
     python -m xxx.producer                                        # daily：只處理今天（預設）
     python -m xxx.producer backfill --start 20261001              # 回補 20261001 到今天
     python -m xxx.producer backfill --start 20261001 --end 20261031
     python -m crawler.producer backfill --start 20261001 --refetch  # crawler：已經抓完整的也重抓
 
-main.py 也用這裡讀參數：期間在 main.py 算一次，再明確傳給三個 producer。
+main.py 也用這裡讀參數：期間在 main.py 算一次，再明確傳給四個 producer。
 """
 import argparse
 

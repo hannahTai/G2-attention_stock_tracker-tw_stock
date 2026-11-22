@@ -7,14 +7,26 @@ import dotenv
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent   # common/ 的上一層（專案根目錄）
 dotenv.load_dotenv(PROJECT_ROOT / ".env")                       # 已有的環境變數不會被覆蓋
 
+
+def secret(name: str) -> str:
+    """金鑰類的設定：沒設，或還是 .env.example 的範例值（your-…）都當成沒設，回傳空字串。"""
+    value = os.environ.get(name, "").strip()
+    return "" if value.startswith("your-") else value
+
+
 # 資料來源
 TWSE_BASE = os.environ.get("TWSE_BASE", "https://www.twse.com.tw/rwd/zh")
 TWSE_OPENAPI_BASE = os.environ.get("TWSE_OPENAPI_BASE", "https://openapi.twse.com.tw/v1")
 MOPS_BASE = os.environ.get("MOPS_BASE", "https://mops.twse.com.tw/mops/api")
+FINMIND_BASE = os.environ.get("FINMIND_BASE", "https://api.finmindtrade.com/api/v4")
+FINMIND_TOKEN = secret("FINMIND_TOKEN")   # 選填：不帶也抓得到，帶了每小時的次數上限比較高
+NEWS_LOOKBACK_DAYS = int(os.environ.get("NEWS_LOOKBACK_DAYS", "7"))   # 新聞：被關注的股票往前抓幾天
 
 # 請求間隔（秒），太快會被擋
 SLEEP_SECONDS = float(os.environ.get("SLEEP_SECONDS", "1.0"))
 SLEEP_SECONDS_MOPS = float(os.environ.get("SLEEP_SECONDS_MOPS", "0.6"))
+SLEEP_SECONDS_FINMIND = float(os.environ.get("SLEEP_SECONDS_FINMIND", "1.0"))
+SLEEP_SECONDS_NEWS_DETAIL = float(os.environ.get("SLEEP_SECONDS_NEWS_DETAIL", "0.5"))   # 新聞網頁：分散在十幾個網站
 
 # 暫時性的失敗（逾時、連線失敗、5xx、429）重試幾次、每次等幾秒
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
@@ -48,3 +60,8 @@ JOB_LOG = os.environ.get("JOB_LOG", "1") == "1"
 # 文字 log：每天一個檔 <LOG_DIR>/<名稱>-YYYY-MM-DD.log，只留最近 LOG_KEEP_DAYS 天（common/logs.py）
 LOG_DIR = pathlib.Path(os.environ.get("LOG_DIR", str(PROJECT_ROOT / "data" / "logs")))
 LOG_KEEP_DAYS = int(os.environ.get("LOG_KEEP_DAYS", "30"))
+
+# AI（ai/）：Claude API。金鑰的環境變數 ANTHROPIC_API_KEY 由 anthropic 套件自己讀；沒設就跳過 AI 任務，資料線照常
+ANTHROPIC_API_KEY = secret("ANTHROPIC_API_KEY")
+AI_CLASSIFY_MODEL = os.environ.get("AI_CLASSIFY_MODEL", "claude-haiku-5-5")   # ① 公告分類：便宜的小型模型
+AI_SUMMARY_MODEL = os.environ.get("AI_SUMMARY_MODEL", "claude-haiku-5-5")     # 新聞摘要
