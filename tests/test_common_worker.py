@@ -100,37 +100,26 @@ def test_run_jobs_sends_to_queue_and_collects_failures(monkeypatch):
                     ("crawler.task.crawl_notice", {"date_yyyymmdd": "20261120"}, "crawl_twse")]
 
 
-class SlowResult(FakeResult):
-    """前 polls 次問 ready() 都還沒做完。"""
-    def __init__(self, value, polls=0):
-        super().__init__(value)
-        self.polls = polls
-
-    def ready(self):
-        self.polls -= 1
-        return self.polls < 0
-
-
 def chain_step(name):
     """一批：產生一個任務，佇列名稱就用 name（測試看送出的順序）。"""
     return (lambda: [(lambda: "ok", {"name": name})]), 0.0, name
 
 
-def test_run_chains_does_not_wait_for_other_chains(monkeypatch):
-    """USE_CELERY=1：兩條鏈同時進行。A 的第一批還沒做完，B 就做完兩批；同一條鏈裡照順序。失敗的記下來。"""
+def test_run_chains_sends_first_batches_together(monkeypatch):
+    """USE_CELERY=1：每條鏈的第一批同時送出（兩個佇列同時在做），之後輪流等結果、送下一批；同一條鏈裡照順序。失敗的記下來。"""
     sent = []
-    polls = {"a1": 3}
     values = {"b2": RuntimeError("HTTP 500")}
 
     def fake_send(jobs, queue):
         sent.append(queue)
-        return [(f"job_{queue}", SlowResult(values.get(queue, "ok"), polls.get(queue, 0)))]
+        return [(f"job_{queue}", FakeResult(values.get(queue, "ok")))]
 
     monkeypatch.setattr(runner, "USE_CELERY", True)
     monkeypatch.setattr(runner, "send_jobs", fake_send)
     failed = runner.run_chains([[chain_step("a1"), chain_step("a2")],
-                                [chain_step("b1"), chain_step("b2")]], poll_seconds=0)
-    assert sent == ["a1", "b1", "b2", "a2"]
+                                [chain_step("b1"), chain_step("b2")]])
+    assert sent[:2] == ["a1", "b1"]                      # 第一批同時送出，還沒等任何結果
+    assert sent.index("a1") < sent.index("a2") and sent.index("b1") < sent.index("b2")
     assert failed == ["job_b2"]
 
 
@@ -138,9 +127,9 @@ def test_run_chains_skips_empty_batches(monkeypatch):
     """沒有要做的批次（例如全文都抓過了）跳過，不送空的一批；整條都空也不會卡住。"""
     sent = []
     monkeypatch.setattr(runner, "USE_CELERY", True)
-    monkeypatch.setattr(runner, "send_jobs", lambda jobs, queue: sent.append(queue) or [(queue, SlowResult("ok"))])
+    monkeypatch.setattr(runner, "send_jobs", lambda jobs, queue: sent.append(queue) or [(queue, FakeResult("ok"))])
     empty = (lambda: [], 0.0, "empty")
-    assert runner.run_chains([[empty, chain_step("a2")], [empty]], poll_seconds=0) == []
+    assert runner.run_chains([[empty, chain_step("a2")], [empty]]) == []
     assert sent == ["a2"]
 
 
@@ -257,11 +246,10 @@ def test_run_chains_keeps_going_when_one_chain_cannot_build(monkeypatch):
     """一條鏈產生任務清單出錯（例如資料庫連不上）：記成失敗、這條鏈停下來，其他鏈照做完。"""
     sent = []
     monkeypatch.setattr(runner, "USE_CELERY", True)
-    monkeypatch.setattr(runner, "send_jobs", lambda jobs, queue: sent.append(queue) or [(queue, SlowResult("ok"))])
+    monkeypatch.setattr(runner, "send_jobs", lambda jobs, queue: sent.append(queue) or [(queue, FakeResult("ok"))])
 
     def broken():
         raise ConnectionError("連不上")
-    failed = runner.run_chains([[(broken, 0.0, "a1"), chain_step("a2")], [chain_step("b1"), chain_step("b2")]],
-                               poll_seconds=0)
+    failed = runner.run_chains([[(broken, 0.0, "a1"), chain_step("a2")], [chain_step("b1"), chain_step("b2")]])
     assert sent == ["b1", "b2"]                       # 第 1 條停下來（a2 沒送），第 2 條照做完
     assert failed == ["第 1 條鏈產生 a1 的任務清單"]

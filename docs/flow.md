@@ -88,6 +88,7 @@ uv run python -m ai.producer        backfill --start 20261113 --end 20261113
 - 一個 crawl 任務對應一個 transform 任務，例如 `crawl_notice` → `transform_notice`；只讀成功的 raw，任務之間互不依賴。
 - 注意股、款次：那天先清掉再寫入（官方拿掉的列也會消失）。其他：用主鍵更新，這批沒有的列不動。
 - 重大訊息條款對照表（第 1～51 款）是固定資料，寫在 `schema/stage.sql`。
+- 新聞清單只整理和 crawler 同一個範圍的（每天被關注的上市公司，那天和往前 7 天）。一次性的回補（例如全部上市公司的新聞）自己整理，每天的資料線不跟著重做。
 
 ## 去重與冪等
 

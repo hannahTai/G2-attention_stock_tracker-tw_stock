@@ -62,17 +62,20 @@ def test_missing_raw_is_skipped_not_failed(raw_store):
     assert "跳過" in task.transform_notice("20261113")
 
 
-def test_news_jobs_include_lookback_days(raw_store, monkeypatch):
-    """crawler 往前多抓 NEWS_LOOKBACK_DAYS 天的新聞，transform 也往前多整理那幾天。"""
-    monkeypatch.setattr(producer, "NEWS_LOOKBACK_DAYS", 2)
-    for key in ("2330_20261110", "2330_20261111", "2330_20261113", "2330_20261114"):
+def test_news_jobs_follow_the_crawler_scope(raw_store, monkeypatch):
+    """新聞只整理和 crawler 同一個範圍的（被關注的股票，含往前多抓的那幾天）、而且有抓到的；
+    一次性回補抓的其他公司新聞（1101）不跟著每天重做。"""
+    monkeypatch.setattr(producer.crawler_producer, "stock_news_targets",
+                        lambda start, end: [("2330", "20261111"), ("2330", "20261112"), ("2330", "20261113")])
+    for key in ("2330_20261111", "2330_20261113", "1101_20261113"):
         raw_store.put("stock_news", key, {"data": []})
     jobs = jobs_by_task(producer.build_jobs("20261113", "20261113"))
     assert jobs["transform_stock_news"] == [("2330", "20261111"), ("2330", "20261113")]
 
 
-def test_news_detail_jobs_only_for_fetched_pages(raw_store):
-    """新聞網頁：區間內新聞清單裡、有抓到網頁的（raw_news_detail 的 key 是 news_id）各一個任務。"""
+def test_news_detail_jobs_only_for_fetched_pages(raw_store, monkeypatch):
+    """新聞網頁：要整理的新聞清單裡、有抓到網頁的（raw_news_detail 的 key 是 news_id）各一個任務。"""
+    monkeypatch.setattr(producer.crawler_producer, "stock_news_targets", lambda start, end: [("2330", "20261113")])
     raw_store.put("stock_news", "2330_20261113", {"data": [
         {"date": "2026-11-13 01:00:00", "stock_id": "2330", "link": "https://a/1", "source": "UDN", "title": "a"},
         {"date": "2026-11-13 02:00:00", "stock_id": "2330", "link": "https://b/2", "source": "UDN", "title": "b"}]})

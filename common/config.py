@@ -25,7 +25,9 @@ NEWS_LOOKBACK_DAYS = int(os.environ.get("NEWS_LOOKBACK_DAYS", "7"))   # 新聞�
 # 請求間隔（秒），太快會被擋
 SLEEP_SECONDS = float(os.environ.get("SLEEP_SECONDS", "1.0"))
 SLEEP_SECONDS_MOPS = float(os.environ.get("SLEEP_SECONDS_MOPS", "0.6"))
-SLEEP_SECONDS_FINMIND = float(os.environ.get("SLEEP_SECONDS_FINMIND", "1.0"))
+# FinMind（帶 token）每小時 600 次：6 秒一個剛好。所有打 FinMind 的任務都走 crawl_finmind 佇列（只有一個 worker），
+# 每天的資料線和回補一起排隊，加起來也不會超過；不要另外在本機直接打（會和佇列的加在一起，超過就回 402）
+SLEEP_SECONDS_FINMIND = float(os.environ.get("SLEEP_SECONDS_FINMIND", "6.0"))
 SLEEP_SECONDS_NEWS_DETAIL = float(os.environ.get("SLEEP_SECONDS_NEWS_DETAIL", "0.5"))   # 新聞網頁：分散在十幾個網站
 
 # 暫時性的失敗（逾時、連線失敗、5xx、429）重試幾次、每次等幾秒

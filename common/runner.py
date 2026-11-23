@@ -149,13 +149,16 @@ def collect_results(sent: list[tuple]) -> list[str]:
     return failed
 
 
-def run_chains(chains: list[list[tuple]], poll_seconds: float = 1.0) -> list[str]:
+def run_chains(chains: list[list[tuple]]) -> list[str]:
     """好幾條任務鏈同時進行，回傳全部失敗的任務名稱。
 
     每條鏈是好幾批 [(產生任務清單的函式, sleep, queue), ...]：同一條鏈裡上一批做完，才產生、送出下一批
     （例如重大訊息全文要先有清單才知道要抓哪幾則）；鏈和鏈之間不互等，各自的佇列同時在做。
     任務清單是做到那一批才產生的，所以傳函式，不傳清單。
-    USE_CELERY=1：一個迴圈每 poll_seconds 秒看一次每條鏈的這一批做完沒（AsyncResult.ready()），做完就送下一批。
+    USE_CELERY=1：每條鏈的第一批同時送出，之後輪流等每條鏈這一批的結果（result.get()，和 run_jobs 一樣），
+    等到了就送那條鏈的下一批。不用 AsyncResult.ready() 輪詢：rpc 結果後端在任務多、有失敗的時候，
+    輪詢會一直看不到已經做完的結果（2026-11-23 每天的資料線卡住），get() 才可靠。
+    代價：先做完的鏈要等輪到它才送下一批；第一批還是同時在做。
     沒開：在本機一條鏈一條鏈依序執行（本機一次只能做一件事）。
     """
     if not USE_CELERY:
@@ -185,13 +188,9 @@ def run_chains(chains: list[list[tuple]], poll_seconds: float = 1.0) -> list[str
     for i in range(len(chains)):
         send_next(i)
     while running:
-        for i, sent in list(running.items()):
-            if all(result.ready() for _, result in sent):
-                failed += collect_results(sent)
-                del running[i]
-                send_next(i)
-        if running:
-            time.sleep(poll_seconds)
+        for i in list(running):
+            failed += collect_results(running.pop(i))   # 等這條鏈這一批全部做完
+            send_next(i)
     return failed
 
 
