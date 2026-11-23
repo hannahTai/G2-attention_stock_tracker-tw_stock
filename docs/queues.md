@@ -40,11 +40,13 @@ producer（列出要做的任務）
 | 5 | `crawl_stock_news` 新聞清單 → `crawl_news_detail` 新聞網頁 | `crawl_finmind` → `crawl_news` | 同上 |
 | 6 | `transform_xxx` 整理（11 種） | `transform` | 要先抓好 |
 | 7 | `analyze_progress` 還差幾次 | `analyze` | 只讀整理好的資料；和下面的 AI 同時 |
-| 7 | `classify_announcement` 公告分類 | `ai` | AI 照這個順序：後面的用前面的結果 |
-| 7 | `summarize_news` 新聞摘要 | `ai` | ↑ |
-| 7 | `embed_news` 新聞向量 | `embed` | ↑ |
-| 7 | `group_news_stories` 同一件事 | `ai` | ↑ |
-| 7 | `summarize_card` 卡片 AI 摘要 | `embed` | ↑ |
+| 7 | `classify_announcement` 公告分類 | `ai` | AI 照這個順序：後面的用前面的結果；呼叫 Claude |
+| 7 | `summarize_news` 新聞摘要 | `ai` | 呼叫 Claude |
+| 7 | `embed_news` 新聞向量 | `embed` | 要用 bge-m3 把「標題＋摘要」轉成向量（摘要要先寫好） |
+| 7 | `group_news_stories` 同一件事 | `ai` | 只比資料庫裡已經有的向量，不用模型 |
+| 7 | `summarize_card` 卡片 AI 摘要 | `embed` | 查詢也要用 bge-m3 轉成向量，才能挑相關的新聞；再呼叫 Claude |
+
+AI 這段在 `ai` 和 `embed` 兩個 worker 之間輪流（圖上一上一下）：要用本機 embedding 模型（bge-m3）的任務都送 `embed`，只有它載入模型（約 2.3 GB 記憶體，只載一份）；其他的送 `ai`。順序不能換：向量要用摘要、歸類要用向量、卡片摘要要用前面全部的結果。
 
 ## 每小時一輪
 
