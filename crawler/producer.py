@@ -30,11 +30,7 @@ from crawler import client, task
 
 
 # ---------- 抓過、而且完整了嗎 ----------
-def day_ready_at(date_yyyymmdd: str) -> datetime.datetime:
-    """一天的資料：那天公布完整（client.COMPLETE_BY）以後就不會再變。"""
-    return datetime.datetime.combine(parse_yyyymmdd(date_yyyymmdd), client.COMPLETE_BY)
-
-
+# 注意股、處置股、收盤行情：有成功的就完整了（還沒公布就抓的存成失敗，見 client.not_published_problem）
 def month_ready_at(month_yyyymm: str, at: datetime.time = client.COMPLETE_BY) -> datetime.datetime:
     """一個月的資料：那個月最後一天的 at 以後就不會再變。"""
     year, month = int(month_yyyymm[:4]), int(month_yyyymm[4:])
@@ -45,9 +41,9 @@ def month_ready_at(month_yyyymm: str, at: datetime.time = client.COMPLETE_BY) ->
 def is_complete(fetched_times: dict, key: str, ready_at: datetime.datetime) -> bool:
     """抓過、而且是在 ready_at 以後抓的 → 資料不會再變，不用重抓。
 
-    >>> is_complete({"20261113": datetime.datetime(2026, 11, 13, 21, 0)}, "20261113", day_ready_at("20261113"))
+    >>> is_complete({"202610": datetime.datetime(2026, 11, 2, 9, 0)}, "202610", month_ready_at("202610"))
     True
-    >>> is_complete({"20261113": datetime.datetime(2026, 11, 13, 16, 0)}, "20261113", day_ready_at("20261113"))
+    >>> is_complete({"202610": datetime.datetime(2026, 10, 20, 21, 0)}, "202610", month_ready_at("202610"))
     False
     """
     fetched_at = fetched_times.get(key)
@@ -63,11 +59,11 @@ def build_twse_jobs(start: str, end: str, refetch: bool = False) -> list[tuple]:
 
     # 開休市日期一年一份（11 月起也抓下一年），抓過就不再抓；颱風假不在這份裡，是從市場成交看出來的
     jobs = [(task.crawl_notice, {"date_yyyymmdd": d}) for d in days
-            if not is_complete(fetched["notice"], d, day_ready_at(d))]
+            if d not in fetched["notice"]]
     jobs += [(task.crawl_punish, {"date_yyyymmdd": d}) for d in days
-             if not is_complete(fetched["punish"], d, day_ready_at(d))]
+             if d not in fetched["punish"]]
     jobs += [(task.crawl_stock_price, {"date_yyyymmdd": d}) for d in days
-             if not is_complete(fetched["stock_price"], d, day_ready_at(d))]
+             if d not in fetched["stock_price"]]
     if end == today_yyyymmdd():
         jobs += [(task.crawl_punish_watchlist, {})]   # 只有最新一天，回補時抓不到舊的
     jobs += [(task.crawl_market_daily, {"month_yyyymm": m}) for m in months

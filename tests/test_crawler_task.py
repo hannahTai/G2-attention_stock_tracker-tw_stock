@@ -98,11 +98,19 @@ def test_announcement_detail_saved(raw_store, monkeypatch):
     assert task.crawl_announcement_detail("9908", "20261102", 1, "t05st01_detail") == "raw_announcement_detail/9908_20261102_1"
 
 
-@pytest.mark.parametrize(("now", "saved_ok"), [("2026-11-13T19:59:00", False), ("2026-11-13T20:00:00", True)])
-def test_notice_before_published_saved_as_failure(raw_store, monkeypatch, now, saved_ok):
-    """當天 20:00 以前抓的注意股：空名單不是「沒人被列」，存成失敗；20:00 以後才算。"""
+TODAY_NOTICE = {"stat": "OK", "fields": ["證券代號", "日期"], "data": [["2330", "115.11.13"]]}
+
+
+@pytest.mark.parametrize(("now", "body", "saved_ok"), [
+    ("2026-11-13T16:00:00", {"stat": "OK", "data": []}, False),   # 還沒公布：空名單不是「沒人被列」
+    ("2026-11-13T18:00:00", TODAY_NOTICE, True),                  # 看得到當天的資料：公布了，不用等 20:00
+    ("2026-11-13T19:59:00", {"stat": "OK", "data": []}, False),
+    ("2026-11-13T20:00:00", {"stat": "OK", "data": []}, True),    # 20:00 以後還是空的：那天真的沒人被列（或休市）
+])
+def test_notice_before_published_saved_as_failure(raw_store, monkeypatch, now, body, saved_ok):
+    """注意股：看得到當天的資料就算公布了；看不到的，20:00 以前抓的存成失敗、20:00 以後才算。"""
     monkeypatch.setattr(date_utils, "now", lambda: datetime.datetime.fromisoformat(now).replace(tzinfo=date_utils.TAIPEI))
-    monkeypatch.setattr(client, "fetch_notice", lambda day: fake_response({"stat": "OK", "data": []}))
+    monkeypatch.setattr(client, "fetch_notice", lambda day: fake_response(body))
 
     if saved_ok:
         task.crawl_notice("20261113")
@@ -191,3 +199,22 @@ def test_crawl_news_detail_temporary_failures_raise_for_retry(raw_store, monkeyp
     with pytest.raises(repository.FetchError) as error:
         task.crawl_news_detail(LINK)
     assert runner.is_retryable(error.value) and raw_store.last("news_detail", url_md5(LINK)).http_status == 503
+
+
+@pytest.mark.parametrize(("now", "list_title", "saved_key", "saved_ok"), [
+    ("2026-11-23T18:00:00", "115年11月20日 公布注意累計次數可能達處置標準之有價證券一覽表", "20261120", False),   # 今天的還沒公布
+    ("2026-11-23T18:30:00", "115年11月23日 公布注意累計次數可能達處置標準之有價證券一覽表", "20261123", True),    # 公布了
+    ("2026-11-23T20:00:00", "115年11月20日 公布注意累計次數可能達處置標準之有價證券一覽表", "20261120", True),    # 20:00 以後還不是今天（休市）：照存
+])
+def test_watchlist_from_before_today_saved_as_failure(raw_store, monkeypatch, now, list_title, saved_key, saved_ok):
+    """注意累計名單只有最新一份：20:00 前抓到的還是前一天的，存成失敗（不然這一輪算成功、放了記號，今天的名單就沒抓到）。"""
+    moment = datetime.datetime.fromisoformat(now).replace(tzinfo=date_utils.TAIPEI)
+    monkeypatch.setattr(date_utils, "now", lambda: moment)
+    monkeypatch.setattr(task, "today_yyyymmdd", lambda: "20261123")
+    monkeypatch.setattr(client, "fetch_punish_watchlist", lambda: fake_response({"stat": "OK", "title": list_title, "data": []}))
+    if saved_ok:
+        task.crawl_punish_watchlist()
+    else:
+        with pytest.raises(repository.FetchError, match="今天的還沒公布"):
+            task.crawl_punish_watchlist()
+    assert raw_store.last("punish_watchlist", saved_key).ok is saved_ok

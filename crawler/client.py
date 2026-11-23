@@ -215,20 +215,64 @@ def news_detail_text(page: bytes) -> str | None:
 
 
 # ---------- 檢查回應：有問題回傳原因（task 存成失敗），沒問題回傳 None ----------
-# 注意股、處置股收盤後 17:30～17:45 公布（實測），留點緩衝：當天 20:00 以後抓的才算公布完整
+# 注意股、處置股收盤後 17:30～17:45 公布。看得到當天的資料就算公布了（is_published）；
+# 看不到的（休市、那天真的沒人被列注意），當天 20:00 以後抓的才算數
 COMPLETE_BY = datetime.time(20, 0)
 
 
 def complete_at(date_yyyymmdd: str) -> datetime.datetime:
-    """這天的注意股、處置股從什麼時候起算公布完整（台灣時間）。"""
+    """這天的注意股、處置股、收盤行情，最晚什麼時候起算公布完整（台灣時間）。"""
     return datetime.datetime.combine(date_utils.parse_yyyymmdd(date_yyyymmdd), COMPLETE_BY, date_utils.TAIPEI)
 
 
-def fetched_too_early_problem(date_yyyymmdd: str) -> str | None:
-    """抓得太早（還沒公布完整）→ 回傳原因：這時回傳的空名單不是「沒人被列」，不能當成那天的資料。"""
-    if date_utils.now() < complete_at(date_yyyymmdd):
-        return f"{date_yyyymmdd} 還沒公布完整（{COMPLETE_BY:%H:%M} 以後才算）"
-    return None
+def is_published(source: str, body, date_yyyymmdd: str) -> bool:
+    """回應裡看得到這天的資料（證交所公布了）：
+    注意股有一列的日期是這天；處置股的標題寫「資訊更新日期：這天」；收盤行情有個股的表、而且有資料。
+
+    >>> is_published("notice", {"fields": ["證券代號", "日期"], "data": [["2330", "115.11.23"]]}, "20261123")
+    True
+    >>> is_published("notice", {"fields": ["證券代號", "日期"], "data": []}, "20261123")
+    False
+    >>> is_published("punish", {"title": "公布處置有價證券資訊 (115/11/23 至 115/12/07)\\n資訊更新日期：115/11/23"}, "20261123")
+    True
+    >>> is_published("punish", {"title": "公布處置有價證券資訊 (115/11/23 至 115/12/07)"}, "20261123")
+    False
+    >>> is_published("stock_price", {"tables": [{"fields": ["證券代號", "收盤價"], "data": [["2330", "1,000"]]}]}, "20261123")
+    True
+    >>> is_published("stock_price", {"stat": "很抱歉，沒有符合條件的資料!"}, "20261123")
+    False
+    """
+    day = date_utils.parse_yyyymmdd(date_yyyymmdd)
+    if not isinstance(body, dict):
+        return False
+    if source == "notice":
+        fields = body.get("fields") or []
+        if "日期" not in fields:
+            return False
+        at = fields.index("日期")
+        return any(str(row[at]).strip() == date_utils.to_roc(day, ".") for row in body.get("data") or [])
+    if source == "punish":
+        return f"資訊更新日期：{date_utils.to_roc(day, '/')}" in (body.get("title") or "")
+    if source == "stock_price":
+        return any("證券代號" in (table.get("fields") or []) and table.get("data") for table in body.get("tables") or [])
+    raise ValueError(f"不認識的來源：{source}")
+
+
+def watchlist_problem(list_yyyymmdd: str | None, today_yyyymmdd: str) -> str | None:
+    """注意累計名單只有最新一份：上面的日期不是今天、又還沒 20:00 → 今天的還沒公布，回傳原因（下一輪再抓）。
+    不擋的話，公布前抓到的是前一天的名單，這一輪照樣算成功、放了跑完的記號，今天的名單就永遠沒抓到。
+    20:00 以後還不是今天的（休市）就照存。"""
+    if list_yyyymmdd == today_yyyymmdd or date_utils.now() >= complete_at(today_yyyymmdd):
+        return None
+    return f"注意累計名單還是 {list_yyyymmdd or '（找不到日期）'} 的，今天的還沒公布（{COMPLETE_BY:%H:%M} 以後才算）"
+
+
+def not_published_problem(source: str, body, date_yyyymmdd: str) -> str | None:
+    """還沒公布 → 回傳原因：這時回傳的空名單不是「沒人被列」，不能當成那天的資料。
+    看得到這天的資料就算公布了（不管幾點）；看不到的，這天 20:00 以後抓的才算（休市、真的沒人被列的日子）。"""
+    if is_published(source, body, date_yyyymmdd) or date_utils.now() >= complete_at(date_yyyymmdd):
+        return None
+    return f"{date_yyyymmdd} 還沒公布完整（看不到這天的資料；{COMPLETE_BY:%H:%M} 以後才算）"
 
 
 def holiday_problem(body, year: int) -> str | None:

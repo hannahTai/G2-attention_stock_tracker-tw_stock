@@ -55,6 +55,15 @@ def roc_to_date(text: str) -> datetime.date:
     return datetime.date(int(y) + 1911, int(m), int(d))
 
 
+def to_roc(day: datetime.date, sep: str) -> str:
+    """date → 民國日期，月日補 0（證交所的寫法）。
+
+    >>> to_roc(datetime.date(2026, 11, 3), "."), to_roc(datetime.date(2026, 11, 3), "/")
+    ('115.11.03', '115/11/03')
+    """
+    return f"{day.year - 1911}{sep}{day.month:02d}{sep}{day.day:02d}"
+
+
 def roc_date_in(text: str) -> datetime.date | None:
     """文字裡第一個「115年11月12日」這種日期；沒有就回傳 None。
 

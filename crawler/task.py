@@ -20,28 +20,31 @@ from crawler import client
 # ---------- 證交所 ----------
 @app.task(base=TwseJob)
 def crawl_notice(date_yyyymmdd: str) -> str:
-    """注意股：一天 → raw_notice（key 20261113）。還沒公布完整就抓的當失敗。"""
+    """注意股：一天 → raw_notice（key 20261113）。還沒公布完整就抓的當失敗（看內容，見 client.not_published_problem）。"""
     resp = client.fetch_notice(date_yyyymmdd)
     key = date_yyyymmdd
-    problem = client.fetched_too_early_problem(date_yyyymmdd)
+    problem = client.not_published_problem("notice", repository.parse_body(resp.text), date_yyyymmdd)
     return repository.save_raw("notice", key, resp, problem)
 
 
 @app.task(base=TwseJob)
 def crawl_punish(date_yyyymmdd: str) -> str:
-    """處置股：一天 → raw_punish（key 20261113）。還沒公布完整就抓的當失敗。"""
+    """處置股：一天 → raw_punish（key 20261113）。還沒公布完整就抓的當失敗（看內容，見 client.not_published_problem）。"""
     resp = client.fetch_punish(date_yyyymmdd)
     key = date_yyyymmdd
-    problem = client.fetched_too_early_problem(date_yyyymmdd)
+    problem = client.not_published_problem("punish", repository.parse_body(resp.text), date_yyyymmdd)
     return repository.save_raw("punish", key, resp, problem)
 
 
 @app.task(base=TwseJob)
 def crawl_punish_watchlist() -> str:
-    """注意累計名單：只有最新一份 → raw_punish_watchlist（key 名單上的資料日期；週末抓到的是週五的）。"""
+    """注意累計名單：只有最新一份 → raw_punish_watchlist（key 名單上的資料日期；週末抓到的是週五的）。
+    今天的還沒公布（名單上還是前一天、又還沒 20:00）就存成失敗，下一輪再抓（見 client.watchlist_problem）。"""
     resp = client.fetch_punish_watchlist()
-    key = client.watchlist_date(repository.parse_body(resp.text)) or today_yyyymmdd()   # 找不到日期：用今天，至少把回應存下來
-    return repository.save_raw("punish_watchlist", key, resp)
+    list_date = client.watchlist_date(repository.parse_body(resp.text))
+    key = list_date or today_yyyymmdd()   # 找不到日期：用今天，至少把回應存下來
+    problem = client.watchlist_problem(list_date, today_yyyymmdd())
+    return repository.save_raw("punish_watchlist", key, resp, problem)
 
 
 @app.task(base=TwseJob)
@@ -54,10 +57,10 @@ def crawl_market_daily(month_yyyymm: str) -> str:
 
 @app.task(base=TwseJob)
 def crawl_stock_price(date_yyyymmdd: str) -> str:
-    """每日收盤行情：一天 → raw_stock_price（key 20261120）。還沒公布完整就抓的當失敗。"""
+    """每日收盤行情：一天 → raw_stock_price（key 20261120）。還沒公布完整就抓的當失敗（看內容，見 client.not_published_problem）。"""
     resp = client.fetch_stock_price(date_yyyymmdd)
     key = date_yyyymmdd
-    problem = client.fetched_too_early_problem(date_yyyymmdd)
+    problem = client.not_published_problem("stock_price", repository.parse_body(resp.text), date_yyyymmdd)
     return repository.save_raw("stock_price", key, resp, problem)
 
 

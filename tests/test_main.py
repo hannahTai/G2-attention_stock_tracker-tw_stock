@@ -1,6 +1,7 @@
 """main.py 的鎖：同一時間只跑一輪（檔案鎖，不連資料庫）。"""
 import threading
 import time
+import types
 
 import pytest
 
@@ -139,3 +140,46 @@ def test_stop_processes_ends_a_real_running_process():
     process = main.subprocess.Popen([main.sys.executable, "-c", "import time; time.sleep(30)"])
     main.stop_processes([process], wait_seconds=5)
     assert process.poll() is not None
+
+
+# ---------- 每天全部跑完的記號 ----------
+@pytest.fixture
+def daily_run(monkeypatch, tmp_path):
+    """main()：鎖和記號放到暫存資料夾；run_pipeline 只記被叫了幾次，outcome 可以指定成失敗。"""
+    state = types.SimpleNamespace(runs=0, fail=False, mode="daily")
+    monkeypatch.setattr(main, "LOCK_FILE", tmp_path / "pipeline.lock")
+    monkeypatch.setattr(main, "DONE_DIR", tmp_path / "done")
+    monkeypatch.setattr(main.cli, "parse_args",
+                        lambda: types.SimpleNamespace(mode=state.mode, start="20261123", end="20261123", refetch=False))
+
+    def fake_pipeline(args):
+        state.runs += 1
+        if state.fail:
+            raise SystemExit(1)
+    monkeypatch.setattr(main, "run_pipeline", fake_pipeline)
+    return state
+
+
+def test_daily_marks_done_and_later_runs_skip(daily_run, tmp_path):
+    """全部成功：放當天的記號；同一天之後的排程看到記號就跳過。"""
+    main.main()
+    assert (tmp_path / "done" / "20261123").exists()
+    main.main()
+    assert daily_run.runs == 1
+
+
+def test_daily_failure_leaves_no_mark_so_next_hour_runs_again(daily_run, tmp_path):
+    """有失敗（例如證交所還沒公布）：不放記號，下一個小時再跑。"""
+    daily_run.fail = True
+    with pytest.raises(SystemExit):
+        main.main()
+    daily_run.fail = False
+    main.main()
+    assert daily_run.runs == 2 and (tmp_path / "done" / "20261123").exists()
+
+
+def test_backfill_ignores_the_mark(daily_run, tmp_path):
+    daily_run.mode = "backfill"
+    main.main()
+    main.main()
+    assert daily_run.runs == 2 and not (tmp_path / "done").exists()

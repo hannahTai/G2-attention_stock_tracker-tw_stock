@@ -22,7 +22,7 @@ flowchart LR
 
 ## 每天怎麼跑
 
-排程週一～五 21:00 執行 `main.py`（期間算一次再傳給每一步）：
+排程週一～五 18:00～22:00 每小時執行一次 `main.py`（期間算一次再傳給每一步）。證交所 17:30～17:45 公布，18:00 通常就跑得完；萬一還沒公布，那次會失敗、下一個小時再試；全部成功就在 `data/done/` 放一個當天的記號，之後同一天的排程直接結束：
 
 1. **crawler**：證交所先抓（要知道當天哪些股票被關注），之後觀測站（重大訊息清單 → 全文）、新聞（FinMind 清單 → 新聞網頁）兩條同時。某一份抓失敗就記下來，繼續抓下一份。
 2. **transform**：每份 raw 整理成 stage。raw 沒抓到就跳過；程式出錯（例如官方改了欄位）就不跑 3、4。
@@ -74,7 +74,10 @@ uv run python -m ai.producer        backfill --start 20261113 --end 20261113
 - 重大訊息、新聞只查當天被關注的上市公司（被列注意、處置中）：重大訊息查當月和上個月，新聞查那天和往前 7 天（`NEWS_LOOKBACK_DAYS`）。
 - 新聞網頁不存全文（著作權），只存 `<head>`（標題、導言）、轉址後的網址、全文字數。論壇貼文不抓；被擋、轉址這類永久失敗記一列，之後不再抓。
 - raw 只新增不修改，成功、失敗都留；讀的時候只拿最新一份成功的。
-- 已經抓完整的不再抓（加 `--refetch` 全部重抓）。「完整」＝資料不會再變之後抓的：注意股、處置股、收盤行情是那天 20:00 以後；一個月的資料是那個月過完以後；FinMind 新聞是隔天 08:00 以後。
+- 已經抓完整的不再抓（加 `--refetch` 全部重抓）。「完整」＝資料不會再變之後抓的：
+  - 注意股、處置股、收盤行情：看得到那天的資料就算公布了（注意股有那天的日期、處置股寫「資訊更新日期：那天」、收盤行情有個股的表），不管幾點；看不到的（休市、那天真的沒人被列），20:00 以後抓的才算。還沒公布就抓的存成失敗（空名單不是「沒人被列」）。
+  - 注意累計名單只有最新一份：上面的日期不是今天、又還沒 20:00，就是今天的還沒公布，存成失敗、下一輪再抓（不然這一輪算成功，今天的名單就沒抓到）。
+  - 一個月的資料是那個月過完以後；FinMind 新聞是隔天 08:00 以後。
 - 暫時性的失敗（逾時、5xx、429）等 5 秒重試，最多 3 次；內容不對、被擋不重試。
 
 ## transform：raw → stage
@@ -137,17 +140,18 @@ gzip -dc data/backup/tw_stock_20261114_233000.sql.gz | wsl docker exec -i postgr
 
 | 工作 | 時間 | 執行 | log |
 |---|---|---|---|
-| `G2-attention_stock_tracker-daily` | 週一～五 21:00 | `scripts\run_daily.bat` | `data/logs/daily-YYYY-MM-DD.log` |
+| `G2-attention_stock_tracker-daily` | 週一～五 18:00～22:00 每小時（當天全部跑完就跳過） | `scripts\run_daily.bat` | `data/logs/daily-YYYY-MM-DD.log` |
 | `G2-attention_stock_tracker-backup` | 週一～五 23:30 | `scripts\run_backup.bat` | `data/backup.log` |
 
 - 背景執行（`conhost.exe --headless`）；錯過時開機後補跑；關機或睡眠時不會跑。log 留 30 天，永久的紀錄是 `tw_stock.job_run`。
 - `Start-ScheduledTask <工作名稱>` 手動跑一次；`Get-ScheduledTaskInfo <工作名稱>` 看結果。
 
-重灌時重建（backup 換檔名、時間，加 `-ExecutionTimeLimit (New-TimeSpan -Hours 1)`）：
+重灌時重建（backup 換檔名、時間 23:30，不用每小時那一行，加 `-ExecutionTimeLimit (New-TimeSpan -Hours 1)`）：上一次還在跑時，下一個小時不會再開一份（工作排程器預設）。
 
 ```powershell
 $action   = New-ScheduledTaskAction -Execute conhost.exe -Argument "--headless cmd.exe /c `"$(Resolve-Path scripts\run_daily.bat)`""
-$trigger  = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At 21:00
+$trigger  = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At 18:00
+$trigger.Repetition = (New-ScheduledTaskTrigger -Once -At 18:00 -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration (New-TimeSpan -Hours 4 -Minutes 1)).Repetition   # 每小時，到 22:00
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable
 Register-ScheduledTask -TaskName G2-attention_stock_tracker-daily -Action $action -Trigger $trigger -Settings $settings
 ```

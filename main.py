@@ -11,6 +11,9 @@
 - ai 失敗只影響 AI 的結果，網站照常（規則引擎不讀 AI 的結果）。
 有任何一步失敗，最後結束代碼是 1。每一步也可以單獨執行，見 docs/flow.md。
 
+每天的排程 18:00～22:00 每小時跑一次（證交所 17:30～17:45 公布；萬一還沒公布，那次會失敗、下一個小時再試）：
+daily 全部成功就在 data/done/ 放一個當天的記號，同一天之後的排程看到記號就直接結束。backfill 不看也不放記號。
+
 同一時間只跑一輪：開始前鎖住 data/pipeline.lock 這個檔案（作業系統的檔案鎖，不是資料庫）。
 上一輪（例如還沒跑完的回補）還鎖著就排隊等，最多等 PIPELINE_LOCK_WAIT_SECONDS 秒。
 一輪裡面的任務可以分到好幾個 worker，鎖只管「輪」。之後換到多台機器，改用 Airflow 的 max_active_runs=1。
@@ -26,6 +29,7 @@ from common import cli
 from common.config import PIPELINE_LOCK_WAIT_SECONDS, PROJECT_ROOT
 
 LOCK_FILE = PROJECT_ROOT / "data" / "pipeline.lock"
+DONE_DIR = PROJECT_ROOT / "data" / "done"   # 每天全部跑完的記號，檔名是日期（YYYYMMDD）
 
 if os.name == "nt":   # Windows
     import msvcrt
@@ -127,9 +131,16 @@ def run_pipeline(args: list[str]) -> None:
 def main() -> None:
     args = cli.parse_args()   # daily：今天；backfill：--start～--end（沒給 --end 就是今天）
     step_args = ["backfill", "--start", args.start, "--end", args.end] + (["--refetch"] if args.refetch else [])
+    done_mark = DONE_DIR / args.end if args.mode != "backfill" else None   # 只有 daily 用記號
     try:
         with pipeline_lock(LOCK_FILE, PIPELINE_LOCK_WAIT_SECONDS):
-            run_pipeline(step_args)
+            if done_mark and done_mark.exists():
+                print(f"{args.end} 已經全部跑完（{done_mark}），跳過")
+                return
+            run_pipeline(step_args)   # 有失敗會丟 SystemExit(1)，不會放記號，下一個小時再跑
+            if done_mark:
+                done_mark.parent.mkdir(parents=True, exist_ok=True)
+                done_mark.touch()
     except TimeoutError as e:
         print(e)
         raise SystemExit(1)

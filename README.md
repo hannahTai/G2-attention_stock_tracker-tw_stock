@@ -26,7 +26,7 @@ Source → Ingest → Storage → Process → Serve → Observe
 
 ```mermaid
 flowchart LR
-    S["📁 Source<br/>證交所 API<br/>觀測站 API<br/>FinMind 新聞<br/>新聞網站"] --> I["📥 Ingest<br/>Python requests<br/>每日 21:00 排程"]
+    S["📁 Source<br/>證交所 API<br/>觀測站 API<br/>FinMind 新聞<br/>新聞網站"] --> I["📥 Ingest<br/>Python requests<br/>每日 18:00 起每小時排程"]
     I --> ST["💾 Storage<br/>PostgreSQL<br/>raw / stage / app"]
     ST --> P["⚙️ Process<br/>pandas<br/>清理 + 規則引擎"]
     P --> SE["🖥 Serve<br/>FastAPI 資料 API<br/>Streamlit 網頁"]

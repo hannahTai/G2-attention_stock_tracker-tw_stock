@@ -102,9 +102,9 @@ def twse_keys(jobs, name):
 
 
 def test_twse_skips_days_fetched_after_publish(raw_store):
-    """注意股：那天 20:00 以後抓的不再抓；20:00 前抓的（可能還沒公布）要重抓。refetch 全部重抓。"""
-    raw_store.put("notice", "20261112", {"data": []}, fetched_at="2026-11-12T21:00:00+08:00")   # 完整
-    raw_store.put("notice", "20261113", {"data": []}, fetched_at="2026-11-13T16:00:00+08:00")   # 還沒公布就抓了
+    """注意股：有成功的就不再抓（公布了才會存成成功，幾點抓的都一樣）；還沒公布就抓的存成失敗，要重抓。refetch 全部重抓。"""
+    raw_store.put("notice", "20261112", {"data": []}, fetched_at="2026-11-12T18:00:00+08:00")   # 18:00 看到當天的資料：完整
+    raw_store.put("notice", "20261113", {"data": []}, fetched_at="2026-11-13T16:00:00+08:00", ok=False)   # 還沒公布就抓了
     jobs = pc.build_twse_jobs("20261112", "20261113")
     assert twse_keys(jobs, "crawl_notice") == [("20261113",)]
     assert twse_keys(jobs, "crawl_punish") == [("20261112",), ("20261113",)]   # 處置股都還沒抓過
@@ -112,7 +112,7 @@ def test_twse_skips_days_fetched_after_publish(raw_store):
 
 
 def test_twse_stock_price_skips_days_fetched_after_publish(raw_store):
-    """收盤行情：一天一份，和注意股一樣，那天 20:00 以後抓的不再抓。"""
+    """收盤行情：一天一份，和注意股一樣，有成功的就不再抓。"""
     raw_store.put("stock_price", "20261112", {"tables": []}, fetched_at="2026-11-12T21:00:00+08:00")
     assert twse_keys(pc.build_twse_jobs("20261112", "20261113"), "crawl_stock_price") == [("20261113",)]
 
