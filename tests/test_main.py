@@ -55,9 +55,8 @@ def test_gives_up_after_waiting_too_long(tmp_path):
 def test_lock_released_after_error(tmp_path):
     """這一輪出錯，鎖也會放掉，下一輪可以馬上開始。"""
     lock_file = tmp_path / "pipeline.lock"
-    with pytest.raises(RuntimeError):
-        with main.pipeline_lock(lock_file, wait_seconds=1):
-            raise RuntimeError("這一輪出錯")
+    with pytest.raises(RuntimeError), main.pipeline_lock(lock_file, wait_seconds=1):
+        raise RuntimeError("這一輪出錯")
     with main.pipeline_lock(lock_file, wait_seconds=0.1):
         pass
 

@@ -143,7 +143,7 @@ def main() -> None:
                 done_mark.touch()
     except TimeoutError as e:
         print(e)
-        raise SystemExit(1)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

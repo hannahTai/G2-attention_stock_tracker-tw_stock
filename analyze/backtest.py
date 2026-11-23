@@ -66,7 +66,7 @@ def compare(actual: pd.DataFrame, predicted: pd.DataFrame) -> pd.DataFrame:
     merged = merged[merged["result"].notna()].copy()
     merged["same_condition"] = [
         (path in str(by).split(",")) if pd.notna(path) and pd.notna(by) else None
-        for path, by in zip(merged["actual_path"], merged["punished_by"])
+        for path, by in zip(merged["actual_path"], merged["punished_by"], strict=True)
     ]
     return merged.sort_values(["trade_date", "stock_id"]).reset_index(drop=True)
 
@@ -89,7 +89,7 @@ def report(result: pd.DataFrame) -> None:
         if len(rows):
             print(f"\n== {label} ==")
             print(rows[cols].to_string(index=False))
-    wrong_condition = hits[hits["same_condition"] == False]   # noqa: E712（要排除 None）
+    wrong_condition = hits[hits["same_condition"] == False]   # noqa: E712  要排除 None（not 會把 None 也算進來）
     if len(wrong_condition):
         print("\n== 一致但條件不同 ==")
         print(wrong_condition[cols].to_string(index=False))

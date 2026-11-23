@@ -10,9 +10,11 @@ import pytest
 from common.date_utils import roc_to_date, roc_to_dates
 from transform.parsing import chinese_number, strip_html, to_number
 from transform.transformer import (
-    announcement_detail_to_frame, announcement_to_frame, clean_announcement_detail, holiday_to_frame, market_daily_to_frame, notice_to_frame, punish_to_frame,
+    announcement_detail_to_frame, announcement_to_frame, clean_announcement_detail, holiday_to_frame, market_daily_to_frame,
+    notice_to_frame, punish_to_frame,
     punish_watchlist_to_frame, clean_announcement, clean_company, company_to_frame, clean_holiday, clean_notice,
-    clean_news_detail, clean_punish, clean_punish_watchlist, clean_stock_news, clean_stock_price, clean_trading_day, news_detail_to_frame, stock_news_to_frame,
+    clean_news_detail, clean_punish, clean_punish_watchlist, clean_stock_news, clean_stock_price, clean_trading_day,
+    news_detail_to_frame, stock_news_to_frame,
     stock_price_to_frame,
 )
 
@@ -63,7 +65,8 @@ def test_to_number_rejects_garbage():
 def test_basic_row():
     notices, clauses = run(ROW_ANDES)
     row = notices.iloc[0]
-    assert (row["trade_date"], row["stock_id"], row["stock_name"], row["close_price"]) == (datetime.date(2026, 11, 6), "6533", "晶心科", 202.0)
+    assert (row["trade_date"], row["stock_id"], row["stock_name"], row["close_price"]) == (
+        datetime.date(2026, 11, 6), "6533", "晶心科", 202.0)
     assert math.isnan(row["pe_ratio"])
     assert clauses.to_dict("records") == [{"trade_date": datetime.date(2026, 11, 6), "stock_id": "6533", "clause": 1}]
 
@@ -98,7 +101,7 @@ def test_empty_day_returns_empty_frames():
 def test_missing_used_field_raises():
     """用得到的欄位不見了要報錯，不能默默變成空值。"""
     fields = [f for f in NOTICE_API_FIELDS if f != "收盤價"]
-    row = [v for f, v in zip(NOTICE_API_FIELDS, ROW_ANDES) if f != "收盤價"]
+    row = [v for f, v in zip(NOTICE_API_FIELDS, ROW_ANDES, strict=True) if f != "收盤價"]
     with pytest.raises(ValueError, match="收盤價"):
         notice_to_frame(envelope([row], fields=fields))
 
@@ -185,7 +188,8 @@ def test_punish_watchlist_date_from_title_and_br_split():
 # ---------- 交易日、休市 ----------
 def test_trading_day_numbers():
     rows = [["115/11/02", "10,422,514,115", "799,687,507,911", "4,104,242", "44,920.14", "-291.69"]]
-    df = clean_trading_day(market_daily_to_frame(envelope(rows, MARKET_API_FIELDS)), "202611", datetime.date(2026, 11, 2), lambda day: False)
+    df = clean_trading_day(market_daily_to_frame(envelope(rows, MARKET_API_FIELDS)), "202611", datetime.date(2026, 11, 2),
+                           lambda day: False)
     trading = df[df["is_trading"]]
     assert len(trading) == 1
     assert trading.iloc[0]["volume_shares"] == 10422514115 and trading.iloc[0]["taiex_change_points"] == -291.69
@@ -194,7 +198,8 @@ def test_trading_day_numbers():
 def test_trading_day_calendar_until_covered_day():
     """11/02（一）、11/03（二）有交易，抓到 11/04：11/01（日）、11/04（颱風假）沒交易；11/05 之後不寫（還不知道）。"""
     rows = [["115/11/02", "1", "1", "1", "1", "1"], ["115/11/03", "1", "1", "1", "1", "1"]]
-    df = clean_trading_day(market_daily_to_frame(envelope(rows, MARKET_API_FIELDS)), "202611", datetime.date(2026, 11, 4), lambda day: False)
+    df = clean_trading_day(market_daily_to_frame(envelope(rows, MARKET_API_FIELDS)), "202611", datetime.date(2026, 11, 4),
+                           lambda day: False)
     assert df["trade_date"].tolist() == [datetime.date(2026, 11, d) for d in (1, 2, 3, 4)]
     assert df["is_trading"].tolist() == [False, True, True, False]
     assert df["volume_shares"].isna().tolist() == [True, False, False, True]
@@ -252,7 +257,10 @@ def test_trading_day_not_updated_if_prices_exist():
     只問市場成交裡沒有的日子（11/02、11/03 有，不用問）。"""
     rows = [["115/11/02", "1", "1", "1", "1", "1"], ["115/11/03", "1", "1", "1", "1", "1"]]
     asked = []
-    traded = lambda day: asked.append(day) or day == datetime.date(2026, 11, 4)
+
+    def traded(day):
+        asked.append(day)
+        return day == datetime.date(2026, 11, 4)
     with pytest.warns(UserWarning, match="還沒有"):
         df = clean_trading_day(market_daily_to_frame(envelope(rows, MARKET_API_FIELDS)), "202611", datetime.date(2026, 11, 4), traded)
     assert df["trade_date"].tolist() == [datetime.date(2026, 11, d) for d in (1, 2, 3)]

@@ -12,6 +12,7 @@
 USE_CELERY=1 時，同一批任務改成送進 RabbitMQ 給 worker 做：task.s(**參數).apply_async(queue=...)（和課程的 producer 一樣），
 等全部做完才回傳；重試、間隔改在 worker 上做（common/worker.py 的 Job）。
 """
+import functools
 import time
 
 import anthropic
@@ -103,14 +104,15 @@ def run_jobs(jobs: list[tuple], sleep: float = 0.0, retries: int = MAX_RETRIES, 
     """執行一批任務，回傳失敗的任務名稱。
 
     sleep：每個任務之後等幾秒（打 API 太快會被擋）。retries：暫時性的失敗重試幾次（見 is_retryable）。
-    queue：USE_CELERY=1 時送到哪個佇列（crawl_twse、crawl_mops、crawl_finmind、crawl_news、transform、analyze、ai、embed，見 common/worker.py），
+    queue：USE_CELERY=1 時送到哪個佇列
+    （crawl_twse、crawl_mops、crawl_finmind、crawl_news、transform、analyze、ai、embed，見 common/worker.py），
     一定要給；沒開就在這裡依序執行，不用給。
     """
     if USE_CELERY:   # 重試、間隔都在 worker 那邊做（Job）
         return collect_results(send_jobs(jobs, queue))
     failed = []
     for func, kwargs in jobs:
-        report(job_name(func, kwargs), lambda: run_with_retry(func, kwargs, retries), failed)
+        report(job_name(func, kwargs), functools.partial(run_with_retry, func, kwargs, retries), failed)
         if sleep:
             time.sleep(sleep)
     return failed
@@ -206,7 +208,7 @@ def run_chains(chains: list[list[tuple]]) -> list[str]:
             while sent:                                   # 照送出的順序拿結果，拿不到（還沒好）就換下一條鏈
                 name, result = sent[0]
                 try:
-                    report(name, lambda: result.get(timeout=CHAIN_WAIT_SECONDS), failed)
+                    report(name, functools.partial(result.get, timeout=CHAIN_WAIT_SECONDS), failed)
                 except celery.exceptions.TimeoutError:
                     break
                 sent.pop(0)

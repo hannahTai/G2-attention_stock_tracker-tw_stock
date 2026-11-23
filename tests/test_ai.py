@@ -1,4 +1,5 @@
-"""ai/：公告分類、新聞摘要（prompt、檢查、任務流程）、LLM 呼叫紀錄、AI producer 的任務清單。不連網路、不連資料庫、不花錢。執行：uv run pytest"""
+"""ai/：公告分類、新聞摘要（prompt、檢查、任務流程）、LLM 呼叫紀錄、AI producer 的任務清單。
+不連網路、不連資料庫、不花錢。執行：uv run pytest"""
 import datetime
 import json
 import types
@@ -16,7 +17,8 @@ from common.hash_utils import key_md5
 from crawler import client as crawler_client
 
 ANNOUNCEMENT = {
-    "announcement_id": key_md5("6108", "20261114", 3), "company_id": "6108", "company_name": "競國", "announce_date": datetime.date(2026, 11, 14),
+    "announcement_id": key_md5("6108", "20261114", 3), "company_id": "6108", "company_name": "競國",
+    "announce_date": datetime.date(2026, 11, 14),
     "subject": "本公司115年10月營收", "announce_clause": "第51款", "clause_name": "其他重大事項",
     "fact_date": datetime.date(2026, 11, 14), "content": "10月營收為1,520萬元，較去年同期增加31%。",
 }
@@ -114,7 +116,9 @@ def test_save_llm_call_records_problem_then_raises(monkeypatch):
 
 def test_claude_api_errors_retry_only_when_temporary():
     request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
-    status = lambda code: anthropic.APIStatusError("x", response=httpx2.Response(code, request=request), body=None)
+
+    def status(code):
+        return anthropic.APIStatusError("x", response=httpx2.Response(code, request=request), body=None)
     assert runner.is_retryable(anthropic.APIConnectionError(request=request))
     assert runner.is_retryable(anthropic.RateLimitError("x", response=httpx2.Response(429, request=request), body=None))
     assert runner.is_retryable(status(529)) and not runner.is_retryable(status(400))

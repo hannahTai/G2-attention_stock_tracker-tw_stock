@@ -101,7 +101,7 @@ def clean_punish(df: pd.DataFrame) -> pd.DataFrame:
     conflicts = out[out.duplicated(keys, keep=False) & ~out.duplicated(keep=False)]
     if not conflicts.empty:
         listed = conflicts[keys + ["measure_type"]].to_string(index=False)
-        warnings.warn(f"處置股：同一天同一檔有多則處置，只會留下一則，請確認：\n{listed}")
+        warnings.warn(f"處置股：同一天同一檔有多則處置，只會留下一則，請確認：\n{listed}", stacklevel=2)
     return out.sort_values(keys, kind="stable").reset_index(drop=True)
 
 
@@ -173,7 +173,7 @@ def clean_trading_day(df: pd.DataFrame, month_yyyymm: str, through: datetime.dat
     missing = ~out["is_trading"]                                      # 只問資料裡沒有的日子（週末、休市的回應很小）
     not_updated[missing] = [bool(traded(day)) for day in out.loc[missing, "trade_date"]]
     if not_updated.any():
-        warnings.warn(f"市場成交還沒有 {sorted(out.loc[not_updated, 'trade_date'])}，但那天有收盤行情：先不寫，等下次抓")
+        warnings.warn(f"市場成交還沒有 {sorted(out.loc[not_updated, 'trade_date'])}，但那天有收盤行情：先不寫，等下次抓", stacklevel=2)
     return out[~not_updated].sort_values("trade_date", kind="stable").reset_index(drop=True)
 
 
@@ -285,7 +285,7 @@ def clean_announcement(df: pd.DataFrame) -> pd.DataFrame:
 
 def announcement_ids(df: pd.DataFrame) -> list[str]:
     """（公司, 輸入日期, 序號）→ announcement_id（common/hash_utils.py 的 key_md5）。"""
-    return [key_md5(c, d.strftime(DATE_FMT), s) for c, d, s in zip(df["company_id"], df["enter_date"], df["serial_number"])]
+    return [key_md5(c, d.strftime(DATE_FMT), s) for c, d, s in zip(df["company_id"], df["enter_date"], df["serial_number"], strict=True)]
 
 
 # ---------- 重大訊息全文 → stage_announcement_detail ----------
@@ -370,7 +370,7 @@ def clean_stock_news(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         "news_time": times,
         "news_date": times.dt.date,
         "publisher": df["source"].str.strip(),   # FinMind 的 source 是發布的媒體，不是資料來源
-        "title": [strip_publisher_suffix(t, p) for t, p in zip(df["title"], df["source"].str.strip())],
+        "title": [strip_publisher_suffix(t, p) for t, p in zip(df["title"], df["source"].str.strip(), strict=True)],
     })
     out = out.sort_values("news_time", kind="stable").drop_duplicates(STAGE_KEYS["stage_stock_news"], keep="first")
     out = out.sort_values(["stock_id", "news_time"], kind="stable").reset_index(drop=True)   # news_id 是亂碼，照時間排比較好看

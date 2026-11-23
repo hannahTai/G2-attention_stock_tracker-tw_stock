@@ -20,7 +20,8 @@ TWSE_OPENAPI_BASE = os.environ.get("TWSE_OPENAPI_BASE", "https://openapi.twse.co
 MOPS_BASE = os.environ.get("MOPS_BASE", "https://mops.twse.com.tw/mops/api")
 FINMIND_BASE = os.environ.get("FINMIND_BASE", "https://api.finmindtrade.com/api/v4")
 FINMIND_TOKEN = secret("FINMIND_TOKEN")   # 選填：不帶也抓得到，帶了每小時的次數上限比較高
-NEWS_LOOKBACK_DAYS = int(os.environ.get("NEWS_LOOKBACK_DAYS", "7"))   # 新聞：被關注的股票往前抓幾天；網站、卡片 AI 摘要看最近這幾天（含當天）
+# 新聞：被關注的股票往前抓幾天；網站、卡片 AI 摘要看最近這幾天（含當天）
+NEWS_LOOKBACK_DAYS = int(os.environ.get("NEWS_LOOKBACK_DAYS", "7"))
 
 # 請求間隔（秒），太快會被擋
 SLEEP_SECONDS = float(os.environ.get("SLEEP_SECONDS", "1.0"))

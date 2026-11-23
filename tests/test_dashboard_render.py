@@ -367,7 +367,8 @@ def test_rest_is_sorted_by_steps_then_how_full_the_bar_is():
 def test_secondary_tags_are_sub_tags_in_the_header():
     page = overview(tab="leave_tomorrow")   # 丙公司：處置最後一天、第二次
     head = page[page.index("丙公司"):].split("</div>")[0]
-    assert '<span class="sub-tag mut">第二次處置</span><span class="pill violet">明日出關</span>' in head and "處置中" not in head   # 小框在左、色塊在右
+    # 小框在左、色塊在右
+    assert '<span class="sub-tag mut">第二次處置</span><span class="pill violet">明日出關</span>' in head and "處置中" not in head
 
 
 def test_leave_today_listed_again_shows_sub_tag_and_bar():

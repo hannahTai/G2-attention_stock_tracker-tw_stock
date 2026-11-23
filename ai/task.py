@@ -84,7 +84,8 @@ def summarize_news(news_id: str) -> str:
 
     全文只在記憶體裡，用完就丟，不存進資料庫（著作權）；存的只有摘要。
     網頁這次打不開（被擋、不是網頁）或全文太短就跳過，不問 LLM；5xx、429、逾時丟錯誤重試（requests 的錯誤）。
-    摘要上限依文章長度（summarizer.summary_limit：文章的三成，80～1200 字）；超過就請 LLM 縮短，只重問一次（和公告分類一樣），還是太長就照存，summary_ok＝否。
+    摘要上限依文章長度（summarizer.summary_limit：文章的三成，80～1200 字）；
+    超過就請 LLM 縮短，只重問一次（和公告分類一樣），還是太長就照存，summary_ok＝否。
     在 ai 佇列上跑（同時 2 個），沒有 NewsDetailJob 的間隔：要摘要的網頁分散在十幾個網站，同一個網站不會被連續打。
     """
     if repository.has_news_summary(news_id, summarizer.PROMPT_VERSION):
@@ -129,7 +130,7 @@ def embed_news(date_yyyymmdd: str) -> str:
         return f"{date_yyyymmdd} 沒有要轉的新聞"
     vectors = embedder.embed([text for _, text, _ in todo])
     repository.save_news_embeddings([{"news_id": news_id, "model": EMBED_MODEL, "embedding": embedder.to_pgvector(vector),
-                                      "input_hash": text_hash} for (news_id, _, text_hash), vector in zip(todo, vectors)])
+                                      "input_hash": text_hash} for (news_id, _, text_hash), vector in zip(todo, vectors, strict=True)])
     return f"ai_news_embedding/{date_yyyymmdd}：{len(todo)} 則"
 
 
@@ -143,7 +144,8 @@ def group_news_stories(start_yyyymmdd: str, end_yyyymmdd: str) -> str:
     if not news_ids:
         return f"{start_yyyymmdd}～{end_yyyymmdd} 沒有要歸類的新聞"
     stories = retriever.assign_stories(news_ids, links, known)
-    repository.save_news_stories([{"news_id": news_id, "model": EMBED_MODEL, "story_id": story_id} for news_id, story_id in stories.items()])
+    repository.save_news_stories([{"news_id": news_id, "model": EMBED_MODEL, "story_id": story_id}
+                                  for news_id, story_id in stories.items()])
     grouped = sum(1 for news_id, story_id in stories.items() if news_id != story_id)
     return f"ai_news_story/{start_yyyymmdd}～{end_yyyymmdd}：{len(stories)} 則，{grouped} 則和別則是同一件事"
 

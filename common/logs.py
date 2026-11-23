@@ -60,7 +60,7 @@ class DailyFileHandler(logging.Handler):
         if self.stream:
             self.stream.close()
         self.folder.mkdir(parents=True, exist_ok=True)
-        self.stream = open(log_path(self.folder, self.prefix, today), "a", encoding="utf-8")
+        self.stream = open(log_path(self.folder, self.prefix, today), "a", encoding="utf-8")   # noqa: SIM115  log 要一直開著寫，換日或 close() 才關
         self.day = today
         remove_old_logs(self.folder, self.prefix, self.keep_days, today)
 

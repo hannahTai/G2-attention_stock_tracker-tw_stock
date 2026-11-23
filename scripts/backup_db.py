@@ -42,7 +42,8 @@ def dump(out_path: pathlib.Path) -> None:
     """pg_dump 的輸出邊讀邊壓縮寫進 out_path；失敗就刪掉不完整的檔案。"""
     cmd, env = dump_command()
     tmp_path = out_path.with_suffix(".partial")
-    with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env) as proc,             gzip.open(tmp_path, "wb") as gz:
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env) as proc, \
+            gzip.open(tmp_path, "wb") as gz:
         shutil.copyfileobj(proc.stdout, gz)
         stderr = proc.stderr.read().decode("utf-8", "replace")
     if proc.returncode != 0:

@@ -80,6 +80,7 @@ def test_news_detail_jobs_only_for_fetched_pages(raw_store, monkeypatch):
         {"date": "2026-11-13 01:00:00", "stock_id": "2330", "link": "https://a/1", "source": "UDN", "title": "a"},
         {"date": "2026-11-13 02:00:00", "stock_id": "2330", "link": "https://b/2", "source": "UDN", "title": "b"}]})
     raw_store.put("news_detail", url_md5("https://a/1"), {"head": "", "final_url": "https://a/1", "text_chars": None})
-    raw_store.put("news_detail", url_md5("https://z/9"), {"head": "", "final_url": "https://z/9", "text_chars": None})   # 不在這段期間的清單裡
+    # 不在這段期間的清單裡
+    raw_store.put("news_detail", url_md5("https://z/9"), {"head": "", "final_url": "https://z/9", "text_chars": None})
     jobs = jobs_by_task(producer.build_jobs("20261113", "20261113"))
     assert jobs["transform_news_detail"] == [(url_md5("https://a/1"),)]

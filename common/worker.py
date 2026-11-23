@@ -9,7 +9,8 @@
     celery -A common.worker worker -Q ai --concurrency 2           # AI（ai/）：呼叫 Claude API（公告分類、新聞摘要）、同一件事
     celery -A common.worker worker -Q embed --concurrency 1        # 用本機 embedding 模型的 AI 任務（新聞 RAG、卡片 AI 摘要）
 
-docker-compose.yml 已經把這八個 worker（服務 celery-crawl-twse、celery-crawl-mops、celery-crawl-finmind、celery-crawl-news、celery-transform、celery-analyze、celery-ai、celery-embed）
+docker-compose.yml 已經把這八個 worker（服務 celery-crawl-twse、celery-crawl-mops、celery-crawl-finmind、celery-crawl-news、
+celery-transform、celery-analyze、celery-ai、celery-embed）
 和 RabbitMQ、Flower 都寫好，平常用 docker compose 啟動就好。
 
 任務：crawler/task.py、transform/task.py、analyze/task.py、ai/task.py 裡每個函式都用 @app.task 註冊成 Celery 任務
@@ -32,7 +33,8 @@ producer 送任務的寫法和課程一樣：task.crawl_notice.s(date_yyyymmdd="
 
 結果：用 rpc://（結果經 RabbitMQ 送回給送任務的 producer），producer 等這一批都做完才送下一批。
 紀錄：每個任務跑完寫一列任務歷史（tw_stock.job_run）；文字 log 另外寫到 LOG_DIR/<worker 名稱>-YYYY-MM-DD.log
-（crawl_twse、crawl_mops、crawl_finmind、crawl_news、transform、analyze、ai、embed，取自 --hostname 的 @ 前面，例如 crawl_twse@tw_stock；每天一個檔，留 LOG_KEEP_DAYS 天，見 common/logs.py），畫面上（docker compose logs）照樣看得到。
+（crawl_twse、crawl_mops、crawl_finmind、crawl_news、transform、analyze、ai、embed，取自 --hostname 的 @ 前面，
+例如 crawl_twse@tw_stock；每天一個檔，留 LOG_KEEP_DAYS 天，見 common/logs.py），畫面上（docker compose logs）照樣看得到。
 """
 import logging
 import time
@@ -102,7 +104,7 @@ class Job(celery.Task):
             retry = runner.is_retryable(e) and self.request.retries < self.max_retries
             runner.record(self, kwargs, "retry" if retry else "failure", started, error=runner.error_text(e), **where)
             if retry:
-                raise self.retry(exc=e, countdown=RETRY_DELAY_SECONDS)
+                raise self.retry(exc=e, countdown=RETRY_DELAY_SECONDS) from e
             raise RuntimeError(runner.error_text(e)) from None
         else:
             runner.record(self, kwargs, "success", started, result=result, **where)

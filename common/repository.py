@@ -69,7 +69,8 @@ DATABASE_EXISTS_ERRORS = ("42P04", "23505")
 
 def create_database(database: str = DB_NAME) -> None:
     """資料庫不存在就建（PostgreSQL 沒有 CREATE DATABASE IF NOT EXISTS，先查再建）。
-    兩個 producer 同時查到「不存在」、同時建（analyze 和 ai 同時開始）：後建的那個會得到「已經存在」（DATABASE_EXISTS_ERRORS），當成成功。"""
+    兩個 producer 同時查到「不存在」、同時建（analyze 和 ai 同時開始）：
+    後建的那個會得到「已經存在」（DATABASE_EXISTS_ERRORS），當成成功。"""
     with get_engine("").connect() as conn:
         exists = conn.execute(sqlalchemy.text("SELECT 1 FROM pg_database WHERE datname = :name"),
                               {"name": database}).scalar()
@@ -298,7 +299,7 @@ def insert_chunk(pd_table, conn, columns: list[str], data_iter) -> None:
     不用 pandas 自己猜的型別：整欄都是 None 的日期欄，pandas 會當成文字，PostgreSQL 不會自動轉成 DATE。
     """
     table = table_of(conn, pd_table.name)
-    conn.execute(sqlalchemy.insert(table).values([dict(zip(columns, row)) for row in data_iter]))
+    conn.execute(sqlalchemy.insert(table).values([dict(zip(columns, row, strict=True)) for row in data_iter]))
 
 
 def insert_rows(conn, table: str, df: pd.DataFrame) -> None:
@@ -333,7 +334,7 @@ def upsert_chunk(pd_table, conn, columns: list[str], data_iter, *, keys: list[st
     主鍵撞到時，只有「資料庫裡的版本是 NULL，或這批的版本 >= 資料庫的」才整列換成新值，否則留舊值。
     """
     table = table_of(conn, pd_table.name)
-    insert = sqlalchemy.dialects.postgresql.insert(table).values([dict(zip(columns, row)) for row in data_iter])
+    insert = sqlalchemy.dialects.postgresql.insert(table).values([dict(zip(columns, row, strict=True)) for row in data_iter])
     new, old = insert.excluded, table.c                                                 # new＝這次要寫的值（EXCLUDED）
     updates = {c: new[c] for c in columns if c not in keys}
     updates["loaded_at"] = sqlalchemy.text("LOCALTIMESTAMP(0)")
@@ -502,7 +503,8 @@ def save_news_embeddings(rows: list[dict]) -> None:
 def news_story_links(start: datetime.date, end: datetime.date, model: str, threshold: float, days: int, min_title_chars: int
                      ) -> tuple[list[str], list[tuple[str, str, float]], dict[str, str]]:
     """同一件事的判斷要的資料（retriever.assign_stories）：
-    區間內有向量的新聞（照時間排）；每則和 days 天內、同一檔股票、比它早的新聞，同一篇（標題一樣，或一則是另一則的開頭、短的至少 min_title_chars 字）或相似度 ≥ threshold 的配對；
+    區間內有向量的新聞（照時間排）；每則和 days 天內、同一檔股票、比它早的新聞，
+    同一篇（標題一樣，或一則是另一則的開頭、短的至少 min_title_chars 字）或相似度 ≥ threshold 的配對；
     區間之前已經歸好的 story。"""
     params = {"start": start, "end": end, "model": model, "threshold": threshold, "days": days, "min_chars": min_title_chars}
     news = query_rows(
@@ -535,7 +537,8 @@ def save_news_stories(rows: list[dict]) -> None:
     with get_engine().begin() as conn:
         conn.execute(sqlalchemy.text(
             "INSERT INTO tw_stock.ai_news_story (news_id, model, story_id) VALUES (:news_id, :model, :story_id) "
-            "ON CONFLICT (news_id) DO UPDATE SET model = EXCLUDED.model, story_id = EXCLUDED.story_id, grouped_at = LOCALTIMESTAMP(0)"), rows)
+            "ON CONFLICT (news_id) DO UPDATE SET model = EXCLUDED.model, story_id = EXCLUDED.story_id, "
+            "  grouped_at = LOCALTIMESTAMP(0)"), rows)
 
 
 def stock_news_candidates(stock_id: str, start: datetime.date, end: datetime.date, model: str, query: str,
@@ -644,7 +647,8 @@ def insert_card_summary(row: dict) -> None:
 def save_llm_call(row: dict, problem: str | None = None) -> str:
     """一次 LLM 呼叫記進 ai_llm_call，回傳記到哪裡；有問題的也記，記完丟 FetchError（和 save_raw 一樣）。
 
-    row：ai/client.py 的 call_record()。problem：ai/client.py 的 json_answer_problem() 找到的問題（拒答、被截斷、不是 JSON），重問也一樣，不重試。
+    row：ai/client.py 的 call_record()。
+    problem：ai/client.py 的 json_answer_problem() 找到的問題（拒答、被截斷、不是 JSON），重問也一樣，不重試。
     """
     insert_one("ai_llm_call", {**row, "status": "failure" if problem else "success", "error": problem})
     where = f"ai_llm_call/{row['ref_key']}"

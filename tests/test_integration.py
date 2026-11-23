@@ -295,11 +295,10 @@ def test_news_detail_done_skips_permanent_failures_only(db):
 
 def test_news_id_must_be_md5_of_link(db):
     """news_id 和 link 對不上（例如有一邊忘了去空白）：CHECK 擋下，不會默默接不起來。"""
-    with pytest.raises(sqlalchemy.exc.IntegrityError, match="stage_news_id_is_md5"):
-        with db.begin() as conn:
-            conn.execute(sqlalchemy.text(
-                "INSERT INTO stage_news (news_id, link, news_time, news_date, title) VALUES (:news_id, :link, :t, :d, 't')"),
-                {"news_id": url_md5(NEWS_LINK + "x"), "link": NEWS_LINK, "t": V1, "d": V1.date()})
+    with pytest.raises(sqlalchemy.exc.IntegrityError, match="stage_news_id_is_md5"), db.begin() as conn:
+        conn.execute(sqlalchemy.text(
+            "INSERT INTO stage_news (news_id, link, news_time, news_date, title) VALUES (:news_id, :link, :t, :d, 't')"),
+            {"news_id": url_md5(NEWS_LINK + "x"), "link": NEWS_LINK, "t": V1, "d": V1.date()})
 
 
 # ---------- ai_*：只新增 ----------
@@ -348,9 +347,8 @@ def test_announcement_id_matches_sql_and_joins_detail(db):
     with db.connect() as conn:
         row = conn.execute(sqlalchemy.text("SELECT announcement_id, content FROM app_announcement")).one()
     assert row.announcement_id == key_md5("9908", "20261102", 1) and row.content == "全文"
-    with pytest.raises(sqlalchemy.exc.IntegrityError, match="stage_announcement_id_is_md5"):
-        with db.begin() as conn:
-            conn.execute(sqlalchemy.text("UPDATE stage_announcement SET announcement_id = :bad"), {"bad": "0" * 32})
+    with pytest.raises(sqlalchemy.exc.IntegrityError, match="stage_announcement_id_is_md5"), db.begin() as conn:
+        conn.execute(sqlalchemy.text("UPDATE stage_announcement SET announcement_id = :bad"), {"bad": "0" * 32})
 
 
 def test_app_announcement_labels_come_from_ai_with_keyword_fallback(db):
@@ -365,7 +363,8 @@ def test_app_announcement_labels_come_from_ai_with_keyword_fallback(db):
         assert tuple(conn.execute(query).one()) == (True, False, None, None)    # 還沒分類：主旨有「更正」
     repository.insert_announcement_label({
         "announcement_id": key_md5("9908", "20261102", 1), "prompt_version": "v2", "category": "澄清／回應媒體",
-        "is_correction": False, "has_news": False, "is_negative": True, "summary": "澄清媒體報導", "reason": "r", "summary_ok": True, "model": "m"})
+        "is_correction": False, "has_news": False, "is_negative": True, "summary": "澄清媒體報導", "reason": "r",
+        "summary_ok": True, "model": "m"})
     with db.connect() as conn:
         assert tuple(conn.execute(query).one()) == (False, True, "澄清／回應媒體", "澄清媒體報導")   # 用公告分類的判斷
     with db.connect() as conn:   # 壞消息另外一欄
@@ -429,14 +428,17 @@ def test_same_story_grouped_and_listed_once(db):
     day = datetime.date(2026, 11, 20)
     with db.connect() as conn:
         listed = queries.stock_news(conn, "3653", day, day)
-    assert [(n["title"], n["also_reported_by"]) for n in listed] == [("【下週觀察】健策跌近一成仍留3清單", ["CMoney投資網誌"]), ("健策除息", []), ("健策接獲大單", ["自由時報", "鉅亨網"])]
+    assert [(n["title"], n["also_reported_by"]) for n in listed] == [
+        ("【下週觀察】健策跌近一成仍留3清單", ["CMoney投資網誌"]), ("健策除息", []), ("健策接獲大單", ["自由時報", "鉅亨網"])]
 
 
 def test_card_summary_reads_only_stage_and_ai(db):
     """卡片 AI 摘要只讀 stage 和公告分類：要寫哪幾張（今天被列注意或在注意累計名單上的上市公司）、事實、公告。"""
     day = datetime.date(2026, 11, 20)
     with db.begin() as conn:
-        run = lambda sql, **params: conn.execute(sqlalchemy.text(sql), params)
+
+        def run(sql, **params):
+            return conn.execute(sqlalchemy.text(sql), params)
         for company in ("2330", "2317", "1101"):
             run("INSERT INTO stage_company (company_id, short_name, full_name, industry_code, snapshot_date) "
                 "VALUES (:c, :c, :c, '24', :d)", c=company, d=day)

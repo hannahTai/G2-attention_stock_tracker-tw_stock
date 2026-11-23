@@ -36,6 +36,7 @@ packages = ["common", "crawler", "transform", "analyze", "ai", "api", "dashboard
 dev = [
     "httpx2>=2.16.2",
     "pytest>=8",
+    "ruff>=0.17.6",
 ]
 
 # torch 只裝 CPU 版：容器、筆電都沒有 GPU
@@ -52,3 +53,24 @@ testpaths = ["tests", "common", "crawler", "transform", "analyze", "ai", "api", 
 addopts = "--doctest-modules"
 filterwarnings = ["ignore:SOCKS support in urllib3"]   # trafilatura 載入 urllib3 的 SOCKS 支援（沒用到）
 markers = ["integration: 連本機 PostgreSQL 的整合測試（建測試用資料庫 <資料庫>_test，測完刪掉）"]
+
+# ruff：檢查程式（uv run ruff check .）。行長照專案現在的寫法放寬到 140（中文註解比較長）
+[tool.ruff]
+line-length = 140
+target-version = "py312"
+extend-exclude = ["data"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle：格式
+    "F",        # pyflakes：沒用到的 import、變數，打錯的名字
+    "B",        # bugbear：常見的 bug 寫法（例如可變的預設參數）
+    "UP",       # pyupgrade：用 Python 3.12 的寫法
+    "SIM",      # 可以寫得更簡單的地方
+]
+
+[tool.ruff.lint.per-file-ignores]
+# prompt 的文字：換行會改到送給 LLM 的內容（要換 PROMPT_VERSION、重跑），行長不檢查
+"ai/classifier.py" = ["E501"]
+"ai/summarizer.py" = ["E501"]
+"ai/card_summarizer.py" = ["E501"]

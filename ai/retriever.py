@@ -76,7 +76,7 @@ def similarity(a: list[float], b: list[float]) -> float:
     >>> similarity([1.0, 0.0], [0.6, 0.8])
     0.6
     """
-    return sum(x * y for x, y in zip(a, b))
+    return sum(x * y for x, y in zip(a, b, strict=True))
 
 
 def related_news(candidates: list[dict]) -> list[dict]:

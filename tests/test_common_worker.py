@@ -173,7 +173,7 @@ def test_transform_and_analyze_use_their_own_queues(monkeypatch):
     """transform、analyze 各自一個佇列（各一個 worker）。"""
     queues = []
     monkeypatch.setattr(runner, "run_jobs", lambda jobs, queue=None, **kw: queues.append(queue) or [])
-    for producer, name in ((transform_producer, "transform"), (analyze_producer, "analyze")):
+    for producer, _name in ((transform_producer, "transform"), (analyze_producer, "analyze")):
         monkeypatch.setattr(producer.repository, "create_tables", lambda: None)
         monkeypatch.setattr(producer, "build_jobs", lambda start, end: [])
         monkeypatch.setattr(producer.cli, "parse_args", lambda: types.SimpleNamespace(start="20261120", end="20261120"))

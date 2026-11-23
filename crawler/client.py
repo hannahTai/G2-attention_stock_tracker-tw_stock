@@ -96,7 +96,7 @@ def fetch_companies() -> requests.Response:
 def fetch_announcements(stock_id: str, year: int, month: int) -> requests.Response:
     """公司重大訊息，一家公司一個月（西元年月）。本月只查到今天。"""
     today = date_utils.today()
-    if (year, month) == (today.year, today.month):
+    if (year, month) == (today.year, today.month):   # noqa: SIM108  兩種情況各有說明，分開寫比較好讀
         last_day = today.day                              # 本月：查到今天
     else:
         last_day = calendar.monthrange(year, month)[1]    # 其他月：查到月底（monthrange 回傳 (星期幾, 天數)）
@@ -120,7 +120,8 @@ def fetch_announcement_detail(stock_id: str, enter_yyyymmdd: str, serial_number:
     if api_name not in DETAIL_APIS:
         raise ValueError(f"不認識的全文 API：{api_name}")
     return http_post(f"{MOPS_BASE}/{api_name}", {
-        "marketKind": "sii", "enterDate": yyyymmdd_to_roc_compact(enter_yyyymmdd), "serialNumber": str(serial_number), "companyId": stock_id,
+        "marketKind": "sii", "enterDate": yyyymmdd_to_roc_compact(enter_yyyymmdd),
+        "serialNumber": str(serial_number), "companyId": stock_id,
     })
 
 
@@ -371,8 +372,10 @@ def day_status(date_yyyymmdd: str, price_body, closed: set[str], open_: set[str]
     應該有交易、收盤行情沒有：市場成交已經有之後的交易日卻沒有這天 → CLOSED（颱風假，事後確認），不然 → UNKNOWN。
 
     >>> price = lambda roc: {"tables": [{"title": f"{roc} 每日收盤行情", "fields": ["證券代號", "收盤價"], "data": [["2330", "1"]]}]}
-    >>> day_status("20261123", price("115年11月23日"), set(), set()), day_status("20261128", price("115年11月28日"), set(), {"20261128"})   # 平日、週六補行交易
-    ('trading', 'trading')
+    >>> day_status("20261123", price("115年11月23日"), set(), set())   # 平日
+    'trading'
+    >>> day_status("20261128", price("115年11月28日"), set(), {"20261128"})   # 週六補行交易
+    'trading'
     >>> day_status("20261225", None, {"20261225"}, set()), day_status("20261128", None, set(), set())   # 休市、週末
     ('closed', 'closed')
     >>> day_status("20261124", {"stat": "很抱歉，沒有符合條件的資料!"}, set(), set())   # 平日、收盤行情沒有：不知道

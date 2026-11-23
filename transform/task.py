@@ -176,7 +176,7 @@ def transform_stock_news(stock_id: str, date_yyyymmdd: str) -> str:
     同一則新聞好幾檔都有：stage_news 只有一列，時間、標題以最新一次抓到的為準。
     """
     return transform_one("stock_news", f"{stock_id}_{date_yyyymmdd}", lambda raw: dict(zip(
-        ("stage_news", "stage_stock_news"), transformer.clean_stock_news(transformer.stock_news_to_frame(raw)))))
+        ("stage_news", "stage_stock_news"), transformer.clean_stock_news(transformer.stock_news_to_frame(raw)), strict=True)))
 
 
 # ---------- 新聞網站 ----------

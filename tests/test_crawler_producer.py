@@ -54,7 +54,9 @@ def test_failed_raw_is_ignored(raw_store):
 
 def test_holiday_is_fetched_only_once_per_year(raw_store):
     """開休市日期抓過那年就不再抓；還沒抓過的年份才抓。"""
-    holiday_years = lambda: [kw["year"] for f, kw in pc.build_twse_jobs("20261230", "20270102") if f.__name__ == "crawl_holiday"]
+
+    def holiday_years():
+        return [kw["year"] for f, kw in pc.build_twse_jobs("20261230", "20270102") if f.__name__ == "crawl_holiday"]
     assert holiday_years() == [2026, 2027]
     raw_store.put("holiday", "2026", {"data": []})
     assert holiday_years() == [2027]
@@ -62,8 +64,9 @@ def test_holiday_is_fetched_only_once_per_year(raw_store):
 
 def announcement_list(*ids, api_name="t05st01_detail"):
     """做一份重大訊息清單的回應：ids 是 (公司, 民國輸入日期, 序號)。"""
-    detail = lambda c, d, n: {"parameters": {"marketKind": "sii", "enterDate": d, "serialNumber": n, "companyId": c},
-                              "apiName": api_name}
+
+    def detail(c, d, n):
+        return {"parameters": {"marketKind": "sii", "enterDate": d, "serialNumber": n, "companyId": c}, "apiName": api_name}
     return {"result": {"data": [[c, "名稱", "115/11/05", "14:39:07", "主旨", detail(c, d, n)] for c, d, n in ids]}}
 
 
@@ -181,7 +184,9 @@ def test_watchlist_gets_the_run_date(raw_store, monkeypatch):
 def test_company_list_fetched_once_a_day(raw_store, monkeypatch):
     """上市公司清單一天一份快照：今天抓過，同一天的下一輪就不再抓。"""
     monkeypatch.setattr(pc, "today_yyyymmdd", lambda: "20261123")
-    names = lambda: [f.__name__ for step in pc.build_twse_steps("20261123", "20261123") for f, kw in step]
+
+    def names():
+        return [f.__name__ for step in pc.build_twse_steps("20261123", "20261123") for f, kw in step]
     assert "crawl_company" in names()
     raw_store.put("company", "20261123", [])
     assert "crawl_company" not in names()
