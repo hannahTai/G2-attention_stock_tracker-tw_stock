@@ -18,7 +18,7 @@ AI（只讀 stage_* 和前面的 AI 結果，不讀 app_*；和 analyze 同時�
   ③ 卡片 AI 摘要 注意股的事實＋① 的公告＋② 挑出的新聞 → Claude 寫 2～3 句 → ai_card_summary
 
 網站
-  資料 API（FastAPI）讀 app_*、ai_*（透過 VIEW），Streamlit 網頁打 API
+  資料 API（FastAPI）讀 app_*、ai_*（透過 VIEW），網頁（FastAPI＋Jinja2）打 API
 ```
 
 一輪的順序：公告分類 → 新聞摘要 → 新聞向量 → 同一件事 → 卡片 AI 摘要（後面的會用到前面的結果）。

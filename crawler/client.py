@@ -24,7 +24,7 @@ import requests
 import trafilatura
 import trafilatura.utils
 
-from common import date_utils
+from common import date_utils, url_utils
 from common.config import FINMIND_BASE, FINMIND_TOKEN, MOPS_BASE, NEWS_DEADLINE_SECONDS, TWSE_BASE, TWSE_OPENAPI_BASE
 from common.date_utils import DATE_FMT, roc_compact_to_yyyymmdd, roc_date_in, yyyymmdd_to_roc_compact
 
@@ -171,7 +171,7 @@ def unsafe_url_problem(url: str) -> str | None:
     ('不是 http(s) 連結（file）', True)
     """
     parts = urllib.parse.urlsplit(url)
-    if parts.scheme not in ("http", "https"):
+    if not url_utils.is_http_url(url):
         return f"不是 http(s) 連結（{parts.scheme or '沒有'}）"
     host = parts.hostname
     if not host:

@@ -1,11 +1,10 @@
-"""把資料套進 Jinja2 範本（templates/），變成一段 HTML 交給 st.html 顯示。不碰網路，可以單獨測試。
+"""把資料套進 Jinja2 範本（templates/），變成整頁的 HTML（app.py 回傳給瀏覽器）。不碰網路，可以單獨測試。
 
-  style_html()     CSS（app.py 用 st.markdown 送；st.html 會把 <style> 拿掉）
   overview_html()  總覽（卡片牆）
   stock_html()     個股頁
   error_html()     錯誤頁
 
-連結都是網址參數（?date=20261120&tab=one、?stock=1795&date=20261120），點了重新載入，app.py 讀網址決定畫哪一頁。
+連結都是網址參數（?date=20261120&tab=one、?stock=1795&date=20261120），app.py 讀網址決定畫哪一頁。
 back_query：總覽目前的分頁、只看、搜尋（tab、only、q）寫成的查詢字串。點卡片進個股頁時帶著，個股頁的「回總覽」才回到同一個地方。
 """
 import datetime
@@ -34,16 +33,10 @@ def ymd(day: datetime.date) -> str:
     return day.strftime("%Y%m%d")
 
 
-ENV.globals.update(md=views.md, roc=views.roc, ymd=ymd)
-
-
-def style_html() -> str:
-    """整個網站的 CSS：字型＋static/style.css。每次都重讀檔案，改了 CSS 重新整理網頁就看得到。
-
-    app.py 用 st.markdown(..., unsafe_allow_html=True) 送出：st.html 會把 <style> 拿掉。
-    """
-    css = (HERE / "static" / "style.css").read_text(encoding="utf-8")
-    return f'<style>@import url("{FONTS}");\n{css}</style>'
+# css_version：style.css 的修改時間，接在 CSS 網址後面（style.css?v=…），改了 CSS 瀏覽器才會重抓。
+# 啟動時算一次就好：改 CSS 時 uvicorn --reload 會重啟（--reload-include *.css），雲端只有換 image 才會變
+ENV.globals.update(md=views.md, roc=views.roc, ymd=ymd, fonts=FONTS,
+                   css_version=int((HERE / "static" / "style.css").stat().st_mtime))
 
 
 def render(template: str, **context) -> str:

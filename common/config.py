@@ -49,7 +49,7 @@ DB_USER = os.environ.get("DB_USER", "postgres")
 DB_PASSWORD = os.environ.get("DB_PASSWORD", "")
 DB_NAME = os.environ.get("DB_NAME", "tw_stock")
 
-# 網頁（dashboard/，Streamlit）呼叫的資料 API（api/，FastAPI）
+# 網頁（dashboard/）呼叫的資料 API（api/，FastAPI）
 # 寫 127.0.0.1 不寫 localhost：Windows 會先試 IPv6（::1），uvicorn 只開在 IPv4，每次要多等約 2 秒
 API_URL = os.environ.get("API_URL", "http://127.0.0.1:8001")
 

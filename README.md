@@ -33,7 +33,7 @@ Source → Ingest → Storage → Process → Serve → Observe
   ↓
 ⚙️ Process：pandas，清理 + 規則引擎
   ↓
-🖥 Serve：FastAPI 資料 API、Streamlit 網頁
+🖥 Serve：FastAPI 資料 API、網頁（FastAPI＋Jinja2）
   ↓
 📡 Observe：log + 任務歷史 + 回測、失敗通知
 ```
@@ -44,7 +44,7 @@ Source → Ingest → Storage → Process → Serve → Observe
 | Ingest | Python requests；Celery + RabbitMQ 任務佇列（證交所、觀測站、FinMind 各一個 worker 限速，新聞網頁同時 4 個、照網站輪流，Flower 監看）；Windows 工作排程器（之後 Airflow） |
 | Storage | PostgreSQL 三層：`raw_*`（API 原文）→ `stage_*`（清理後）→ `app_*`（引擎結果），另外 `ai_*`（AI 結果、LLM 呼叫紀錄）；之後 Cloud SQL、BigQuery |
 | Process | pandas：`transform/` 整理（raw → stage）、`analyze/` 規則引擎——依要點第六條算離處置還差幾次（stage → app）；`ai/` Claude API——公告分類、新聞摘要、卡片 AI 摘要（結構化輸出），新聞 RAG（本機 bge-m3 轉向量，pgvector 檢索） |
-| Serve | FastAPI 資料 API（只讀 `app_*` 表和 VIEW，回 JSON）＋ Streamlit 網頁（卡片牆、個股頁，只打 API、不連資料庫）；Metabase → Looker Studio 儀表板 |
+| Serve | FastAPI 資料 API（只讀 `app_*` 表和 VIEW，回 JSON）＋ 網頁（FastAPI＋Jinja2 範本，卡片牆、個股頁，只打 API、不連資料庫）；Metabase → Looker Studio 儀表板 |
 | Observe | `data/logs/`、任務歷史 `tw_stock.job_run`、回測（真實處置 75 筆全部算到，條件也都對上）；之後失敗通知 |
 
 順序是 ELT：原文先存進 raw，再清理、計算；規則改了可以從 raw 重算，不必重抓。每天只處理當天的資料。
@@ -94,8 +94,8 @@ api/                        資料 API：FastAPI 讀 app_* 表和 VIEW，回 JSO
 ├─ main.py                    進入點（uvicorn api.main:app）
 ├─ routes.py                  端點：/health、/dates、/cards、/stocks/{代號}（文件在 /docs）
 └─ queries.py                 讀資料庫（只讀 app_*，參數化查詢）
-dashboard/                  網頁：Streamlit 打資料 API，不直接連資料庫
-├─ app.py                     進入點（streamlit run dashboard/app.py）：讀網址參數、打 API、st.html 顯示
+dashboard/                  網頁（FastAPI＋Jinja2）：打資料 API，不直接連資料庫
+├─ app.py                     進入點（uvicorn dashboard.app:app）：讀網址參數、打 API、回傳整頁 HTML
 ├─ client.py                  呼叫 API（requests），日期字串換回 date
 ├─ views.py                   把資料整理成畫面上的文字、分區、篩選（不碰網路）
 ├─ render.py                  把資料套進 Jinja2 範本，變成 HTML
@@ -164,7 +164,7 @@ uv run python main.py  # 建表、更新 VIEW → 抓今天 → 整理 → 算�
 
 ```bash
 uv run uvicorn api.main:app --reload --port 8001   # 1. 資料 API，文件 http://localhost:8001/docs
-uv run streamlit run dashboard/app.py              # 2. 網頁，打開 http://localhost:8502
+uv run uvicorn dashboard.app:app --reload --port 8502   # 2. 網頁，打開 http://localhost:8502
 ```
 
 第一次要先跑過 `main.py`（建表、建 VIEW、算出至少一天）。

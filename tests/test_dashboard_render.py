@@ -148,9 +148,11 @@ def test_error_page():
     assert "11/20 沒有 9999 的資料" in page and 'href="?"' in page
 
 
-def test_style_has_the_original_css_and_hides_streamlit_toolbar():
-    style = render.style_html()
-    assert style.startswith("<style>") and "--seal" in style and 'data-testid="stToolbar"' in style
+def test_page_links_fonts_and_css():
+    page = overview()
+    assert page.lstrip().startswith("<!doctype html>") and "</html>" in page
+    assert f'<link rel="stylesheet" href="{render.FONTS}">' in page.replace("&amp;", "&")
+    assert '<link rel="stylesheet" href="/static/style.css?v=' in page
 
 
 def test_zero_filter_is_not_a_link():

@@ -21,7 +21,7 @@ import datetime
 import decimal
 import re
 
-from common import date_utils, rules
+from common import date_utils, rules, url_utils
 
 # ---------- 固定資料 ----------
 # 四條路徑：(畫面上的名稱, 門檻)；門檻和規則引擎同一份（common/rules.py）
@@ -145,6 +145,17 @@ def roc(day: datetime.date) -> str:
 
 
 # ---------- 卡片 AI 摘要、新聞 ----------
+def safe_link(link: str | None) -> str | None:
+    """新聞連結（外部來的）只放 http、https（url_utils.is_http_url）；其他的（javascript:、data: 這類點了會執行程式的）
+    回傳 None，網頁只顯示標題。Jinja2 的 autoescape 只跳脫 < > & "，不檢查網址開頭，所以在這裡擋。
+
+    >>> safe_link("https://udn.com/1"), safe_link(" HTTP://a.com "), safe_link("javascript:alert(1)"), safe_link(None)
+    ('https://udn.com/1', 'HTTP://a.com', None, None)
+    """
+    link = (link or "").strip()
+    return link if url_utils.is_http_url(link) else None
+
+
 def news_item(news: dict) -> dict:
     """API 的一則新聞 → 網頁一列：標題、連結、媒體、日期（MM/DD）、也報這件事的其他媒體。
 
@@ -152,7 +163,7 @@ def news_item(news: dict) -> dict:
     ...            "also_reported_by": ["自由時報", "鉅亨網"]})
     {'title': '健策營收創高', 'link': 'https://udn.com/1', 'source': 'UDN', 'date': '11/20', 'also': '自由時報、鉅亨網'}
     """
-    return {"title": news["title"], "link": news["link"], "source": news["publisher"], "date": md(news.get("news_date")),
+    return {"title": news["title"], "link": safe_link(news["link"]), "source": news["publisher"], "date": md(news.get("news_date")),
             "also": "、".join(news.get("also_reported_by") or [])}
 
 

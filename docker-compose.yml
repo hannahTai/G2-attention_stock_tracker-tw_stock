@@ -212,10 +212,10 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
-  # 網頁（Streamlit）：埠號、headless 等設定在 .streamlit/config.toml
+  # 網頁（FastAPI＋Jinja2）：打上面的資料 API，回傳整頁 HTML
   web:
     <<: *app
-    command: ["streamlit", "run", "dashboard/app.py", "--server.address=0.0.0.0", "--server.runOnSave=false"]
+    command: ["uvicorn", "dashboard.app:app", "--host", "0.0.0.0", "--port", "8502"]
     ports:
       - "8502:8502"
     depends_on:

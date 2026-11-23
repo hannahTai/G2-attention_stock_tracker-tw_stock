@@ -17,7 +17,7 @@
    5. 用一般人聽得懂的話：寫「這次會算進處置次數」，不寫「is_counted」。
    6. 字要看得清楚：內文 15px；灰字和背景的對比至少 4.5:1（WCAG AA）；深色模式同樣檢查。
 
-   順序：顏色和字型（token）→ Streamlit 外框 → 共用版面 → 共用元件 → 總覽 → 個股頁 → 手機
+   順序：顏色和字型（token）→ 整頁 → 共用版面 → 共用元件 → 總覽 → 個股頁 → 手機
    ===================================================================== */
 
 /* ---------- 顏色和字型：只在這裡定義，下面都用 var(--xxx) ---------- */
@@ -62,20 +62,16 @@
   color-scheme: dark;
 }
 
-/* ---------- Streamlit 外框：藏起工具列、Deploy、側欄，背景和寬度交給下面的 .wrap ---------- */
-header[data-testid="stHeader"], [data-testid="stToolbar"], [data-testid="stDecoration"],
-[data-testid="stStatusWidget"], [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"] { display: none !important; }
-.stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] { background: var(--bg); color: var(--ink); }
-[data-testid="stMainBlockContainer"], .block-container { max-width: none; padding: 0 !important; }
-.stHtml h1, .stHtml h2, .stHtml h3 { font-family: var(--f-body); padding: 0; scroll-margin-top: 16px; }
-.stHtml h1 a, .stHtml h2 a, .stHtml h3 a { display: inline; }   /* Streamlit 會在標題旁加錨點連結 */
-.stHtml ol, .stHtml ul, .stHtml dl, .stHtml dd { margin: 0; padding: 0; }   /* Streamlit 預設給清單左邊縮排 */
-.stHtml li { margin: 0; }
+/* ---------- 整頁 ---------- */
+html, body { margin: 0; background: var(--bg); color: var(--ink); }
+h1, h2, h3 { font-family: var(--f-body); scroll-margin-top: 16px; }
+ol, ul, dl, dd { margin: 0; padding: 0; }   /* 清單不要瀏覽器預設的左邊縮排 */
+li { margin: 0; }
 
 /* ---------- 共用版面 ---------- */
 * { box-sizing: border-box; }
 /* 寬螢幕：整頁佔畫面寬的 80%，最寬 1320px（太寬一行字太長、版面空）；窄螢幕用滿、左右留 16px */
-.wrap { color: var(--ink); font-family: var(--f-body); font-size: 15px; line-height: 1.65; max-width: none; margin: 0 auto;
+.wrap { font-family: var(--f-body); font-size: 15px; line-height: 1.65; margin: 0 auto;
   padding-block: 24px 48px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
 @media (min-width: 960px) { .wrap { max-width: min(80vw, 1320px); } }
 a { color: var(--accent); }
@@ -102,7 +98,7 @@ header.top .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
 .search input::placeholder { color: var(--faint); }
 .search input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
 .search-note { font-size: 13px; color: var(--muted); margin: 0 0 12px; }
-/* 交易日選單：st.html 不執行 JavaScript，所以用 <details> 做下拉清單，每個日期是一個連結 */
+/* 交易日選單：網頁沒有 JavaScript，所以用 <details> 做下拉清單，每個日期是一個連結 */
 .datepick { position: relative; font-size: 13px; color: var(--muted); }
 .datepick > summary { color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; }
 .datepick > summary::after { content: " ▾"; color: var(--muted); }

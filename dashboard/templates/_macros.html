@@ -8,7 +8,8 @@
      foot(c, ann_href)  底部：收盤價｜公告則數（連到公開資訊）
    個股頁的列表：
      day_row(date, weekday)  左欄日期＋週幾、右欄內容（用 {% call %} 包內容）；公開資訊和注意紀錄共用
-     fold(label)             「顯示更早的…」：收起來的內容（用 {% call %} 包內容） #}
+     fold(label)             「顯示更早的…」：收起來的內容（用 {% call %} 包內容）
+     ext_link(item)          新聞的標題連結（另開分頁）；沒有連結（不是 http、https）就只顯示標題 #}
 
 {% macro tags(c) -%}
 {% if c.tags %}<div class="card-tags">
@@ -56,4 +57,8 @@
   <summary>{{ label }}</summary>
   {{ caller() }}
 </details>
+{%- endmacro %}
+
+{% macro ext_link(item) -%}
+{% if item.link %}<a href="{{ item.link }}" target="_blank" rel="noopener noreferrer">{{ item.title }}</a>{% else %}{{ item.title }}{% endif %}
 {%- endmacro %}

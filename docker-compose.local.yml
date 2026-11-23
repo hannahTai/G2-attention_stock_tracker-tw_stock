@@ -2,7 +2,7 @@
 # .env 的 COMPOSE_FILE=docker-compose.yml:docker-compose.local.yml 讓 docker compose 自動兩個都讀，不用每次打 -f。
 # 把 Windows 上的程式碼直接掛進容器（.:/app），改了存檔就生效，不用每次 --build：
 #   api（FastAPI）    存檔自動重啟（uvicorn --reload）
-#   web（Streamlit）  存檔自動重跑，開著的網頁會自己更新
+#   web（網頁）       存檔自動重啟（uvicorn --reload），重新整理網頁就看得到
 #   Celery worker、producer、setup  用掛進來的最新程式碼；改了任務的程式要 docker compose restart celery-crawl-twse celery-crawl-mops celery-crawl-finmind celery-crawl-news celery-transform celery-analyze celery-ai celery-embed
 #                                  （worker 沒有自動重載：跑到一半的任務重載會被中斷）
 #
@@ -29,8 +29,10 @@ services:
 
   web:
     <<: *code
-    command: ["streamlit", "run", "dashboard/app.py", "--server.address=0.0.0.0",
-              "--server.runOnSave=true", "--server.fileWatcherType=poll"]
+    command: ["uvicorn", "dashboard.app:app", "--host", "0.0.0.0", "--port", "8502", "--reload",
+              "--reload-dir", "dashboard", "--reload-dir", "common", "--reload-include", "*.html", "--reload-include", "*.css"]
+    environment:
+      WATCHFILES_FORCE_POLLING: "true"   # uvicorn --reload 用輪詢看檔案有沒有變
 
   celery-crawl-twse:
     volumes:

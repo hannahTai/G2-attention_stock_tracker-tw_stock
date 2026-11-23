@@ -1,4 +1,4 @@
-"""API 端點：只回 JSON，給 dashboard/（Streamlit）呼叫。
+"""API 端點：只回 JSON，給 dashboard/（網頁）呼叫。
 
   GET /health                  網站活著、資料庫連得上
   GET /dates                   最近 30 個有算的交易日（日期選單用）

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "_macros.html" as ui %}
+{% block title %}{{ wall.name }} {{ wall.stock_id }}・{{ super() }}{% endblock %}
 
 {# 版面：最上面是狀態；下面一欄，由上往下 ——
      AI 摘要 → 公開資訊 → 新聞資訊（公司和市場說了什麼）→ 處置進度、30 格紀錄（還差幾次）→ 注意紀錄 → 處置紀錄（每一次的細節）
@@ -32,7 +33,7 @@
     {% if ai_summary.sources %}
     <ul class="ai-sources">
       {% for s in ai_summary.sources %}
-      <li><a href="{{ s.link }}" target="_blank" rel="noopener noreferrer">{{ s.title }}</a><span class="muted small">・{{ s.source }}{% if s.date %} {{ s.date }}{% endif %}</span></li>
+      <li>{{ ui.ext_link(s) }}<span class="muted small">・{{ s.source }}{% if s.date %} {{ s.date }}{% endif %}</span></li>
       {% endfor %}
     </ul>
     {% endif %}
@@ -62,7 +63,7 @@
 {% macro news_list(items) -%}
 <ul class="news">
   {% for n in items %}
-  <li><a href="{{ n.link }}" target="_blank" rel="noopener noreferrer">{{ n.title }}</a>
+  <li>{{ ui.ext_link(n) }}
     <span class="news-meta">{{ n.source }}{% if n.date %}・<span class="mono">{{ n.date }}</span>{% endif %}{% if n.also %}・也有 {{ n.also }} 報導{% endif %}</span></li>
   {% endfor %}
 </ul>
