@@ -55,27 +55,33 @@ def is_complete(fetched_times: dict, key: str, ready_at: datetime.datetime) -> b
 
 
 # ---------- 第一批：證交所 ----------
-def build_twse_jobs(start: str, end: str, refetch: bool = False) -> list[tuple]:
-    """產生證交所的任務清單：[(任務函式, 參數 dict), ...]。refetch＝True 就不跳過已經完整的。"""
+def build_twse_steps(start: str, end: str, refetch: bool = False) -> list[list[tuple]]:
+    """證交所的任務分好幾步，一步做完才做下一步（後面的要用前面抓到的判斷那天是不是交易日，見 task.day_status）：
+    1. 開休市日期（日曆）、市場成交（事後確認臨時休市）
+    2. 收盤行情（有個股資料＝交易日）
+    3. 處置股（注意股和處置股一起公布，注意股要看處置股公布了沒）
+    4. 注意股、注意累計名單、上市公司清單
+    同一步裡就算有任務重試、順序被打亂也沒關係。refetch＝True 就不跳過已經完整的。"""
     days = dates_between(start, end)
     months = months_between(start, end)
     fetched = {s: {} if refetch else repository.raw_fetched_times(s) for s in ("notice", "punish", "stock_price", "market_daily", "holiday")}
 
     # 開休市日期一年一份（11 月起也抓下一年），抓過就不再抓；颱風假不在這份裡，是從市場成交看出來的
-    # 收盤行情排第一個：注意股、處置股、注意累計名單要靠它判斷那天是不是交易日（task.day_status）
-    jobs = [(task.crawl_stock_price, {"date_yyyymmdd": d}) for d in days
-            if d not in fetched["stock_price"]]
-    jobs += [(task.crawl_notice, {"date_yyyymmdd": d}) for d in days
-             if d not in fetched["notice"]]
-    jobs += [(task.crawl_punish, {"date_yyyymmdd": d}) for d in days
-             if d not in fetched["punish"]]
+    calendar = [(task.crawl_holiday, {"year": y}) for y in holiday_years(start, end) if str(y) not in fetched["holiday"]]
+    calendar += [(task.crawl_market_daily, {"month_yyyymm": m}) for m in months
+                 if not is_complete(fetched["market_daily"], m, month_ready_at(m))]
+    prices = [(task.crawl_stock_price, {"date_yyyymmdd": d}) for d in days if d not in fetched["stock_price"]]
+    punishes = [(task.crawl_punish, {"date_yyyymmdd": d}) for d in days if d not in fetched["punish"]]
+    rest = [(task.crawl_notice, {"date_yyyymmdd": d}) for d in days if d not in fetched["notice"]]
     if end == today_yyyymmdd():
-        jobs += [(task.crawl_punish_watchlist, {"date_yyyymmdd": end})]   # 只有最新一天，回補時抓不到舊的
-    jobs += [(task.crawl_market_daily, {"month_yyyymm": m}) for m in months
-             if not is_complete(fetched["market_daily"], m, month_ready_at(m))]
-    jobs += [(task.crawl_holiday, {"year": y}) for y in holiday_years(start, end) if str(y) not in fetched["holiday"]]
-    jobs += [(task.crawl_company, {})]              # 查重大訊息前要先有公司清單
-    return jobs
+        rest += [(task.crawl_punish_watchlist, {"date_yyyymmdd": end})]   # 只有最新一天，回補時抓不到舊的
+    rest += [(task.crawl_company, {})]              # 查重大訊息前要先有公司清單
+    return [calendar, prices, punishes, rest]
+
+
+def build_twse_jobs(start: str, end: str, refetch: bool = False) -> list[tuple]:
+    """證交所全部的任務（照步驟的順序接起來）：[(任務函式, 參數 dict), ...]。"""
+    return [job for step in build_twse_steps(start, end, refetch) for job in step]
 
 
 # ---------- 第二批：觀測站重大訊息（要先有第一批的注意股、處置股、公司清單）----------
@@ -190,8 +196,12 @@ def main() -> None:
 
     span = (args.start, args.end, args.refetch)
     # queue：開 Celery 時，每個來源各自一個佇列、一個 worker（見 common/worker.py）
-    # 證交所先做完（要知道哪些股票被關注），之後觀測站、新聞兩條鏈同時進行，各自上一批做完才送下一批
-    failed = runner.run_jobs(build_twse_jobs(*span), sleep=SLEEP_SECONDS, queue="crawl_twse")
+    # 證交所先做完（要知道哪些股票被關注），分好幾步依序做（見 build_twse_steps）；
+    # 之後觀測站、新聞兩條鏈同時進行，各自上一批做完才送下一批
+    failed = []
+    for step in build_twse_steps(*span):
+        if step:
+            failed += runner.run_jobs(step, sleep=SLEEP_SECONDS, queue="crawl_twse")
     failed += runner.run_chains([
         [(lambda: build_mops_jobs(*span), SLEEP_SECONDS_MOPS, "crawl_mops"),
          (lambda: build_detail_jobs(*span), SLEEP_SECONDS_MOPS, "crawl_mops")],

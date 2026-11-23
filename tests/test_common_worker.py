@@ -5,6 +5,7 @@
 import types
 
 import celery.canvas
+import celery.exceptions
 import pytest
 import requests
 
@@ -73,10 +74,15 @@ def test_on_worker_temporary_errors_retry(monkeypatch):
 
 
 class FakeResult:
-    def __init__(self, value):
+    """假的 AsyncResult：get() 回傳 value（是 Exception 就丟出來）；pending＝前幾次 get(timeout=...) 還沒好（TimeoutError）。"""
+    def __init__(self, value, pending=0):
         self.value = value
+        self.pending = pending
 
-    def get(self):
+    def get(self, timeout=None):
+        if self.pending:
+            self.pending -= 1
+            raise celery.exceptions.TimeoutError("還沒好")
         if isinstance(self.value, Exception):
             raise self.value
         return self.value
@@ -151,9 +157,9 @@ def test_crawler_runs_twse_first_then_two_chains(monkeypatch):
     monkeypatch.setattr(crawler_producer.runner, "run_chains",
                         lambda chains: calls.append([[queue for _, _, queue in chain] for chain in chains]) or [])
     monkeypatch.setattr(crawler_producer.runner, "finish", lambda failed: None)
-    monkeypatch.setattr(crawler_producer, "build_twse_jobs", lambda *a: [])
+    monkeypatch.setattr(crawler_producer, "build_twse_steps", lambda *a: [["holiday"], [], ["price"]])   # 空的步驟跳過
     crawler_producer.main()
-    assert calls == ["crawl_twse", [["crawl_mops", "crawl_mops"], ["crawl_finmind", "crawl_news"]]]
+    assert calls == ["crawl_twse", "crawl_twse", [["crawl_mops", "crawl_mops"], ["crawl_finmind", "crawl_news"]]]
 
 
 def test_run_jobs_on_workers_needs_a_queue(monkeypatch):
@@ -253,3 +259,29 @@ def test_run_chains_keeps_going_when_one_chain_cannot_build(monkeypatch):
     failed = runner.run_chains([[(broken, 0.0, "a1"), chain_step("a2")], [chain_step("b1"), chain_step("b2")]])
     assert sent == ["b1", "b2"]                       # 第 1 條停下來（a2 沒送），第 2 條照做完
     assert failed == ["第 1 條鏈產生 a1 的任務清單"]
+
+
+def test_run_chains_slow_chain_does_not_hold_up_others(monkeypatch):
+    """慢的鏈（第一批一直還沒好）不會卡住快的：快的鏈做完第一批就送第二批，不用等慢的。"""
+    sent = []
+    pending = {"a1": 5}   # a1 前 5 次 get 都還沒好
+
+    def fake_send(jobs, queue):
+        sent.append(queue)
+        return [(f"job_{queue}", FakeResult("ok", pending.get(queue, 0)))]
+
+    monkeypatch.setattr(runner, "USE_CELERY", True)
+    monkeypatch.setattr(runner, "send_jobs", fake_send)
+    assert runner.run_chains([[chain_step("a1"), chain_step("a2")], [chain_step("b1"), chain_step("b2")]]) == []
+    assert sent == ["a1", "b1", "b2", "a2"]   # b2 在 a1 還沒好的時候就送出了
+
+
+def test_run_chains_locally_keeps_going_when_one_chain_cannot_build(monkeypatch):
+    """本機（USE_CELERY=0）也一樣：一條鏈產生清單出錯記成失敗，其他鏈照做。"""
+    order = []
+    monkeypatch.setattr(runner, "run_jobs", lambda jobs, sleep, queue: order.append(queue) or [])
+
+    def broken():
+        raise ConnectionError("連不上")
+    failed = runner.run_chains([[(broken, 0.0, "a1"), chain_step("a2")], [chain_step("b1")]])
+    assert order == ["b1"] and failed == ["第 1 條鏈產生 a1 的任務清單"]

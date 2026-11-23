@@ -237,7 +237,7 @@ def test_watchlist_on_known_holiday_accepted_before_20(raw_store, monkeypatch):
 @pytest.mark.parametrize(("now", "price", "list_title", "saved_key", "saved_ok"), [
     ("2026-11-23T18:00:00", PRICE_TODAY, OLD_LIST, "20261120", False),    # 交易日、今天的還沒公布
     ("2026-11-23T18:30:00", PRICE_TODAY, NEW_LIST, "20261123", True),     # 公布了
-    ("2026-11-23T21:00:00", PRICE_TODAY, OLD_LIST, "20261120", False),    # 交易日，20:00 以後還是舊的：證交所晚了，照樣失敗
+    ("2026-11-23T21:00:00", PRICE_TODAY, OLD_LIST, "20261120", False),    # 交易日，晚上還是舊的：證交所晚了，照樣失敗
     ("2026-11-23T22:00:00", PRICE_HOLIDAY, OLD_LIST, "20261120", False),  # 平日沒有收盤行情、日曆上沒寫：不猜，存成失敗
 ])
 def test_watchlist_from_before_today_saved_as_failure(raw_store, monkeypatch, now, price, list_title, saved_key, saved_ok):
@@ -293,3 +293,53 @@ def test_watchlist_uses_the_run_date_not_the_clock(raw_store, monkeypatch):
     monkeypatch.setattr(client, "fetch_punish_watchlist", lambda: fake_response({"stat": "OK", "title": NEW_LIST, "data": []}))
     task.crawl_punish_watchlist("20261123")
     assert raw_store.last("punish_watchlist", "20261123").ok
+
+
+PUNISH_PUBLISHED_1124 = {"stat": "OK", "title": "公布處置有價證券資訊 (115/11/24 至 115/12/08)\n資訊更新日期：115/11/24", "data": []}
+
+
+def test_empty_notice_accepted_when_punish_is_published(raw_store, monkeypatch):
+    """交易日真的沒人被列注意：處置股已經公布（資訊更新日期是那天），注意股空的就是真的沒人被列，不會永遠失敗。"""
+    monkeypatch.setattr(date_utils, "now", lambda: datetime.datetime(2026, 11, 24, 18, 0, tzinfo=date_utils.TAIPEI))
+    raw_store.put("stock_price", "20261124", PRICE_1123)
+    raw_store.put("punish", "20261124", PUNISH_PUBLISHED_1124)
+    monkeypatch.setattr(client, "fetch_notice", lambda day: fake_response({"stat": "OK", "fields": ["證券代號", "日期"], "data": []}))
+    task.crawl_notice("20261124")
+    assert raw_store.last("notice", "20261124").ok
+
+
+def test_punish_backfill_for_a_past_day(raw_store, monkeypatch):
+    """回補過去的交易日：處置股的資訊更新日期是抓的那天（比查的那天晚），算公布了。"""
+    monkeypatch.setattr(date_utils, "now", lambda: datetime.datetime(2026, 11, 16, 10, 0, tzinfo=date_utils.TAIPEI))
+    raw_store.put("stock_price", "20260701", {"tables": [{"fields": ["證券代號"], "data": [["2330"]]}]})
+    monkeypatch.setattr(client, "fetch_punish", lambda day: fake_response(
+        {"stat": "OK", "title": "公布處置有價證券資訊 (115/07/01 至 115/07/15)\n資訊更新日期：115/11/16", "data": []}))
+    task.crawl_punish("20260701")
+    assert raw_store.last("punish", "20260701").ok
+
+
+def test_unscheduled_closure_confirmed_by_later_market_data(raw_store, monkeypatch):
+    """颱風假（日曆上沒寫）：之後的市場成交有下一個交易日、卻沒有那天，回補時就確認是休市，不會永遠失敗。"""
+    monkeypatch.setattr(date_utils, "now", lambda: datetime.datetime(2026, 9, 15, 10, 0, tzinfo=date_utils.TAIPEI))
+    raw_store.put("market_daily", "202609", {"fields": ["日期", "成交股數"], "data": [["115/09/09", "1"], ["115/09/11", "1"]]})
+    monkeypatch.setattr(client, "fetch_stock_price", lambda day: fake_response({"stat": "很抱歉，沒有符合條件的資料!"}))
+    monkeypatch.setattr(client, "fetch_notice", lambda day: fake_response({"stat": "OK", "data": []}))
+    task.crawl_stock_price("20260910")
+    task.crawl_notice("20260910")
+    assert raw_store.last("stock_price", "20260910").ok and raw_store.last("notice", "20260910").ok
+
+
+def test_watchlist_without_a_date_uses_today(raw_store, monkeypatch):
+    """改版前送進佇列、沒帶日期的任務：用今天，不會 TypeError。"""
+    monkeypatch.setattr(date_utils, "now", lambda: datetime.datetime(2026, 11, 23, 18, 30, tzinfo=date_utils.TAIPEI))
+    monkeypatch.setattr(task, "today_yyyymmdd", lambda: "20261123")
+    raw_store.put("stock_price", "20261123", PRICE_TODAY)
+    monkeypatch.setattr(client, "fetch_punish_watchlist", lambda: fake_response({"stat": "OK", "title": NEW_LIST, "data": []}))
+    task.crawl_punish_watchlist()
+    assert raw_store.last("punish_watchlist", "20261123").ok
+
+
+def test_bad_holiday_rows_are_skipped():
+    """開休市日期有壞掉的列（太短、空值）：跳過，不會讓整年的證交所任務都失敗。"""
+    body = {"fields": ["日期", "名稱", "說明"], "data": [["2027-02-15", None, ""], ["2027-02-16"], ["2027-01-01", "開國紀念日", ""]]}
+    assert client.calendar_days(body) == ({"20270101"}, set())

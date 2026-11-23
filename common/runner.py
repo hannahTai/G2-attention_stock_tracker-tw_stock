@@ -15,6 +15,7 @@ USE_CELERY=1 時，同一批任務改成送進 RabbitMQ 給 worker 做：task.s(
 import time
 
 import anthropic
+import celery.exceptions
 import requests
 import sqlalchemy
 
@@ -149,37 +150,53 @@ def collect_results(sent: list[tuple]) -> list[str]:
     return failed
 
 
+CHAIN_WAIT_SECONDS = 1.0   # run_chains 每次等一條鏈的結果最多幾秒，沒好就換看下一條
+
+
 def run_chains(chains: list[list[tuple]]) -> list[str]:
     """好幾條任務鏈同時進行，回傳全部失敗的任務名稱。
 
     每條鏈是好幾批 [(產生任務清單的函式, sleep, queue), ...]：同一條鏈裡上一批做完，才產生、送出下一批
     （例如重大訊息全文要先有清單才知道要抓哪幾則）；鏈和鏈之間不互等，各自的佇列同時在做。
     任務清單是做到那一批才產生的，所以傳函式，不傳清單。
-    USE_CELERY=1：每條鏈的第一批同時送出，之後輪流等每條鏈這一批的結果（result.get()，和 run_jobs 一樣），
-    等到了就送那條鏈的下一批。不用 AsyncResult.ready() 輪詢：rpc 結果後端在任務多、有失敗的時候，
-    輪詢會一直看不到已經做完的結果（2026-11-23 每天的資料線卡住），get() 才可靠。
-    代價：先做完的鏈要等輪到它才送下一批；第一批還是同時在做。
+    USE_CELERY=1：每條鏈的第一批同時送出，之後輪流看每條鏈：用 result.get(timeout=CHAIN_WAIT_SECONDS) 等結果，
+    沒好就換看下一條，一條鏈這一批都好了就送它的下一批，慢的鏈（例如 FinMind 6 秒一個）不會卡住快的。
+    不用 AsyncResult.ready() 輪詢：rpc 結果後端在任務多、有失敗的時候，輪詢會一直看不到已經做完的結果
+    （2026-11-23 每天的資料線卡住）；get() 走的是收結果的 consumer，才可靠。
+    產生任務清單出錯（例如資料庫連不上）：記成一個失敗、這條鏈停下來，其他鏈照做完，最後一起列出失敗（本機也一樣）。
     沒開：在本機一條鏈一條鏈依序執行（本機一次只能做一件事）。
     """
-    if not USE_CELERY:
-        return [name for chain in chains for build, sleep, queue in chain
-                for name in run_jobs(build(), sleep=sleep, queue=queue)]
     failed = []
+
+    def build_jobs(i: int, build, queue: str) -> list[tuple] | None:
+        """產生第 i 條鏈這一批的任務清單；出錯記成一個失敗，回傳 None（這條鏈停下來）。"""
+        try:
+            return build()
+        except Exception as e:
+            name = f"第 {i + 1} 條鏈產生 {queue} 的任務清單"
+            print(name, "✗", error_text(e), flush=True)
+            failed.append(name)
+            return None
+
+    if not USE_CELERY:
+        for i, chain in enumerate(chains):
+            for build, sleep, queue in chain:
+                jobs = build_jobs(i, build, queue)
+                if jobs is None:
+                    break
+                failed += run_jobs(jobs, sleep=sleep, queue=queue)
+        return failed
+
     steps = [iter(chain) for chain in chains]
-    running = {}   # 第幾條鏈 → 這一批送出的 [(任務名稱, AsyncResult), ...]
+    running = {}   # 第幾條鏈 → 這一批還沒拿到結果的 [(任務名稱, AsyncResult), ...]
 
     def send_next(i: int) -> None:
-        """第 i 條鏈送出下一批；空的批次（沒有要做的）跳過；整條做完就不再放進 running。
-        產生任務清單出錯（例如資料庫連不上）：記成一個失敗、這條鏈停下來，其他鏈照做完，最後一起列出失敗。"""
+        """第 i 條鏈送出下一批；空的批次（沒有要做的）跳過；整條做完、或產生清單出錯，就不再放進 running。"""
         for build, _sleep, queue in steps[i]:   # 間隔在 worker 上做，這裡用不到 sleep
             if queue is None:
                 raise ValueError("USE_CELERY=1 要指定 queue（見 common/worker.py）")   # 程式寫錯，直接停
-            try:
-                jobs = build()
-            except Exception as e:
-                name = f"第 {i + 1} 條鏈產生 {queue} 的任務清單"
-                print(name, "✗", error_text(e), flush=True)
-                failed.append(name)
+            jobs = build_jobs(i, build, queue)
+            if jobs is None:
                 return
             if jobs:
                 running[i] = send_jobs(jobs, queue)
@@ -189,8 +206,20 @@ def run_chains(chains: list[list[tuple]]) -> list[str]:
         send_next(i)
     while running:
         for i in list(running):
-            failed += collect_results(running.pop(i))   # 等這條鏈這一批全部做完
-            send_next(i)
+            sent = running[i]
+            while sent:                                   # 照送出的順序拿結果，拿不到（還沒好）就換下一條鏈
+                name, result = sent[0]
+                try:
+                    print(name, "→", result.get(timeout=CHAIN_WAIT_SECONDS), flush=True)
+                except celery.exceptions.TimeoutError:
+                    break
+                except Exception as e:
+                    print(name, "✗", e, flush=True)
+                    failed.append(name)
+                sent.pop(0)
+            if not sent:
+                del running[i]
+                send_next(i)
     return failed
 
 

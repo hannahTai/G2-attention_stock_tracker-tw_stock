@@ -163,10 +163,12 @@ def test_news_detail_jobs_from_stock_news(raw_store, monkeypatch):
     assert len(pc.build_news_detail_jobs("20261113", "20261113", refetch=True)) == 3   # --refetch：抓過的也重開
 
 
-def test_twse_fetches_stock_price_first(raw_store):
-    """收盤行情排第一個：注意股、處置股、注意累計名單要靠它判斷那天是不是交易日。"""
-    names = [f.__name__ for f, kw in pc.build_twse_jobs("20261113", "20261113")]
-    assert names.index("crawl_stock_price") < names.index("crawl_notice") < names.index("crawl_punish")
+def test_twse_runs_in_ordered_steps(raw_store):
+    """證交所分步驟：開休市日期、市場成交 → 收盤行情 → 處置股 → 注意股和其他（後面要用前面的判斷交易日）。"""
+    steps = [[f.__name__ for f, kw in step] for step in pc.build_twse_steps("20261113", "20261113")]
+    assert steps[0] == ["crawl_holiday", "crawl_holiday", "crawl_market_daily"]   # 11 月起也抓下一年的開休市日期
+    assert steps[1:3] == [["crawl_stock_price"], ["crawl_punish"]]
+    assert "crawl_notice" in steps[3] and "crawl_company" in steps[3]
 
 
 def test_watchlist_gets_the_run_date(raw_store, monkeypatch):

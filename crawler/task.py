@@ -19,21 +19,27 @@ from crawler import client
 
 # ---------- 證交所 ----------
 def day_status(date_yyyymmdd: str, with_price: bool = True) -> str:
-    """這天是不是交易日（client.day_status）：先看日曆（週末、raw_holiday 開休市日期），再用收盤行情（raw_stock_price）確認。
-    同一批證交所任務裡收盤行情排第一個，所以注意股、處置股、注意累計名單要用的時候已經抓過了。
-    with_price＝False：只看日曆（收盤行情自己用）。"""
+    """這天是不是交易日（client.day_status）：先看日曆（週末、raw_holiday 開休市日期），再用收盤行情（raw_stock_price）確認，
+    收盤行情沒有的再看市場成交（raw_market_daily）事後確認是不是臨時休市。
+    證交所的任務分好幾步依序做（crawler.producer.build_twse_steps）：開休市日期、市場成交 → 收盤行情 → 處置股 → 其他，
+    所以要用的時候已經抓好了。with_price＝False：不看收盤行情（收盤行情自己用）。"""
     holiday = repository.read_raw("holiday", date_yyyymmdd[:4])
     closed, open_ = client.calendar_days(holiday["body"]) if holiday else (set(), set())
     price = repository.read_raw("stock_price", date_yyyymmdd) if with_price else None
-    return client.day_status(date_yyyymmdd, price["body"] if price else None, closed, open_)
+    market = repository.read_raw("market_daily", date_yyyymmdd[:6])
+    return client.day_status(date_yyyymmdd, price["body"] if price else None, closed, open_, market["body"] if market else None)
 
 
 @app.task(base=TwseJob)
 def crawl_notice(date_yyyymmdd: str) -> str:
-    """注意股：一天 → raw_notice（key 20261113）。還沒公布完整就抓的當失敗（看內容，見 client.not_published_problem）。"""
+    """注意股：一天 → raw_notice（key 20261113）。還沒公布完整就抓的當失敗（看內容，見 client.not_published_problem）。
+    和處置股一起公布：那天的處置股已經公布了，注意股是空的就是真的沒人被列（處置股排在前一步）。"""
     resp = client.fetch_notice(date_yyyymmdd)
     key = date_yyyymmdd
-    problem = client.not_published_problem("notice", repository.parse_body(resp.text), date_yyyymmdd, day_status(date_yyyymmdd))
+    punish = repository.read_raw("punish", date_yyyymmdd)
+    punish_published = punish is not None and client.is_published("punish", punish["body"], date_yyyymmdd)
+    problem = client.not_published_problem("notice", repository.parse_body(resp.text), date_yyyymmdd,
+                                           day_status(date_yyyymmdd), published_with=punish_published)
     return repository.save_raw("notice", key, resp, problem)
 
 
@@ -47,10 +53,12 @@ def crawl_punish(date_yyyymmdd: str) -> str:
 
 
 @app.task(base=TwseJob)
-def crawl_punish_watchlist(date_yyyymmdd: str) -> str:
+def crawl_punish_watchlist(date_yyyymmdd: str | None = None) -> str:
     """注意累計名單：只有最新一份 → raw_punish_watchlist（key 名單上的資料日期；週末抓到的是週五的）。
     名單上不是這一輪那天的就存成失敗，下一輪再抓；那天休市就照存前一天的（看 day_status，見 client.watchlist_problem）。
-    date_yyyymmdd：這一輪資料線的那天（producer 給，不在這裡查「今天」：跑過午夜也還是同一天）。"""
+    date_yyyymmdd：這一輪資料線的那天（producer 給，不在這裡查「今天」：跑過午夜也還是同一天）；
+    沒給（改版前送進佇列、還沒做的任務）就用今天。"""
+    date_yyyymmdd = date_yyyymmdd or today_yyyymmdd()
     resp = client.fetch_punish_watchlist()
     list_date = client.watchlist_date(repository.parse_body(resp.text))
     key = list_date or date_yyyymmdd   # 找不到日期：用這一輪的那天，至少把回應存下來
@@ -69,7 +77,8 @@ def crawl_market_daily(month_yyyymm: str) -> str:
 @app.task(base=TwseJob)
 def crawl_stock_price(date_yyyymmdd: str) -> str:
     """每日收盤行情：一天 → raw_stock_price（key 20261120）。還沒公布完整就抓的當失敗（看內容，見 client.not_published_problem）。
-    它是判斷交易日的依據，自己只看日曆：休市就收；平日沒有資料就存成失敗（還沒公布，或臨時休市要人確認）。"""
+    它是判斷交易日的依據，自己不看收盤行情：日曆上休市、或市場成交事後確認休市就收；
+    其他沒有資料的存成失敗（還沒公布，或臨時休市，下一個交易日會自動確認）。"""
     resp = client.fetch_stock_price(date_yyyymmdd)
     key = date_yyyymmdd
     problem = client.not_published_problem("stock_price", repository.parse_body(resp.text), date_yyyymmdd,

@@ -221,9 +221,23 @@ def news_detail_text(page: bytes) -> str | None:
 TRADING, CLOSED, UNKNOWN = "trading", "closed", "unknown"   # day_status 的結果
 
 
+def update_date(body) -> datetime.date | None:
+    """處置股標題上的「資訊更新日期：115/11/23」→ date；沒有就回傳 None。
+    查過去的日子，這個日期是抓的那天（最新一次更新），不是查的那天。
+
+    >>> update_date({"title": "公布處置有價證券資訊 (115/07/01 至 115/07/15)\\n資訊更新日期：115/11/16"})
+    datetime.date(2026, 11, 16)
+    >>> update_date({"title": "公布處置有價證券資訊 (115/11/22 至 115/12/06)"}) is None
+    True
+    """
+    found = re.search(r"資訊更新日期：\s*(\d+/\d+/\d+)", (body.get("title") or "") if isinstance(body, dict) else "")
+    return date_utils.roc_to_date(found.group(1)) if found else None
+
+
 def is_published(source: str, body, date_yyyymmdd: str) -> bool:
     """回應裡看得到這天的資料（證交所公布了）：
-    注意股有一列的日期是這天；處置股的標題寫「資訊更新日期：這天」；收盤行情有個股的表、而且有資料。
+    注意股有一列的日期是這天；處置股的「資訊更新日期」在這天或之後（查當天要是當天，查過去的是抓的那天）；
+    收盤行情有個股的表、而且有資料。
 
     >>> is_published("notice", {"fields": ["證券代號", "日期"], "data": [["2330", "115.11.23"]]}, "20261123")
     True
@@ -232,6 +246,10 @@ def is_published(source: str, body, date_yyyymmdd: str) -> bool:
     >>> is_published("punish", {"title": "公布處置有價證券資訊 (115/11/23 至 115/12/07)\\n資訊更新日期：115/11/23"}, "20261123")
     True
     >>> is_published("punish", {"title": "公布處置有價證券資訊 (115/11/23 至 115/12/07)"}, "20261123")
+    False
+    >>> is_published("punish", {"title": "(115/07/01 至 115/07/15)\\n資訊更新日期：115/11/16"}, "20260701")   # 回補過去的日子
+    True
+    >>> is_published("punish", {"title": "(115/11/24 至 115/12/08)\\n資訊更新日期：115/11/23"}, "20261124")   # 今天的還沒更新
     False
     >>> is_published("stock_price", {"tables": [{"fields": ["證券代號", "收盤價"], "data": [["2330", "1,000"]]}]}, "20261123")
     True
@@ -246,9 +264,10 @@ def is_published(source: str, body, date_yyyymmdd: str) -> bool:
         if "日期" not in fields:
             return False
         at = fields.index("日期")
-        return any(str(row[at]).strip() == date_utils.to_roc(day, ".") for row in body.get("data") or [])
+        return any(len(row) > at and str(row[at]).strip() == date_utils.to_roc(day, ".") for row in body.get("data") or [])
     if source == "punish":
-        return f"資訊更新日期：{date_utils.to_roc(day, '/')}" in (body.get("title") or "")
+        updated = update_date(body)
+        return updated is not None and updated >= day
     if source == "stock_price":
         return any("證券代號" in (table.get("fields") or []) and table.get("data") for table in body.get("tables") or [])
     raise ValueError(f"不認識的來源：{source}")
@@ -268,8 +287,33 @@ def calendar_days(body) -> tuple[set[str], set[str]]:
     at_date, at_name = body["fields"].index("日期"), body["fields"].index("名稱")
     closed, open_ = set(), set()
     for row in body.get("data") or []:
+        if len(row) <= max(at_date, at_name) or not isinstance(row[at_date], str) or not isinstance(row[at_name], str):
+            continue   # 壞掉的列（太短、空值）跳過，不要讓整年的證交所任務都失敗
         (open_ if row[at_name].strip().endswith("交易日") else closed).add(row[at_date].replace("-", ""))
     return closed, open_
+
+
+def market_confirms_closed(date_yyyymmdd: str, market_body) -> bool:
+    """事後確認那天休市：這個月的市場成交已經有之後的交易日，卻沒有那天（颱風假這類臨時休市）。
+    當天還不知道（市場成交最多到前一天），下一個交易日的資料出來後才確認得了。
+
+    >>> market = {"fields": ["日期", "成交股數"], "data": [["115/09/09", "1"], ["115/09/11", "1"]]}
+    >>> market_confirms_closed("20260910", market), market_confirms_closed("20260911", market)   # 9/10 颱風假、9/11 有交易
+    (True, False)
+    >>> market_confirms_closed("20260914", market)   # 之後還沒有資料：還不知道
+    False
+    """
+    if not isinstance(market_body, dict) or "日期" not in (market_body.get("fields") or []):
+        return False
+    at = market_body["fields"].index("日期")
+    dates = set()
+    for row in market_body.get("data") or []:
+        try:
+            dates.add(date_utils.roc_to_date(str(row[at])))
+        except (IndexError, ValueError):
+            continue
+    day = date_utils.parse_yyyymmdd(date_yyyymmdd)
+    return day not in dates and any(d > day for d in dates)
 
 
 def should_trade(date_yyyymmdd: str, closed: set[str], open_: set[str]) -> bool:
@@ -287,11 +331,13 @@ def should_trade(date_yyyymmdd: str, closed: set[str], open_: set[str]) -> bool:
     return date_utils.parse_yyyymmdd(date_yyyymmdd).weekday() < 5
 
 
-def day_status(date_yyyymmdd: str, price_body, closed: set[str], open_: set[str]) -> str:
+def day_status(date_yyyymmdd: str, price_body, closed: set[str], open_: set[str], market_body=None) -> str:
     """這天是不是交易日：先看日曆（應不應該有交易），再用交易確認（收盤行情有沒有個股資料）。
 
-    price_body：這天收盤行情的回應（還沒抓到為 None）；closed、open_：開休市日期上休市、有交易的日子（calendar_days）。
-    日曆上休市 → CLOSED；應該有交易、收盤行情有資料 → TRADING；應該有交易、收盤行情沒有 → UNKNOWN（颱風假、還沒出來）。
+    price_body：這天收盤行情的回應（還沒抓到為 None）；closed、open_：開休市日期上休市、有交易的日子（calendar_days）；
+    market_body：那個月的市場成交（事後確認臨時休市用，market_confirms_closed）。
+    日曆上休市 → CLOSED；應該有交易、收盤行情有資料 → TRADING；
+    應該有交易、收盤行情沒有：市場成交已經有之後的交易日卻沒有這天 → CLOSED（颱風假，事後確認），不然 → UNKNOWN。
 
     >>> price = {"tables": [{"fields": ["證券代號"], "data": [["2330"]]}]}
     >>> day_status("20261123", price, set(), set()), day_status("20261128", price, set(), {"20261128"})   # 平日、週六補行交易
@@ -305,6 +351,8 @@ def day_status(date_yyyymmdd: str, price_body, closed: set[str], open_: set[str]
         return CLOSED
     if price_body is not None and is_published("stock_price", price_body, date_yyyymmdd):
         return TRADING
+    if market_confirms_closed(date_yyyymmdd, market_body):
+        return CLOSED
     return UNKNOWN
 
 
@@ -329,16 +377,22 @@ def watchlist_problem(list_yyyymmdd: str | None, today_yyyymmdd: str, status: st
     return f"注意累計名單還是 {list_yyyymmdd or '（找不到日期）'} 的，今天{'（交易日）' if status == TRADING else ''}的還沒公布"
 
 
-def not_published_problem(source: str, body, date_yyyymmdd: str, status: str) -> str | None:
+def not_published_problem(source: str, body, date_yyyymmdd: str, status: str, published_with: bool = False) -> str | None:
     """還沒公布 → 回傳原因：這時回傳的空名單不是「沒人被列」，不能當成那天的資料。
-    看得到這天的資料就算公布了（不管幾點）；看不到的看 status（day_status）：休市就收；
-    交易日不收（一定有資料，只是證交所還沒公布）；不知道的也不收（可能是颱風假這類臨時休市，要人確認）。"""
-    if is_published(source, body, date_yyyymmdd) or accept_missing(status):
+    看得到這天的資料就算公布了（不管幾點）；published_with：一起公布的資料已經公布了
+    （注意股和處置股一起公布：處置股公布了，注意股是空的就是那天真的沒人被列）。
+    看不到的看 status（day_status）：休市就收；交易日不收（一定有資料，只是證交所還沒公布）；
+    不知道的也不收（還沒公布，或颱風假這類臨時休市：下一個交易日的市場成交出來後會自動確認成休市）。"""
+    if is_published(source, body, date_yyyymmdd) or published_with or accept_missing(status):
         return None
     if status == TRADING:
         return f"{date_yyyymmdd} 是交易日，還沒公布完整（看不到這天的資料）"
-    return (f"{date_yyyymmdd} 還沒公布完整：日曆上應該有交易，但收盤行情沒有資料。"
-            "可能是颱風假這類臨時休市（那天會和週末一樣當成沒交易，資料不會寫錯，不用處理）；如果是交易日，表示證交所還沒公布")
+    if source == "stock_price":
+        return (f"{date_yyyymmdd} 看不到收盤行情：還沒公布（平常 14:30 左右），"
+                "或颱風假這類臨時休市（下一個交易日的市場成交出來後會自動確認，不用處理）")
+    return (f"{date_yyyymmdd} 還沒公布完整：日曆上應該有交易，但收盤行情沒有資料。可能是颱風假這類臨時休市"
+            "（那天和週末一樣當成沒交易，資料不會寫錯；下一個交易日的市場成交出來後會自動確認，不用處理）；"
+            "如果是交易日，表示證交所還沒公布")
 
 
 def holiday_problem(body, year: int) -> str | None:
