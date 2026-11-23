@@ -14,7 +14,7 @@
 同一個 prompt 版本已經有結果的就跳過（不重複花錢）；還沒有全文的公告也跳過，下次再分類。
 摘要超過上限（公告 60 字；新聞依文章長度，見 summarizer.summary_limit）：帶著上次的回答請 LLM 縮短，只重問一次；
 還是太長、或縮短失敗就用手上的回答照存，summary_ok＝否。
-讀 stage 表和網站的 VIEW（app_card、app_announcement、app_stock_news），只寫自己的 ai_* 表，失敗不影響資料線和其他任務。
+只讀 stage 表和前面的 AI 結果，不讀規則引擎的結果（app），所以和 analyze 同時跑。只寫自己的 ai_* 表，失敗不影響資料線和其他任務。
 例外：summarize_news 要新聞全文，全文不存進資料庫（著作權），只能當場再抓一次網頁（用 crawler/client.py 的函式，不另寫爬蟲）。
 每個函式都用 @app.task 註冊成 Celery 任務（見 common/worker.py）；要用本機 embedding 模型的（embed_news、summarize_card）
 在 embed 佇列上跑，其他在 ai 佇列；
@@ -175,7 +175,8 @@ def card_once(card_id: str, messages: list[dict]) -> tuple[dict, str]:
 def summarize_card(stock_id: str, date_yyyymmdd: str) -> str:
     """一張卡片（一檔一天）→ ai_card_summary：2～3 句白話（股價最近怎麼了、公告和新聞裡可能的原因）。
 
-    輸入：app_card 那天的一列、近 30 天公告（含公告分類）、新聞 RAG 挑出的新聞（有就帶，沒有或出錯照寫）。
+    輸入（只讀 stage 和其他 AI 結果）：那天的注意股、處置、漲跌幅（repository.card_facts）、近 30 天公告（含公告分類）、
+    新聞 RAG 挑出的新聞（有就帶，沒有或出錯照寫）。
     輸入的雜湊值和前一天一樣（例如處置中、沒有新公告、新聞）就沿用前一天的摘要，不呼叫 API。
     """
     key = f"{stock_id}_{date_yyyymmdd}"                       # 結果那一行看得懂
@@ -183,9 +184,9 @@ def summarize_card(stock_id: str, date_yyyymmdd: str) -> str:
     if repository.has_card_summary(card_id, card_summarizer.PROMPT_VERSION):
         return f"{key} 已經寫過（{card_summarizer.PROMPT_VERSION}），跳過"
     day = parse_yyyymmdd(date_yyyymmdd)
-    card = repository.read_card(stock_id, day)
+    card = repository.card_facts(stock_id, day)
     if card is None:
-        return f"{key} 沒有卡片，跳過"
+        return f"{key} 那天沒被列注意、也不在注意累計名單上，跳過"
     announcements = repository.recent_announcements(stock_id, parse_yyyymmdd(days_before(date_yyyymmdd, 30)), day)
     note = ""
     try:

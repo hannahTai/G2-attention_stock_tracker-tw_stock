@@ -432,6 +432,47 @@ def test_same_story_grouped_and_listed_once(db):
     assert [(n["title"], n["also_reported_by"]) for n in listed] == [("【下週觀察】健策跌近一成仍留3清單", ["CMoney投資網誌"]), ("健策除息", []), ("健策接獲大單", ["自由時報", "鉅亨網"])]
 
 
+def test_card_summary_reads_only_stage_and_ai(db):
+    """卡片 AI 摘要只讀 stage 和公告分類：要寫哪幾張（今天被列注意或在注意累計名單上的上市公司）、事實、公告。"""
+    day = datetime.date(2026, 11, 20)
+    with db.begin() as conn:
+        run = lambda sql, **params: conn.execute(sqlalchemy.text(sql), params)
+        for company in ("2330", "2317", "1101"):
+            run("INSERT INTO stage_company (company_id, short_name, full_name, industry_code, snapshot_date) "
+                "VALUES (:c, :c, :c, '24', :d)", c=company, d=day)
+        run("INSERT INTO stage_notice (trade_date, stock_id, stock_name, reason_text) "
+            "VALUES (:d, '2330', '台積電', '最近六個營業日累積收盤價跌幅達37.82%')", d=day)
+        for stock in ("2317", "084028"):   # 084028 是權證，不是上市公司
+            run("INSERT INTO stage_punish_watchlist (data_date, stock_id, stock_name, progress_text) "
+                "VALUES (:d, :s, :s, '連續二次')", d=day, s=stock)
+        for clause in (13, 1):
+            run("INSERT INTO stage_notice_clause (trade_date, stock_id, clause) VALUES (:d, '2330', :c)", d=day, c=clause)
+        run("INSERT INTO stage_stock_price (trade_date, stock_id, stock_name, close_price, price_change) "
+            "VALUES (:d, '2330', '台積電', 900, -100)", d=day)
+        run("INSERT INTO stage_punish (announce_date, stock_id, stock_name, trigger_condition, period_start, period_end, "
+            "measure_type, match_interval_minutes, content, has_star_mark) "
+            "VALUES (:d, '2330', '台積電', '連續三次', :s, :e, '第一次處置', 5, '…', FALSE)",
+            d=day, s=datetime.date(2026, 11, 17), e=datetime.date(2026, 11, 23))
+        announcement_id = key_md5("2330", "20261119", 1)
+        run("INSERT INTO stage_announcement (company_id, announce_date, enter_date, serial_number, announcement_id, "
+            "announce_time, company_name, subject) VALUES ('2330', :d, :d, 1, :a, '15:00', '台積電', '公告子公司破產')",
+            d=datetime.date(2026, 11, 19), a=announcement_id)
+        run("INSERT INTO ai_announcement_label (announcement_id, prompt_version, category, is_correction, has_news, "
+            "is_negative, summary, reason, summary_ok, model) "
+            "VALUES (:a, 'v3', '其他', FALSE, TRUE, TRUE, '子公司破產', '…', TRUE, 'm')", a=announcement_id)
+
+    assert repository.list_unsummarized_cards(day, day, "v7") == [("2317", day), ("2330", day)]
+    facts = repository.card_facts("2330", day)
+    assert facts["is_listed_today"] and facts["reason_text"].startswith("最近六個") and facts["clauses"] == "1,13"
+    assert float(facts["change_pct"]) == -10.0   # -100 ÷ (900 + 100)
+    assert facts["punish"]["match_interval_minutes"] == 5 and facts["punish"]["period_end"] == datetime.date(2026, 11, 23)
+    watch = repository.card_facts("2317", day)
+    assert not watch["is_listed_today"] and watch["change_pct"] is None and watch["punish"] is None
+    assert repository.card_facts("1101", day) is None   # 沒被列注意、也不在名單上
+    [announcement] = repository.recent_announcements("2330", datetime.date(2026, 10, 21), day)
+    assert (announcement["category"], announcement["is_negative"], announcement["ai_summary"]) == ("其他", True, "子公司破產")
+
+
 def test_create_tables_can_run_at_the_same_time(db):
     """analyze 和 ai 同時開始，兩個 producer 都會先 create_tables（DROP、CREATE VIEW）：同時跑也不會出錯。"""
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:

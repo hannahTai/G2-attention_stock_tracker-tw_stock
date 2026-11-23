@@ -11,7 +11,8 @@
 - 新聞 RAG：區間內（往前多 NEWS_LOOKBACK_DAYS 天）每天一個任務，標題＋新聞摘要轉成向量 → ai_news_embedding
   （佇列 embed，不用 API key；要在新聞摘要之後）
 - 同一件事：整段區間（往前多 NEWS_LOOKBACK_DAYS 天）一個任務，好幾家報同一件事的新聞歸在一起 → ai_news_story（佇列 ai，不用 API key）
-- 卡片 AI 摘要：區間內每天的注意股、聽牌股，一檔一天一個任務 → ai_card_summary（佇列 embed：查詢也要轉向量；要在公告分類、新聞 RAG 之後）
+- 卡片 AI 摘要：區間內每天被列注意、在注意累計名單上的上市公司，一檔一天一個任務 → ai_card_summary
+  （佇列 embed：查詢也要轉向量；要在公告分類、新聞 RAG 之後）
 順序：公告分類 → 新聞摘要 → 新聞 RAG → 同一件事 → 卡片 AI 摘要。
 沒設 ANTHROPIC_API_KEY 就跳過要呼叫 Claude 的項目（新聞 RAG 的向量照樣轉，只用標題和導言），不算失敗。失敗只影響 AI 的結果，規則引擎算的還差幾次不受影響。
 新聞（FinMind 清單、新聞網頁的導言）由 crawler、transform 抓和整理；摘要要的全文由 task 當場再抓（見 ai/task.py）。

@@ -61,7 +61,7 @@ flowchart LR
 
 ```
 crawler/                    抓資料：API → raw（producer → task → client → repository）
-├─ producer.py                producer：決定今天要抓哪些任務、依序執行
+├─ producer.py                producer：決定今天要抓哪些任務；證交所先，觀測站、新聞兩條同時
 ├─ task.py                    task：每個 crawl_xxx 任務抓一份、存進 raw（@app.task 註冊成 Celery 任務，見 common/worker.py）
 └─ client.py                  client：打證交所、觀測站、FinMind、新聞網頁（fetch_xxx，不存檔）、檢查回應內容
 transform/                  轉換：raw → stage（同樣的 producer → task 寫法）
@@ -74,7 +74,7 @@ analyze/                    分析：stage → app（同樣的 producer → task
 ├─ task.py                    task：analyze_progress(date_yyyymmdd)，一天一個任務
 ├─ engine.py                  規則引擎：依要點第六條算還差幾次、若再列注意的處置日期、幾號出關
 └─ backtest.py                回測（Observe）：引擎預測的處置 vs 真實處置公告
-ai/                         AI 項目：讀 stage 和網站的 VIEW、呼叫 LLM、存進 ai_* 表（同樣的 producer → task → client → repository 寫法；
+ai/                         AI 項目：只讀 stage 和前面的 AI 結果，呼叫 LLM、存進 ai_* 表（同樣的 producer → task → client → repository 寫法；
                             新聞摘要例外：全文不存，當場用 crawler/client.py 重抓網頁）
 ├─ producer.py                producer：產生任務清單（公告、新聞、每天的向量、同一件事、卡片，各自還沒做過的）
 ├─ task.py                    task：classify_announcement、summarize_news、embed_news、group_news_stories、summarize_card
@@ -97,7 +97,7 @@ dashboard/                  網頁：Streamlit 打資料 API，不直接連資�
 └─ templates/、static/        網頁範本（卡片牆、個股頁）、CSS
 common/                     各資料夾共用（crawler、transform、analyze 彼此不互相 import，只用 common；ai 的新聞摘要例外，用 crawler/client.py）
 ├─ repository.py              repository：連線、建表、raw 表讀寫、stage／app 表讀寫
-├─ runner.py                  四個 producer 共用的任務執行：依序執行、暫時性失敗重試、列出失敗
+├─ runner.py                  四個 producer 共用的任務執行：依序執行、好幾條任務鏈同時進行、暫時性失敗重試、列出失敗
 ├─ cli.py                     四個 producer 共用的指令參數（daily／backfill、--refetch）
 ├─ config.py                  設定（會因環境改變的值，從 .env 讀）
 ├─ worker.py                  Celery app 和任務共用的行為（重試、間隔）；USE_CELERY=1 時任務送進 RabbitMQ（佇列 crawl_twse、crawl_mops、crawl_finmind、crawl_news、transform、analyze、ai、embed）
@@ -106,8 +106,8 @@ common/                     各資料夾共用（crawler、transform、analyze �
 schema/                     建表 SQL：raw.sql、stage.sql、app.sql、view.sql（給網頁讀的 VIEW）、ai.sql（AI 結果）、log.sql（任務歷史）
 scripts/                    .bat：每日排程（daily）、回補（backfill）、從 raw 重算（rebuild）、備份（backup）、網站（web：API ＋ 網頁）
 tests/                      測試
-docs/                       流程說明（flow.md）、資料表（tables.md）、處置規則（rules.md）、AI 規劃（ai_plan.md）、提案
-main.py                     一次跑完：crawler → transform → analyze → ai（同一時間只跑一輪）
+docs/                       流程說明（flow.md）、任務與佇列（queues.md）、資料表（tables.md）、處置規則（rules.md）、AI 規劃（ai_plan.md）、提案
+main.py                     一次跑完：crawler → transform → analyze 和 ai 同時（同一時間只跑一輪）
 ```
 
 ---
@@ -144,7 +144,7 @@ git clone https://github.com/hannahTai/G2-attention_stock_tracker-tw_stock.git
 cd G2-attention_stock_tracker-tw_stock
 cp .env.example .env   # 填入 PostgreSQL 連線資訊
 uv sync                # 安裝套件（依 uv.lock）
-uv run python main.py  # 建表（第一次）→ 抓今天 → 整理 → 算還差幾次 → AI 項目（依序執行）
+uv run python main.py  # 建表（第一次）→ 抓今天 → 整理 → 算還差幾次和 AI 項目（同時）
 ```
 
 回補一段期間：`uv run python main.py backfill --start 20260701`（已經抓完整的跳過，加 `--refetch` 全部重抓）。

@@ -11,7 +11,7 @@
   AI（ai/）    讀：list_unlabeled_announcements()、read_announcement()、has_announcement_label()、
                    list_unsummarized_news()、read_news()、has_news_summary()
                    list_news_to_embed()、news_story_links()、stock_news_candidates()（新聞 RAG，pgvector）、
-                   list_unsummarized_cards()、read_card()、recent_announcements()、has_card_summary()、previous_card_summary()
+                   list_unsummarized_cards()、card_facts()、recent_announcements()、has_card_summary()、previous_card_summary()
                寫：insert_announcement_label()、insert_news_summary()、save_news_embeddings()、save_news_stories()、insert_card_summary()、
                    save_llm_call()（ai_* 表只新增，不修改；新聞向量、同一件事例外：內容變了就重轉、重新歸類）
 
@@ -538,31 +538,63 @@ def stock_news_candidates(stock_id: str, start: datetime.date, end: datetime.dat
 
 # ---------- 卡片 AI 摘要 ----------
 def list_unsummarized_cards(start: datetime.date, end: datetime.date, prompt_version: str) -> list[tuple[str, datetime.date]]:
-    """區間內每天的注意股（今天被列）、聽牌股（還差 1 次），上市公司，這一版還沒寫摘要的：(證券代號, 日期)。"""
+    """區間內每天要寫卡片 AI 摘要的上市公司，這一版還沒寫的：(證券代號, 日期)。
+    今天被列注意（stage_notice）或在證交所的注意累計名單上（stage_punish_watchlist，再被列注意就可能處置）；只讀 stage，不用等規則引擎。
+    網站的聽牌股是規則引擎算的（app_card.steps_left = 1），和官方名單是兩個來源：11/09～11/20 每天都一樣，但不保證，
+    不一樣時會有卡片沒有摘要、或摘要沒有卡片顯示。官方名單只有抓到的那幾天才有（只公布最新一份），之前的日子只寫今天被列注意的。"""
     rows = query_rows(
-        "SELECT c.stock_id, c.trade_date FROM tw_stock.app_card c "
-        "WHERE c.trade_date BETWEEN :start AND :end AND c.is_company AND (c.is_listed_today OR c.steps_left = 1) "
+        "SELECT t.stock_id, t.trade_date FROM ("
+        "  SELECT stock_id, trade_date FROM tw_stock.stage_notice WHERE trade_date BETWEEN :start AND :end "
+        "  UNION SELECT stock_id, data_date FROM tw_stock.stage_punish_watchlist WHERE data_date BETWEEN :start AND :end"
+        ") t "
+        "WHERE EXISTS (SELECT 1 FROM tw_stock.stage_company co WHERE co.company_id = t.stock_id) "
         "  AND NOT EXISTS (SELECT 1 FROM tw_stock.ai_card_summary s "
-        "                  WHERE s.stock_id = c.stock_id AND s.card_date = c.trade_date AND s.prompt_version = :version) "
-        "ORDER BY c.trade_date, c.stock_id",
+        "                  WHERE s.stock_id = t.stock_id AND s.card_date = t.trade_date AND s.prompt_version = :version) "
+        "ORDER BY t.trade_date, t.stock_id",
         {"start": start, "end": end, "version": prompt_version})
     return [(row.stock_id, row.trade_date) for row in rows]
 
 
-def read_card(stock_id: str, day: datetime.date) -> dict | None:
-    """app_card 那天的一列（卡片 AI 摘要的輸入）；沒有就回傳 None。"""
+def card_facts(stock_id: str, day: datetime.date) -> dict | None:
+    """卡片 AI 摘要那天要的事實（只讀 stage）：名稱、今天有沒有被列注意、款次（例如 "1,13"）和官方寫的情況、
+    漲跌幅（%，和參考價比）、處置中的期間。
+    今天沒被列注意、也不在注意累計名單上，就不用寫：回傳 None。"""
     rows = query_rows(
-        "SELECT trade_date, stock_id, stock_name, is_listed_today, clauses, reason_text, close_price, change_pct "
-        "FROM tw_stock.app_card WHERE stock_id = :stock_id AND trade_date = :day",
+        "SELECT CAST(:day AS DATE) AS trade_date, CAST(:stock_id AS VARCHAR) AS stock_id, "
+        "       COALESCE(n.stock_name, w.stock_name, sp.stock_name) AS stock_name, "
+        "       n.stock_id IS NOT NULL AS is_listed_today, w.stock_id IS NOT NULL AS on_watchlist, n.reason_text, "
+        "       (SELECT string_agg(CAST(c.clause AS TEXT), ',' ORDER BY c.clause) FROM tw_stock.stage_notice_clause c "
+        "        WHERE c.stock_id = :stock_id AND c.trade_date = :day) AS clauses, "
+        "       ROUND(sp.price_change / NULLIF(sp.close_price - sp.price_change, 0) * 100, 2) AS change_pct "
+        "FROM (SELECT 1) one "
+        "LEFT JOIN tw_stock.stage_notice n ON n.stock_id = :stock_id AND n.trade_date = :day "
+        "LEFT JOIN tw_stock.stage_punish_watchlist w ON w.stock_id = :stock_id AND w.data_date = :day "
+        "LEFT JOIN tw_stock.stage_stock_price sp ON sp.stock_id = :stock_id AND sp.trade_date = :day",
         {"stock_id": stock_id, "day": day})
-    return rows[0]._asdict() if rows else None
+    facts = rows[0]._asdict()
+    if not (facts["is_listed_today"] or facts["on_watchlist"]):
+        return None
+    punish = query_rows(
+        "SELECT period_start, period_end, match_interval_minutes FROM tw_stock.stage_punish "
+        "WHERE stock_id = :stock_id AND period_start <= :day AND period_end >= :day "
+        "ORDER BY announce_date DESC LIMIT 1",
+        {"stock_id": stock_id, "day": day})
+    facts["punish"] = punish[0]._asdict() if punish else None
+    return facts
 
 
 def recent_announcements(stock_id: str, start: datetime.date, end: datetime.date) -> list[dict]:
-    """區間內的公告（舊的在前），含公告分類的類型、有新消息、白話摘要。"""
+    """區間內的公告（舊的在前），含最新一版公告分類的類型、有新消息、壞消息、白話摘要（沒通過檢查的摘要不帶）。
+    只讀 stage 和公告分類的結果（stage_announcement、ai_announcement_label）。"""
     rows = query_rows(
-        "SELECT announce_date, subject, category, has_news, is_negative, ai_summary FROM tw_stock.app_announcement "
-        "WHERE stock_id = :stock_id AND announce_date BETWEEN :start AND :end ORDER BY announce_date, announce_time",
+        "SELECT a.announce_date, a.subject, l.category, l.has_news, l.is_negative, "
+        "       CASE WHEN l.summary_ok THEN l.summary END AS ai_summary "
+        "FROM tw_stock.stage_announcement a "
+        "LEFT JOIN LATERAL (SELECT x.category, x.has_news, x.is_negative, x.summary, x.summary_ok "
+        "                   FROM tw_stock.ai_announcement_label x WHERE x.announcement_id = a.announcement_id "
+        "                   ORDER BY x.labeled_at DESC LIMIT 1) l ON TRUE "
+        "WHERE a.company_id = :stock_id AND a.announce_date BETWEEN :start AND :end "
+        "ORDER BY a.announce_date, a.announce_time",
         {"stock_id": stock_id, "start": start, "end": end})
     return [row._asdict() for row in rows]
 

@@ -356,7 +356,9 @@ def test_embed_jobs_look_back_like_crawler(monkeypatch):
 
 # ---------- 卡片 AI 摘要：card_summarizer ----------
 CARD = {"trade_date": datetime.date(2026, 11, 20), "stock_id": "3653", "stock_name": "健策", "is_listed_today": True,
-        "clauses": "1", "reason_text": "最近六個營業日累積收盤價漲幅達32.5%", "close_price": 3705.0, "change_pct": 9.96}
+        "on_watchlist": False, "clauses": "1", "reason_text": "最近六個營業日累積收盤價漲幅達32.5%", "change_pct": 9.96,
+        "punish": {"period_start": datetime.date(2026, 11, 17), "period_end": datetime.date(2026, 11, 23),
+                   "match_interval_minutes": 5}}
 CARD_ANNOUNCEMENTS = [{"announce_date": datetime.date(2026, 11, 14), "subject": "公告10月營收", "category": "營收、自結損益",
                        "has_news": True, "is_negative": False, "ai_summary": "10月營收30.73億元，年增81％"}]
 CARD_NEWS = [{"news_id": "n1", "news_date": datetime.date(2026, 11, 19), "publisher": "UDN", "title": "健策接獲AI伺服器散熱訂單"}]
@@ -364,11 +366,14 @@ CARD_ANSWER = {"summary": "最近六個交易日漲了 32.5%。期間公司公�
                "news_used": [1]}
 
 
-def test_card_message_has_plain_reason_and_no_progress():
-    """款次換成白話、帶今天的漲跌幅；不放離處置還差幾次（卡片上有），不放推算，也不放日期本身。"""
+def test_card_message_has_facts_but_no_rules():
+    """款次換成白話、官方寫的情況（營業日換成交易日）、處置中的期間和撮合間隔、今天的漲跌幅；
+    不寫第幾款、離處置還差幾次（規定），不放收盤價本身，也不放日期本身。"""
     message = card_summarizer.build_user_message(CARD, CARD_ANNOUNCEMENTS, CARD_NEWS)
-    assert "今天被列注意，原因：最近一段期間股價累積漲（跌）幅太大" in message and "第 1 款" not in message
-    assert "今天收盤：3705.0 元，漲 9.96%" in message and "處置" not in message and "營業日" not in message
+    assert "今天被列為注意股，原因：最近一段期間股價累積漲（跌）幅太大" in message and "款" not in message
+    assert "官方寫的情況：最近六個交易日累積收盤價漲幅達32.5%" in message
+    assert "處置中：11/17～11/23，期間每 5 分鐘才撮合一次" in message and "今天漲跌：漲 9.96%" in message
+    assert "還差" not in message and "營業日" not in message and "今天收盤" not in message
     assert "營收、自結損益，有新消息：10月營收30.73億元" in message and "[1] 2026-11-19 UDN：健策接獲AI伺服器散熱訂單" in message
     assert "next" not in message and "2026-11-20" not in message   # 輸入一樣的兩天，訊息也一樣，可以沿用
 
@@ -385,10 +390,10 @@ def test_card_row_maps_news_numbers_to_ids_and_checks_numbers():
 # ---------- summarize_card 任務 ----------
 @pytest.fixture
 def cards(monkeypatch):
-    """假的 app_card、公告、新聞 RAG、ai_card_summary、ai_llm_call。"""
+    """假的卡片事實（stage）、公告、新聞 RAG、ai_card_summary、ai_llm_call。"""
     store = types.SimpleNamespace(rows=[], calls=[], asked=[], existing=set(), previous=None, news=list(CARD_NEWS))
     monkeypatch.setattr(repository, "has_card_summary", lambda card_id, version: card_id in store.existing)
-    monkeypatch.setattr(repository, "read_card", lambda stock_id, day: CARD if stock_id == "3653" else None)
+    monkeypatch.setattr(repository, "card_facts", lambda stock_id, day: CARD if stock_id == "3653" else None)
     monkeypatch.setattr(repository, "recent_announcements", lambda stock_id, start, end: CARD_ANNOUNCEMENTS)
     monkeypatch.setattr(repository, "previous_card_summary", lambda stock_id, before, version: store.previous)
     monkeypatch.setattr(repository, "insert_card_summary", store.rows.append)
@@ -432,7 +437,7 @@ def test_summarize_card_still_writes_when_news_fails(cards, monkeypatch):
 def test_summarize_card_skips_done_and_missing(cards):
     cards.existing.add(key_md5("3653", "20261120"))
     assert "已經寫過" in ai_task.summarize_card("3653", "20261120")
-    assert "沒有卡片" in ai_task.summarize_card("9999", "20261120")
+    assert "不在注意累計名單上，跳過" in ai_task.summarize_card("9999", "20261120")
     assert cards.asked == [] and cards.rows == []
 
 
