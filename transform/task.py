@@ -59,12 +59,19 @@ def save(raw: dict, tables: dict[str, pd.DataFrame], clear_day=None) -> str:
 
 def latest_key(source: str, date_yyyymmdd: str) -> str:
     """那天（含）以前最新的一份 raw_key；一份都沒有就回傳「<=那天」（讀不到，任務會跳過）。只有最新一份的來源用。"""
-    keys = [k for k in repository.list_raw_keys(source) if k <= date_yyyymmdd]
-    return keys[-1] if keys else f"<={date_yyyymmdd}"
+    return repository.latest_raw_key(source, date_yyyymmdd) or f"<={date_yyyymmdd}"
 
 
 def skipped(source: str, key) -> str:
     return f"raw_{source}/{key} 沒有成功的資料，跳過"
+
+
+def transform_one(source: str, key: str, build) -> str:
+    """大部分任務都一樣的四步：讀這份 raw（沒有成功的就跳過）→ build(raw) 整理成 {表名: DataFrame} → 寫進 stage。"""
+    raw = repository.read_raw(source, key)
+    if raw is None:
+        return skipped(source, key)
+    return save(raw, build(raw))
 
 
 # ---------- 證交所 ----------
@@ -99,12 +106,8 @@ def transform_punish(date_yyyymmdd: str) -> str:
 @app.task(base=Job)
 def transform_punish_watchlist(date_yyyymmdd: str) -> str:
     """那天以前最新的注意累計名單 → stage_punish_watchlist。"""
-    key = latest_key("punish_watchlist", date_yyyymmdd)
-    raw = repository.read_raw("punish_watchlist", key)
-    if raw is None:
-        return skipped("punish_watchlist", key)
-    tables = {"stage_punish_watchlist": transformer.clean_punish_watchlist(transformer.punish_watchlist_to_frame(raw))}
-    return save(raw, tables)
+    return transform_one("punish_watchlist", latest_key("punish_watchlist", date_yyyymmdd), lambda raw: {
+        "stage_punish_watchlist": transformer.clean_punish_watchlist(transformer.punish_watchlist_to_frame(raw))})
 
 
 def notice_days(month_yyyymm: str) -> set:
@@ -130,57 +133,37 @@ def transform_market_daily(month_yyyymm: str) -> str:
 @app.task(base=Job)
 def transform_stock_price(date_yyyymmdd: str) -> str:
     """每日收盤行情（一天）→ stage_stock_price。"""
-    key = date_yyyymmdd
-    raw = repository.read_raw("stock_price", key)
-    if raw is None:
-        return skipped("stock_price", key)
-    tables = {"stage_stock_price": transformer.clean_stock_price(transformer.stock_price_to_frame(raw), parse_yyyymmdd(key))}
-    return save(raw, tables)
+    return transform_one("stock_price", date_yyyymmdd, lambda raw: {
+        "stage_stock_price": transformer.clean_stock_price(transformer.stock_price_to_frame(raw), parse_yyyymmdd(date_yyyymmdd))})
 
 
 @app.task(base=Job)
 def transform_holiday(year: int) -> str:
     """開休市日期（一年）→ stage_holiday。"""
-    key = str(year)
-    raw = repository.read_raw("holiday", key)
-    if raw is None:
-        return skipped("holiday", key)
-    tables = {"stage_holiday": transformer.clean_holiday(transformer.holiday_to_frame(raw))}
-    return save(raw, tables)
+    return transform_one("holiday", str(year), lambda raw: {
+        "stage_holiday": transformer.clean_holiday(transformer.holiday_to_frame(raw))})
 
 
 @app.task(base=Job)
 def transform_company(date_yyyymmdd: str) -> str:
     """那天以前最新的上市公司清單 → stage_company（依 company_id 更新，下市的留著）。"""
-    key = latest_key("company", date_yyyymmdd)
-    raw = repository.read_raw("company", key)
-    if raw is None:
-        return skipped("company", key)
-    tables = {"stage_company": transformer.clean_company(transformer.company_to_frame(raw))}
-    return save(raw, tables)
+    return transform_one("company", latest_key("company", date_yyyymmdd), lambda raw: {
+        "stage_company": transformer.clean_company(transformer.company_to_frame(raw))})
 
 
 # ---------- 公開資訊觀測站 ----------
 @app.task(base=Job)
 def transform_announcement(stock_id: str, year: int, month: int) -> str:
     """一家公司一個月的重大訊息 → stage_announcement。"""
-    key = f"{stock_id}_{year:04d}{month:02d}"
-    raw = repository.read_raw("announcement", key)
-    if raw is None:
-        return skipped("announcement", key)
-    tables = {"stage_announcement": transformer.clean_announcement(transformer.announcement_to_frame(raw))}
-    return save(raw, tables)
+    return transform_one("announcement", f"{stock_id}_{year:04d}{month:02d}", lambda raw: {
+        "stage_announcement": transformer.clean_announcement(transformer.announcement_to_frame(raw))})
 
 
 @app.task(base=Job)
 def transform_announcement_detail(stock_id: str, enter_yyyymmdd: str, serial_number: int) -> str:
     """一則重大訊息全文 → stage_announcement_detail。"""
-    key = f"{stock_id}_{enter_yyyymmdd}_{serial_number}"
-    raw = repository.read_raw("announcement_detail", key)
-    if raw is None:
-        return skipped("announcement_detail", key)
-    tables = {"stage_announcement_detail": transformer.clean_announcement_detail(transformer.announcement_detail_to_frame(raw))}
-    return save(raw, tables)
+    return transform_one("announcement_detail", f"{stock_id}_{enter_yyyymmdd}_{serial_number}", lambda raw: {
+        "stage_announcement_detail": transformer.clean_announcement_detail(transformer.announcement_detail_to_frame(raw))})
 
 
 # ---------- FinMind ----------
@@ -190,22 +173,13 @@ def transform_stock_news(stock_id: str, date_yyyymmdd: str) -> str:
 
     同一則新聞好幾檔都有：stage_news 只有一列，時間、標題以最新一次抓到的為準。
     """
-    key = f"{stock_id}_{date_yyyymmdd}"
-    raw = repository.read_raw("stock_news", key)
-    if raw is None:
-        return skipped("stock_news", key)
-    news, stock_news = transformer.clean_stock_news(transformer.stock_news_to_frame(raw))
-    tables = {"stage_news": news, "stage_stock_news": stock_news}
-    return save(raw, tables)
+    return transform_one("stock_news", f"{stock_id}_{date_yyyymmdd}", lambda raw: dict(zip(
+        ("stage_news", "stage_stock_news"), transformer.clean_stock_news(transformer.stock_news_to_frame(raw)))))
 
 
 # ---------- 新聞網站 ----------
 @app.task(base=Job)
 def transform_news_detail(news_id: str) -> str:
     """一則新聞網頁（raw_news_detail 存的 <head>）→ stage_news_detail：導言（meta 摘要）、轉址後的網址、全文有幾個字。"""
-    key = news_id
-    raw = repository.read_raw("news_detail", key)
-    if raw is None:
-        return skipped("news_detail", key)
-    tables = {"stage_news_detail": transformer.clean_news_detail(transformer.news_detail_to_frame(raw))}
-    return save(raw, tables)
+    return transform_one("news_detail", news_id, lambda raw: {
+        "stage_news_detail": transformer.clean_news_detail(transformer.news_detail_to_frame(raw))})

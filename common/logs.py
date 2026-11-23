@@ -48,7 +48,7 @@ class DailyFileHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            today = date_utils.now().date()
+            today = date_utils.today()
             if today != self.day:
                 self.open_day(today)
             self.stream.write(self.format(record) + "\n")

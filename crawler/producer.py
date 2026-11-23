@@ -64,7 +64,8 @@ def build_twse_steps(start: str, end: str, refetch: bool = False) -> list[list[t
     同一步裡就算有任務重試、順序被打亂也沒關係。refetch＝True 就不跳過已經完整的。"""
     days = dates_between(start, end)
     months = months_between(start, end)
-    fetched = {s: {} if refetch else repository.raw_fetched_times(s) for s in ("notice", "punish", "stock_price", "market_daily", "holiday")}
+    fetched = {s: {} if refetch else repository.raw_fetched_times(s)
+               for s in ("notice", "punish", "stock_price", "market_daily", "holiday", "company")}
 
     # 開休市日期一年一份（11 月起也抓下一年），抓過就不再抓；颱風假不在這份裡，是從市場成交看出來的
     calendar = [(task.crawl_holiday, {"year": y}) for y in holiday_years(start, end) if str(y) not in fetched["holiday"]]
@@ -75,7 +76,8 @@ def build_twse_steps(start: str, end: str, refetch: bool = False) -> list[list[t
     rest = [(task.crawl_notice, {"date_yyyymmdd": d}) for d in days if d not in fetched["notice"]]
     if end == today_yyyymmdd():
         rest += [(task.crawl_punish_watchlist, {"date_yyyymmdd": end})]   # 只有最新一天，回補時抓不到舊的
-    rest += [(task.crawl_company, {})]              # 查重大訊息前要先有公司清單
+    if today_yyyymmdd() not in fetched["company"]:   # 查重大訊息前要先有公司清單；一天一份快照，同一天的下一輪不用再抓
+        rest += [(task.crawl_company, {})]
     return [calendar, prices, punishes, rest]
 
 

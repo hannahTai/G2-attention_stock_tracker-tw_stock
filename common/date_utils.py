@@ -14,11 +14,6 @@ def now() -> datetime.datetime:
     return datetime.datetime.now(TAIPEI)
 
 
-def now_naive() -> datetime.datetime:
-    """現在的台灣時間，不帶時區（寫進 TIMESTAMP 欄位用）。"""
-    return now().replace(tzinfo=None)
-
-
 def today() -> datetime.date:
     return now().date()
 
@@ -42,6 +37,20 @@ def parse_yyyymmdd(text: str) -> datetime.date:
     datetime.date(2026, 11, 13)
     """
     return datetime.datetime.strptime(text, DATE_FMT).date()
+
+
+def parse_yyyymmdd_strict(text: str) -> datetime.date:
+    """網址上的日期：只接受 8 位數字（parse_yyyymmdd 也收 2026111 這種少一位的），其他寫法、不存在的日子丟 ValueError。
+
+    >>> parse_yyyymmdd_strict("20261110")
+    datetime.date(2026, 11, 10)
+    >>> parse_yyyymmdd_strict("2026-11-10")
+    Traceback (most recent call last):
+    ValueError: 日期要寫成 8 位數字，例如 20261120
+    """
+    if not re.fullmatch(r"\d{8}", text):
+        raise ValueError("日期要寫成 8 位數字，例如 20261120")
+    return parse_yyyymmdd(text)   # 20261131 這種不存在的日子也會丟 ValueError
 
 
 # ---------- 民國 ----------

@@ -221,6 +221,21 @@ def news_detail_text(page: bytes) -> str | None:
 TRADING, CLOSED, UNKNOWN = "trading", "closed", "unknown"   # day_status 的結果
 
 
+def column_rows(body, *names: str) -> list[tuple]:
+    """證交所回應（fields＋data）裡指定欄位的值，一列一個 tuple；欄位不在 fields 就回傳空的，太短的列跳過。
+
+    >>> column_rows({"fields": ["日期", "名稱"], "data": [["2027-01-01", "元旦"], ["2027-01-04"]]}, "日期", "名稱")
+    [('2027-01-01', '元旦')]
+    >>> column_rows({"stat": "很抱歉，沒有符合條件的資料!"}, "日期")
+    []
+    """
+    fields = (body.get("fields") or []) if isinstance(body, dict) else []
+    if any(name not in fields for name in names):
+        return []
+    at = [fields.index(name) for name in names]
+    return [tuple(row[i] for i in at) for row in body.get("data") or [] if len(row) > max(at)]
+
+
 def update_date(body) -> datetime.date | None:
     """處置股標題上的「資訊更新日期：115/11/23」→ date；沒有就回傳 None。
     查過去的日子，這個日期是抓的那天（最新一次更新），不是查的那天。
@@ -260,11 +275,7 @@ def is_published(source: str, body, date_yyyymmdd: str) -> bool:
     if not isinstance(body, dict):
         return False
     if source == "notice":
-        fields = body.get("fields") or []
-        if "日期" not in fields:
-            return False
-        at = fields.index("日期")
-        return any(len(row) > at and str(row[at]).strip() == date_utils.to_roc(day, ".") for row in body.get("data") or [])
+        return any(str(date).strip() == date_utils.to_roc(day, ".") for date, in column_rows(body, "日期"))
     if source == "punish":
         updated = update_date(body)
         return updated is not None and updated >= day
@@ -282,14 +293,11 @@ def calendar_days(body) -> tuple[set[str], set[str]]:
     ...     ["2027-01-01", "中華民國開國紀念日", ""], ["2027-01-04", "國曆新年開始交易日", ""]]})
     ({'20270101'}, {'20270104'})
     """
-    if not isinstance(body, dict) or "日期" not in (body.get("fields") or []) or "名稱" not in body["fields"]:
-        return set(), set()
-    at_date, at_name = body["fields"].index("日期"), body["fields"].index("名稱")
     closed, open_ = set(), set()
-    for row in body.get("data") or []:
-        if len(row) <= max(at_date, at_name) or not isinstance(row[at_date], str) or not isinstance(row[at_name], str):
-            continue   # 壞掉的列（太短、空值）跳過，不要讓整年的證交所任務都失敗
-        (open_ if row[at_name].strip().endswith("交易日") else closed).add(row[at_date].replace("-", ""))
+    for date, name in column_rows(body, "日期", "名稱"):
+        if not isinstance(date, str) or not isinstance(name, str):
+            continue   # 壞掉的列（空值）跳過，不要讓整年的證交所任務都失敗
+        (open_ if name.strip().endswith("交易日") else closed).add(date.replace("-", ""))
     return closed, open_
 
 
@@ -303,14 +311,11 @@ def market_confirms_closed(date_yyyymmdd: str, market_body) -> bool:
     >>> market_confirms_closed("20260914", market)   # 之後還沒有資料：還不知道
     False
     """
-    if not isinstance(market_body, dict) or "日期" not in (market_body.get("fields") or []):
-        return False
-    at = market_body["fields"].index("日期")
     dates = set()
-    for row in market_body.get("data") or []:
+    for date, in column_rows(market_body, "日期"):
         try:
-            dates.add(date_utils.roc_to_date(str(row[at])))
-        except (IndexError, ValueError):
+            dates.add(date_utils.roc_to_date(str(date)))
+        except ValueError:
             continue
     day = date_utils.parse_yyyymmdd(date_yyyymmdd)
     return day not in dates and any(d > day for d in dates)
@@ -356,12 +361,6 @@ def day_status(date_yyyymmdd: str, price_body, closed: set[str], open_: set[str]
     return UNKNOWN
 
 
-def accept_missing(status: str) -> bool:
-    """看不到這天的資料時，可不可以照存：只有休市可以。交易日一定有資料，只是還沒公布；
-    不知道的（平日、收盤行情一直沒有、日曆上沒寫，例如颱風假）不猜，存成失敗讓人看得到。"""
-    return status == CLOSED
-
-
 def watchlist_problem(list_yyyymmdd: str | None, today_yyyymmdd: str, status: str) -> str | None:
     """注意累計名單只有最新一份：上面的日期不是今天 → 今天的還沒公布，回傳原因（存成失敗，下一輪再抓）。
     不擋的話，抓到的是前一天的名單，這一輪照樣算成功、放了跑完的記號，今天的名單就永遠沒抓到。
@@ -372,7 +371,7 @@ def watchlist_problem(list_yyyymmdd: str | None, today_yyyymmdd: str, status: st
     >>> watchlist_problem("20261120", "20261123", TRADING)
     '注意累計名單還是 20261120 的，今天（交易日）的還沒公布'
     """
-    if list_yyyymmdd == today_yyyymmdd or accept_missing(status):
+    if list_yyyymmdd == today_yyyymmdd or status == CLOSED:
         return None
     return f"注意累計名單還是 {list_yyyymmdd or '（找不到日期）'} 的，今天{'（交易日）' if status == TRADING else ''}的還沒公布"
 
@@ -383,7 +382,7 @@ def not_published_problem(source: str, body, date_yyyymmdd: str, status: str, pu
     （注意股和處置股一起公布：處置股公布了，注意股是空的就是那天真的沒人被列）。
     看不到的看 status（day_status）：休市就收；交易日不收（一定有資料，只是證交所還沒公布）；
     不知道的也不收（還沒公布，或颱風假這類臨時休市：下一個交易日的市場成交出來後會自動確認成休市）。"""
-    if is_published(source, body, date_yyyymmdd) or published_with or accept_missing(status):
+    if is_published(source, body, date_yyyymmdd) or published_with or status == CLOSED:
         return None
     if status == TRADING:
         return f"{date_yyyymmdd} 是交易日，還沒公布完整（看不到這天的資料）"

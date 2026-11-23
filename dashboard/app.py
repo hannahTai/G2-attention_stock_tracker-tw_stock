@@ -14,11 +14,10 @@
 Streamlit 每次載入都「整支腳本從頭跑」，所以打 API 的函式都加 cache，60 秒內同樣的參數不重打。
 """
 import datetime
-import re
 
 import streamlit as st
 
-from common.date_utils import parse_yyyymmdd
+from common.date_utils import parse_yyyymmdd_strict
 from dashboard import client, render
 
 
@@ -47,11 +46,7 @@ def parse_date(text: str | None) -> datetime.date | None:
     Traceback (most recent call last):
     ValueError: 日期要寫成 8 位數字，例如 20261120
     """
-    if not text:
-        return None
-    if not re.fullmatch(r"\d{8}", text):
-        raise ValueError("日期要寫成 8 位數字，例如 20261120")
-    return parse_yyyymmdd(text)   # 20261131 這種不存在的日子也會丟 ValueError
+    return parse_yyyymmdd_strict(text) if text else None
 
 
 def page_html(params) -> str:

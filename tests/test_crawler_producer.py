@@ -176,3 +176,12 @@ def test_watchlist_gets_the_run_date(raw_store, monkeypatch):
     monkeypatch.setattr(pc, "today_yyyymmdd", lambda: "20261123")
     jobs = pc.build_twse_jobs("20261123", "20261123")
     assert [kw for f, kw in jobs if f.__name__ == "crawl_punish_watchlist"] == [{"date_yyyymmdd": "20261123"}]
+
+
+def test_company_list_fetched_once_a_day(raw_store, monkeypatch):
+    """上市公司清單一天一份快照：今天抓過，同一天的下一輪就不再抓。"""
+    monkeypatch.setattr(pc, "today_yyyymmdd", lambda: "20261123")
+    names = lambda: [f.__name__ for step in pc.build_twse_steps("20261123", "20261123") for f, kw in step]
+    assert "crawl_company" in names()
+    raw_store.put("company", "20261123", [])
+    assert "crawl_company" not in names()

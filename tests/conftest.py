@@ -43,6 +43,10 @@ class FakeRaw:
     def list_raw_keys(self, source):
         return sorted(self.latest_ok(source))
 
+    def latest_raw_key(self, source, upto):
+        keys = [k for k in self.latest_ok(source) if k <= upto]
+        return max(keys) if keys else None
+
     def raw_fetched_times(self, source):
         return {k: r.fetched_at for k, r in self.latest_ok(source).items()}
 
@@ -57,7 +61,7 @@ class FakeRaw:
 def raw_store(monkeypatch):
     """把 repository 的 raw 表換成記憶體版；回傳 FakeRaw，測試可以用 put() 放資料、用 last()／history() 檢查結果。"""
     fake = FakeRaw()
-    for name in ("insert_raw_row", "read_raws", "list_raw_keys", "raw_fetched_times"):
+    for name in ("insert_raw_row", "read_raws", "list_raw_keys", "latest_raw_key", "raw_fetched_times"):
         monkeypatch.setattr(repository, name, getattr(fake, name))
     return fake
 

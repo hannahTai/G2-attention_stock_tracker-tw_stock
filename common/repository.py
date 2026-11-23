@@ -239,6 +239,13 @@ def read_raw(source: str, raw_key: str) -> dict | None:
     return raws[0] if raws else None
 
 
+def latest_raw_key(source: str, upto: str) -> str | None:
+    """這個來源有成功回應、而且 <= upto 的 raw_key 裡最新的一個（只有最新一份的來源用）；沒有就回傳 None。"""
+    with get_engine().connect() as conn:
+        return conn.execute(sqlalchemy.text(
+            f"SELECT MAX(raw_key) FROM {raw_table_name(source)} WHERE ok AND raw_key <= :upto"), {"upto": upto}).scalar()
+
+
 def list_raw_keys(source: str) -> list[str]:
     """這個來源有成功回應的 raw_key，排序後回傳。"""
     with get_engine().connect() as conn:
@@ -272,12 +279,25 @@ def query_rows(sql: str, params: dict) -> list:
 
 
 # ---------- stage、app 表 ----------
+# 表的結構（欄位、型別）讀一次就記住：每次寫入都從資料庫重讀要好幾句查系統表的 SQL，比寫資料本身還多。
+# key 是（資料庫網址, 表名），測試用的資料庫和正式的分開記；改了 schema 本來就要重啟 worker
+_TABLES: dict[tuple[str, str], sqlalchemy.Table] = {}
+
+
+def table_of(conn, name: str) -> sqlalchemy.Table:
+    """這個連線的資料庫裡，表的結構（第一次從資料庫讀，之後用記住的）。"""
+    key = (str(conn.engine.url), name)
+    if key not in _TABLES:
+        _TABLES[key] = sqlalchemy.Table(name, sqlalchemy.MetaData(), autoload_with=conn)
+    return _TABLES[key]
+
+
 def insert_chunk(pd_table, conn, columns: list[str], data_iter) -> None:
     """df.to_sql 每 1000 列呼叫一次：用資料庫裡表的欄位型別組 INSERT。
 
     不用 pandas 自己猜的型別：整欄都是 None 的日期欄，pandas 會當成文字，PostgreSQL 不會自動轉成 DATE。
     """
-    table = sqlalchemy.Table(pd_table.name, sqlalchemy.MetaData(), autoload_with=conn)   # 從資料庫讀表的結構
+    table = table_of(conn, pd_table.name)
     conn.execute(sqlalchemy.insert(table).values([dict(zip(columns, row)) for row in data_iter]))
 
 
@@ -312,7 +332,7 @@ def upsert_chunk(pd_table, conn, columns: list[str], data_iter, *, keys: list[st
 
     主鍵撞到時，只有「資料庫裡的版本是 NULL，或這批的版本 >= 資料庫的」才整列換成新值，否則留舊值。
     """
-    table = sqlalchemy.Table(pd_table.name, sqlalchemy.MetaData(), autoload_with=conn)   # 從資料庫讀表的結構
+    table = table_of(conn, pd_table.name)
     insert = sqlalchemy.dialects.postgresql.insert(table).values([dict(zip(columns, row)) for row in data_iter])
     new, old = insert.excluded, table.c                                                 # new＝這次要寫的值（EXCLUDED）
     updates = {c: new[c] for c in columns if c not in keys}
@@ -442,6 +462,10 @@ def insert_news_summary(row: dict) -> None:
 
 
 # ---------- 新聞 RAG（pgvector）----------
+# 新聞 n 最新一版、通過檢查的 AI 摘要（子查詢；新聞要叫 n）
+LATEST_NEWS_SUMMARY = ("(SELECT a.summary FROM tw_stock.ai_news_summary a WHERE a.news_id = n.news_id AND a.summary_ok "
+                       "ORDER BY a.summarized_at DESC LIMIT 1)")
+
 # 好幾則新聞共用同一句導言（網站介紹、個股概覽頁）不是這則新聞的內容，當成沒有；和 app_stock_news（schema/view.sql）同一個門檻
 SHARED_LEAD_MIN_NEWS = 3
 
@@ -451,14 +475,12 @@ def list_news_to_embed(start: datetime.date, end: datetime.date, model: str) -> 
     和這個模型上次轉的文字的雜湊值（還沒轉過是 None）。要不要重轉由 task 比對雜湊值決定。
     ai 只讀 stage 和 AI 結果，不讀 app 的 VIEW（ai 和 analyze 同時跑）。"""
     rows = query_rows(
-        "SELECT n.news_id, n.title, summary.summary AS ai_summary, "
+        f"SELECT n.news_id, n.title, {LATEST_NEWS_SUMMARY} AS ai_summary, "
         "       CASE WHEN shared.news_count >= :shared_min THEN NULL ELSE d.lead END AS lead, e.input_hash "
         "FROM tw_stock.stage_news n "
         "LEFT JOIN tw_stock.stage_news_detail d ON d.news_id = n.news_id "
         "LEFT JOIN (SELECT lead, COUNT(*) AS news_count FROM tw_stock.stage_news_detail "
         "           WHERE lead IS NOT NULL GROUP BY lead) shared ON shared.lead = d.lead "
-        "LEFT JOIN LATERAL (SELECT a.summary FROM tw_stock.ai_news_summary a WHERE a.news_id = n.news_id AND a.summary_ok "
-        "                   ORDER BY a.summarized_at DESC LIMIT 1) summary ON TRUE "
         "LEFT JOIN tw_stock.ai_news_embedding e ON e.news_id = n.news_id AND e.model = :model "
         "WHERE n.news_date BETWEEN :start AND :end "
         "ORDER BY n.news_id",
@@ -522,8 +544,7 @@ def stock_news_candidates(stock_id: str, start: datetime.date, end: datetime.dat
     similarity＝1－距離；embedding 帶回去給 retriever 判斷重複的報導。"""
     rows = query_rows(
         "SELECT n.news_id, n.title, n.publisher, n.news_date, n.link, st.story_id, "
-        "       (SELECT a.summary FROM tw_stock.ai_news_summary a WHERE a.news_id = n.news_id AND a.summary_ok "
-        "        ORDER BY a.summarized_at DESC LIMIT 1) AS ai_summary, "
+        f"       {LATEST_NEWS_SUMMARY} AS ai_summary, "
         "       1 - (e.embedding <=> CAST(:query AS vector)) AS similarity, CAST(e.embedding AS TEXT) AS embedding "
         "FROM tw_stock.stage_stock_news s "
         "JOIN tw_stock.stage_news n ON n.news_id = s.news_id "

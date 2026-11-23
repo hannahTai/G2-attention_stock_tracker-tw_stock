@@ -5,7 +5,6 @@
 網頁全文在 task 裡當場抓、只在記憶體裡用，不存進資料庫（著作權）；存的只有摘要。
 改了 SYSTEM_PROMPT 或 SCHEMA 就把 PROMPT_VERSION 加一版：新版本另外存，舊的結果留著比較。
 """
-import json
 
 from ai import verifier
 
@@ -83,23 +82,10 @@ def build_user_message(news: dict, text: str, limit: int) -> str:
     )
 
 
-def too_long(summary: str, limit: int) -> bool:
-    """
-    >>> too_long("一" * 80, 80), too_long("一" * 81, 80)
-    (False, True)
-    """
-    return len(summary.strip()) > limit
-
-
 def shorten_messages(user_message: str, answer: dict, limit: int) -> list[dict]:
-    """摘要太長時重問的對話：原本的新聞、LLM 上次的回答、請它縮短到 limit 字以內。"""
-    summary = answer["summary"].strip()
-    return [
-        {"role": "user", "content": user_message},
-        {"role": "assistant", "content": json.dumps(answer, ensure_ascii=False)},
-        {"role": "user", "content": f"summary 有 {len(summary)} 個字，超過 {limit} 個字。"
-                                    f"請縮短到 {target_chars(limit)} 個字以內，只留最重要的事和數字，重新回答一次。"},
-    ]
+    """摘要太長時重問的對話（verifier.shorten_messages）：跟 LLM 說縮短到比上限少一些（target_chars）。"""
+    return verifier.shorten_messages(user_message, answer, limit,
+                                     f"請縮短到 {target_chars(limit)} 個字以內，只留最重要的事和數字，重新回答一次。")
 
 
 def summary_ok(summary: str, source: str, limit: int) -> bool:
@@ -112,7 +98,7 @@ def summary_ok(summary: str, source: str, limit: int) -> bool:
     >>> summary_ok("", "健策10月營收30.73億元", 80)   # 不是新聞內容
     False
     """
-    return bool(summary.strip()) and not too_long(summary, limit) and verifier.numbers_ok(summary, source)
+    return bool(summary.strip()) and not verifier.too_long(summary, limit) and verifier.numbers_ok(summary, source)
 
 
 def to_summary_row(news_id: str, answer: dict, source: str, limit: int, model: str) -> dict:

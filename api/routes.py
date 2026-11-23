@@ -11,7 +11,6 @@
 互動式文件：http://localhost:8001/docs
 """
 import datetime
-import re
 
 import fastapi
 import sqlalchemy
@@ -19,7 +18,7 @@ import sqlalchemy.exc
 
 from api import queries
 from common.config import NEWS_LOOKBACK_DAYS
-from common.date_utils import parse_yyyymmdd
+from common.date_utils import parse_yyyymmdd_strict
 from common.repository import get_engine
 
 router = fastapi.APIRouter()
@@ -40,11 +39,9 @@ def parse_date(text: str | None) -> datetime.date | None:
     if not text:
         return None
     try:
-        if re.fullmatch(r"\d{8}", text):
-            return parse_yyyymmdd(text)   # 20261131 這種不存在的日子也會丟 ValueError
+        return parse_yyyymmdd_strict(text)
     except ValueError:
-        pass
-    raise fastapi.HTTPException(status_code=422, detail=f"看不懂日期「{text}」；請寫成 8 位數字，例如 20261120。")
+        raise fastapi.HTTPException(status_code=422, detail=f"看不懂日期「{text}」；請寫成 8 位數字，例如 20261120。") from None
 
 
 def pick_day(conn: sqlalchemy.Connection, requested: datetime.date | None) -> datetime.date:

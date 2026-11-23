@@ -106,33 +106,33 @@ def run_jobs(jobs: list[tuple], sleep: float = 0.0, retries: int = MAX_RETRIES, 
     queue：USE_CELERY=1 時送到哪個佇列（crawl_twse、crawl_mops、crawl_finmind、crawl_news、transform、analyze、ai、embed，見 common/worker.py），
     一定要給；沒開就在這裡依序執行，不用給。
     """
-    if USE_CELERY:
-        if queue is None:
-            raise ValueError("USE_CELERY=1 要指定 queue（見 common/worker.py）")
-        return run_jobs_on_workers(jobs, queue)
+    if USE_CELERY:   # 重試、間隔都在 worker 那邊做（Job）
+        return collect_results(send_jobs(jobs, queue))
     failed = []
     for func, kwargs in jobs:
-        name = job_name(func, kwargs)
-        try:
-            print(name, "→", run_with_retry(func, kwargs, retries))   # 任務回傳一行結果，例如 raw_notice/20261113
-        except Exception as e:
-            print(name, "✗", e)
-            failed.append(name)
+        report(job_name(func, kwargs), lambda: run_with_retry(func, kwargs, retries), failed)
         if sleep:
             time.sleep(sleep)
     return failed
 
 
-def run_jobs_on_workers(jobs: list[tuple], queue: str) -> list[str]:
-    """把整批任務送進佇列，再照送出的順序等每個結果，回傳失敗的任務名稱。重試、間隔都在 worker 那邊做（Job）。
+def report(name: str, get_result, failed: list[str]) -> None:
+    """拿一個任務的結果印出來（任務回傳一行結果，例如 raw_notice/20261113）；出錯就印出原因、記進 failed。
+    get_result 丟出 Celery 的 TimeoutError（還沒做完）時照樣丟出去，讓呼叫的人決定要不要晚點再拿。"""
+    try:
+        print(name, "→", get_result(), flush=True)
+    except celery.exceptions.TimeoutError:
+        raise
+    except Exception as e:
+        print(name, "✗", e, flush=True)
+        failed.append(name)
 
-    送法和課程一樣：task.s(**參數) 建立簽章（signature），apply_async(queue=...) 指定佇列送出。
-    """
-    return collect_results(send_jobs(jobs, queue))
 
-
-def send_jobs(jobs: list[tuple], queue: str) -> list[tuple]:
-    """整批送進佇列，回傳 [(任務名稱, AsyncResult), ...]。"""
+def send_jobs(jobs: list[tuple], queue: str | None) -> list[tuple]:
+    """整批送進佇列，回傳 [(任務名稱, AsyncResult), ...]。
+    送法和課程一樣：task.s(**參數) 建立簽章（signature），apply_async(queue=...) 指定佇列送出。"""
+    if queue is None:
+        raise ValueError("USE_CELERY=1 要指定 queue（見 common/worker.py）")   # 程式寫錯，直接停（不會送到沒有 worker 在聽的佇列）
     sent = [(job_name(func, kwargs), func.s(**kwargs).apply_async(queue=queue)) for func, kwargs in jobs]
     print(f"送出 {len(sent)} 個任務到佇列 {queue}", flush=True)
     return sent
@@ -142,11 +142,7 @@ def collect_results(sent: list[tuple]) -> list[str]:
     """照送出的順序等每個結果、印出來，回傳失敗的任務名稱。"""
     failed = []
     for name, result in sent:
-        try:
-            print(name, "→", result.get())
-        except Exception as e:
-            print(name, "✗", e)
-            failed.append(name)
+        report(name, result.get, failed)
     return failed
 
 
@@ -193,8 +189,6 @@ def run_chains(chains: list[list[tuple]]) -> list[str]:
     def send_next(i: int) -> None:
         """第 i 條鏈送出下一批；空的批次（沒有要做的）跳過；整條做完、或產生清單出錯，就不再放進 running。"""
         for build, _sleep, queue in steps[i]:   # 間隔在 worker 上做，這裡用不到 sleep
-            if queue is None:
-                raise ValueError("USE_CELERY=1 要指定 queue（見 common/worker.py）")   # 程式寫錯，直接停
             jobs = build_jobs(i, build, queue)
             if jobs is None:
                 return
@@ -210,12 +204,9 @@ def run_chains(chains: list[list[tuple]]) -> list[str]:
             while sent:                                   # 照送出的順序拿結果，拿不到（還沒好）就換下一條鏈
                 name, result = sent[0]
                 try:
-                    print(name, "→", result.get(timeout=CHAIN_WAIT_SECONDS), flush=True)
+                    report(name, lambda: result.get(timeout=CHAIN_WAIT_SECONDS), failed)
                 except celery.exceptions.TimeoutError:
                     break
-                except Exception as e:
-                    print(name, "✗", e, flush=True)
-                    failed.append(name)
                 sent.pop(0)
             if not sent:
                 del running[i]

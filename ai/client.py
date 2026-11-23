@@ -70,21 +70,6 @@ def fetch_card_summary(messages: list[dict]) -> anthropic.types.Message:
 
 
 # ---------- 檢查回應：有問題回傳原因（task 存成失敗），沒問題回傳 None ----------
-def announcement_label_problem(response) -> str | None:
-    """公告分類的回應能不能用，見 json_answer_problem。"""
-    return json_answer_problem(response)
-
-
-def news_summary_problem(response) -> str | None:
-    """新聞摘要的回應能不能用，見 json_answer_problem。"""
-    return json_answer_problem(response)
-
-
-def card_summary_problem(response) -> str | None:
-    """卡片 AI 摘要的回應能不能用，見 json_answer_problem。"""
-    return json_answer_problem(response)
-
-
 def json_answer_problem(response) -> str | None:
     """沒有正常結束（refusal＝拒答、max_tokens＝被截斷，JSON 不完整）或回傳的不是 JSON → 回傳原因。重問也一樣，不重試。"""
     if response.stop_reason != "end_turn":

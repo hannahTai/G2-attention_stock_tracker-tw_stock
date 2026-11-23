@@ -10,13 +10,13 @@
 連線設定從 .env 讀（common/config.py）。密碼用環境變數 PGPASSWORD 交給 pg_dump，不放在命令列上（命令列別人看得到）。
 """
 import argparse
-import datetime
 import gzip
 import os
 import pathlib
 import shutil
 import subprocess
 
+from common import date_utils
 from common.config import DB_HOST, DB_NAME, DB_PASSWORD, DB_PORT, DB_USER, PROJECT_ROOT
 
 BACKUP_DIR = pathlib.Path(os.environ.get("BACKUP_DIR", PROJECT_ROOT / "data" / "backup"))
@@ -66,7 +66,7 @@ def main() -> None:
     args = parser.parse_args()
 
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = BACKUP_DIR / f"{DB_NAME}_{datetime.datetime.now():%Y%m%d_%H%M%S}.sql.gz"
+    out_path = BACKUP_DIR / f"{DB_NAME}_{date_utils.now():%Y%m%d_%H%M%S}.sql.gz"
     dump(out_path)
     print(f"備份完成：{out_path}（{out_path.stat().st_size / 1024 / 1024:.1f} MB）")
     for path in remove_old(args.keep):

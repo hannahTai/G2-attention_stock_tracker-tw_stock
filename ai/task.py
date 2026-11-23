@@ -6,9 +6,9 @@
     group_news_stories：同一件事，一段區間的新聞歸類 → ai_news_story（用新聞向量，不呼叫 API）
     summarize_card：卡片 AI 摘要，一檔一天 → ai_card_summary（輸入和前一天一樣就沿用，不呼叫 API）
 
-問 LLM 和 crawler 打 API 同樣三步（label_once、summary_once、card_once）：
+問 LLM 和 crawler 打 API 同樣三步（asker 做好的 ask）：
     1. response = client.fetch_xxx(...)：呼叫 Claude API
-    2. problem = client.xxx_problem(response)：檢查回應
+    2. problem = client.json_answer_problem(response)：檢查回應
     3. repository.save_llm_call(紀錄, problem)：每次呼叫都記一列 ai_llm_call（token、花費）；有問題的存完丟 FetchError
        ref_key 一律記結果表的代號（公告 announcement_id、新聞 news_id、卡片 card_id），JOIN 結果表都是 ref_key ＝ 代號
 同一個 prompt 版本已經有結果的就跳過（不重複花錢）；還沒有全文的公告也跳過，下次再分類。
@@ -18,9 +18,9 @@
 例外：summarize_news 要新聞全文，全文不存進資料庫（著作權），只能當場再抓一次網頁（用 crawler/client.py 的函式，不另寫爬蟲）。
 每個函式都用 @app.task 註冊成 Celery 任務（見 common/worker.py）；要用本機 embedding 模型的（embed_news、summarize_card）
 在 embed 佇列上跑，其他在 ai 佇列；
-shorten_once、label_once、summary_once、card_once、card_news 是任務用的小函式，不是任務。
+shorten_once、asker、card_news 是任務用的小函式，不是任務。
 """
-from ai import card_summarizer, classifier, client, embedder, retriever, summarizer
+from ai import card_summarizer, classifier, client, embedder, retriever, summarizer, verifier
 from common import date_utils, repository
 from common.config import EMBED_MODEL, NEWS_LOOKBACK_DAYS
 from common.date_utils import days_before, parse_yyyymmdd
@@ -32,10 +32,10 @@ from crawler import client as crawler_client
 def shorten_once(ask, key: str, user_message: str, answer: dict, model: str, limit: int, shorten_messages) -> tuple[dict, str, str]:
     """摘要超過 limit 字：帶著上次的回答請 LLM 縮短，只重問一次。
 
-    ask：label_once、summary_once 或 card_once。limit、shorten_messages：classifier、summarizer 或 card_summarizer 的上限和縮短的說法。
+    ask：asker 做好的 ask。limit、shorten_messages：classifier、summarizer 或 card_summarizer 的上限和縮短的說法。
     回傳 (回答, 模型, 附註)。縮短失敗（拒答、API 錯誤）就用手上的回答（已經付過錢），附註寫給結果那一行看。
     """
-    if len(answer["summary"].strip()) <= limit:
+    if not verifier.too_long(answer["summary"], limit):
         return answer, model, ""
     try:
         return (*ask(key, shorten_messages(user_message, answer, limit)), "")
@@ -43,13 +43,16 @@ def shorten_once(ask, key: str, user_message: str, answer: dict, model: str, lim
         return answer, model, f"；縮短失敗，用第一次的回答（{type(e).__name__}）"
 
 
-def label_once(announcement_id: str, messages: list[dict]) -> tuple[dict, str]:
-    """問一次公告分類，記一列 ai_llm_call（ref_key＝announcement_id），回傳 (回答, 實際回答的模型)。"""
-    started = date_utils.now()
-    response = client.fetch_announcement_label(messages)
-    problem = client.announcement_label_problem(response)
-    repository.save_llm_call(client.call_record("classify_announcement", announcement_id, classifier.PROMPT_VERSION, response, started), problem)
-    return client.parse_answer(response), response.model
+def asker(task_name: str, fetch, prompt_version: str):
+    """→ ask(ref_key, messages)：問一次 LLM（fetch，例如 client.fetch_card_summary），記一列 ai_llm_call
+    （task＝task_name、ref_key＝結果表的代號），回傳 (回答, 實際回答的模型)。任務執行時才做，測試換掉的 fetch 才會用到。"""
+    def ask(ref_key: str, messages: list[dict]) -> tuple[dict, str]:
+        started = date_utils.now()
+        response = fetch(messages)
+        problem = client.json_answer_problem(response)
+        repository.save_llm_call(client.call_record(task_name, ref_key, prompt_version, response, started), problem)
+        return client.parse_answer(response), response.model
+    return ask
 
 
 @app.task(base=Job)
@@ -65,22 +68,14 @@ def classify_announcement(company_id: str, enter_yyyymmdd: str, serial_number: i
         return f"{key} 還沒有全文，跳過"
 
     user_message = classifier.build_user_message(row)
-    answer, model = label_once(announcement_id, [{"role": "user", "content": user_message}])
-    answer, model, note = shorten_once(label_once, announcement_id, user_message, answer, model,
+    ask = asker("classify_announcement", client.fetch_announcement_label, classifier.PROMPT_VERSION)
+    answer, model = ask(announcement_id, [{"role": "user", "content": user_message}])
+    answer, model, note = shorten_once(ask, announcement_id, user_message, answer, model,
                                        classifier.SUMMARY_MAX_CHARS, classifier.shorten_messages)
     label = classifier.to_label_row(row, answer, model)
     repository.insert_announcement_label(label)
     flags = "、".join(name for name, on in (("更正", label["is_correction"]), ("有新消息", label["has_news"])) if on)
     return f"ai_announcement_label/{key}：{label['category']}{f'（{flags}）' if flags else ''}{note}"
-
-
-def summary_once(news_id: str, messages: list[dict]) -> tuple[dict, str]:
-    """問一次新聞摘要，記一列 ai_llm_call（ref_key＝news_id），回傳 (回答, 實際回答的模型)。"""
-    started = date_utils.now()
-    response = client.fetch_news_summary(messages)
-    problem = client.news_summary_problem(response)
-    repository.save_llm_call(client.call_record("summarize_news", news_id, summarizer.PROMPT_VERSION, response, started), problem)
-    return client.parse_answer(response), response.model
 
 
 @app.task(base=Job)
@@ -110,8 +105,9 @@ def summarize_news(news_id: str) -> str:
 
     limit = summarizer.summary_limit(text)   # 文章的三成，80～1200 字
     user_message = summarizer.build_user_message(news, text, limit)
-    answer, model = summary_once(news_id, [{"role": "user", "content": user_message}])
-    answer, model, note = shorten_once(summary_once, news_id, user_message, answer, model, limit, summarizer.shorten_messages)
+    ask = asker("summarize_news", client.fetch_news_summary, summarizer.PROMPT_VERSION)
+    answer, model = ask(news_id, [{"role": "user", "content": user_message}])
+    answer, model, note = shorten_once(ask, news_id, user_message, answer, model, limit, summarizer.shorten_messages)
     row = summarizer.to_summary_row(news_id, answer, f"{news['title']}\n{text}", limit, model)
     repository.insert_news_summary(row)
     return f"ai_news_summary/{news_id}：{row['summary'][:30]}{'' if row['summary_ok'] else '（summary_ok＝否）'}{note}"
@@ -162,15 +158,6 @@ def card_news(card: dict, announcements: list[dict]) -> list[dict]:
     return retriever.related_news(candidates)
 
 
-def card_once(card_id: str, messages: list[dict]) -> tuple[dict, str]:
-    """問一次卡片 AI 摘要，記一列 ai_llm_call（ref_key＝card_id），回傳 (回答, 實際回答的模型)。"""
-    started = date_utils.now()
-    response = client.fetch_card_summary(messages)
-    problem = client.card_summary_problem(response)
-    repository.save_llm_call(client.call_record("summarize_card", card_id, card_summarizer.PROMPT_VERSION, response, started), problem)
-    return client.parse_answer(response), response.model
-
-
 @app.task(base=Job)
 def summarize_card(stock_id: str, date_yyyymmdd: str) -> str:
     """一張卡片（一檔一天）→ ai_card_summary：2～3 句白話（股價最近怎麼了、公告和新聞裡可能的原因）。
@@ -200,8 +187,9 @@ def summarize_card(stock_id: str, date_yyyymmdd: str) -> str:
         repository.insert_card_summary({**previous, "card_id": card_id, "card_date": day, "reused": True})
         return f"ai_card_summary/{key}：輸入和 {previous['card_date']} 一樣，沿用"
 
-    answer, model = card_once(card_id, [{"role": "user", "content": user_message}])
-    answer, model, shorten_note = shorten_once(card_once, card_id, user_message, answer, model,
+    ask = asker("summarize_card", client.fetch_card_summary, card_summarizer.PROMPT_VERSION)
+    answer, model = ask(card_id, [{"role": "user", "content": user_message}])
+    answer, model, shorten_note = shorten_once(ask, card_id, user_message, answer, model,
                                                card_summarizer.SUMMARY_MAX_CHARS, card_summarizer.shorten_messages)
     row = card_summarizer.to_card_row(card, card_id, answer, news, user_message, model)
     repository.insert_card_summary(row)

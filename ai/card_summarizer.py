@@ -11,7 +11,6 @@
 摘要裡的數字都要出現在輸入裡、引用的新聞編號要是這次給的，才算 summary_ok。
 改了 SYSTEM_PROMPT 或 SCHEMA 就把 PROMPT_VERSION 加一版。
 """
-import json
 import re
 
 from ai import verifier
@@ -156,23 +155,10 @@ def input_hash(user_message: str) -> str:
     return key_md5(PROMPT_VERSION, user_message)
 
 
-def too_long(summary: str) -> bool:
-    """
-    >>> too_long("一" * 150), too_long("一" * 151)
-    (False, True)
-    """
-    return len(summary.strip()) > SUMMARY_MAX_CHARS
-
-
 def shorten_messages(user_message: str, answer: dict, limit: int = SUMMARY_MAX_CHARS) -> list[dict]:
-    """摘要太長時重問的對話：原本的資料、LLM 上次的回答、請它縮短（news_used 照原本的判斷）。"""
-    summary = answer["summary"].strip()
-    return [
-        {"role": "user", "content": user_message},
-        {"role": "assistant", "content": json.dumps(answer, ensure_ascii=False)},
-        {"role": "user", "content": f"summary 有 {len(summary)} 個字，超過 {limit} 個字。"
-                                    f"請縮短到 {limit} 個字以內，news_used 照原本的判斷，重新回答一次。"},
-    ]
+    """摘要太長時重問的對話（verifier.shorten_messages）：news_used 照原本的判斷。"""
+    return verifier.shorten_messages(user_message, answer, limit,
+                                     f"請縮短到 {limit} 個字以內，news_used 照原本的判斷，重新回答一次。")
 
 
 def summary_ok(summary: str, news_used: list[int], user_message: str, news_count: int) -> bool:
@@ -185,7 +171,7 @@ def summary_ok(summary: str, news_used: list[int], user_message: str, news_count
     >>> summary_ok("市場關注 AI 訂單", [3], "[1] …", 1)   # 只給了 1 則新聞，卻說用了第 3 則
     False
     """
-    return (bool(summary.strip()) and not too_long(summary) and verifier.numbers_ok(summary, user_message)
+    return (bool(summary.strip()) and not verifier.too_long(summary, SUMMARY_MAX_CHARS) and verifier.numbers_ok(summary, user_message)
             and all(1 <= no <= news_count for no in news_used))
 
 

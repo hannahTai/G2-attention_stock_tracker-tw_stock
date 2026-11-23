@@ -21,6 +21,8 @@ import datetime
 import decimal
 import re
 
+from common import date_utils
+
 # ---------- 固定資料 ----------
 # 四條路徑：(畫面上的名稱, 門檻)
 PATHS = {
@@ -139,7 +141,7 @@ def roc(day: datetime.date) -> str:
     >>> roc(datetime.date(2026, 11, 20))
     '115/11/20'
     """
-    return f"{day.year - 1911}/{day:%m/%d}"
+    return date_utils.to_roc(day, "/")
 
 
 # ---------- 卡片 AI 摘要、新聞 ----------

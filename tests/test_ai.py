@@ -8,7 +8,7 @@ import httpx2
 import pytest
 import requests
 
-from ai import card_summarizer, classifier, client, embedder, summarizer
+from ai import card_summarizer, classifier, client, embedder, summarizer, verifier
 from ai import producer as pa
 from ai import task as ai_task
 from common import date_utils, repository, runner
@@ -53,7 +53,7 @@ def test_label_row_checks_numbers_against_announcement():
 
 def test_label_row_rejects_summary_over_limit():
     long = {**ANSWER, "summary": "10月營收1520萬元，年增31%" + "，持續成長" * 10}
-    assert classifier.too_long(long["summary"])
+    assert verifier.too_long(long["summary"], classifier.SUMMARY_MAX_CHARS)
     assert not classifier.to_label_row(ANNOUNCEMENT, long, "claude-haiku-5-5")["summary_ok"]
 
 
@@ -87,10 +87,10 @@ def test_fetch_announcement_label_asks_for_schema_and_caches_system(monkeypatch)
 
 
 def test_announcement_label_problem_catches_refusal_truncation_and_bad_json():
-    assert client.announcement_label_problem(fake_response(ANSWER)) is None
-    assert client.announcement_label_problem(fake_response("", stop_reason="refusal")) == "沒有正常結束（stop_reason=refusal）"
-    assert client.announcement_label_problem(fake_response("{不完整", stop_reason="max_tokens")).startswith("沒有正常結束")
-    assert client.announcement_label_problem(fake_response("不是 JSON")).startswith("回傳的不是 JSON")
+    assert client.json_answer_problem(fake_response(ANSWER)) is None
+    assert client.json_answer_problem(fake_response("", stop_reason="refusal")) == "沒有正常結束（stop_reason=refusal）"
+    assert client.json_answer_problem(fake_response("{不完整", stop_reason="max_tokens")).startswith("沒有正常結束")
+    assert client.json_answer_problem(fake_response("不是 JSON")).startswith("回傳的不是 JSON")
 
 
 def test_call_record_has_tokens_and_cost():
@@ -239,7 +239,7 @@ def test_fetch_news_summary_uses_summary_schema(monkeypatch):
     client.fetch_news_summary([{"role": "user", "content": "新聞"}])
     assert messages.kwargs["output_config"]["format"] == {"type": "json_schema", "schema": summarizer.SCHEMA}
     assert messages.kwargs["system"][0]["text"] == summarizer.SYSTEM_PROMPT
-    assert client.news_summary_problem(fake_response("", stop_reason="refusal")) == "沒有正常結束（stop_reason=refusal）"
+    assert client.json_answer_problem(fake_response("", stop_reason="refusal")) == "沒有正常結束（stop_reason=refusal）"
 
 
 # ---------- summarize_news 任務 ----------
