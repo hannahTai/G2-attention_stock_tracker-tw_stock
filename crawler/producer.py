@@ -31,7 +31,11 @@ from crawler import client, task
 
 # ---------- 抓過、而且完整了嗎 ----------
 # 注意股、處置股、收盤行情：有成功的就完整了（還沒公布就抓的存成失敗，見 client.not_published_problem）
-def month_ready_at(month_yyyymm: str, at: datetime.time = client.COMPLETE_BY) -> datetime.datetime:
+# 一個月的市場成交：最後一天收盤後還會補上那天，那天晚上以後抓的才不會再變
+MONTH_DATA_READY = datetime.time(20, 0)
+
+
+def month_ready_at(month_yyyymm: str, at: datetime.time = MONTH_DATA_READY) -> datetime.datetime:
     """一個月的資料：那個月最後一天的 at 以後就不會再變。"""
     year, month = int(month_yyyymm[:4]), int(month_yyyymm[4:])
     last_day = calendar.monthrange(year, month)[1]          # monthrange 回傳 (星期幾, 天數)
@@ -58,14 +62,15 @@ def build_twse_jobs(start: str, end: str, refetch: bool = False) -> list[tuple]:
     fetched = {s: {} if refetch else repository.raw_fetched_times(s) for s in ("notice", "punish", "stock_price", "market_daily", "holiday")}
 
     # 開休市日期一年一份（11 月起也抓下一年），抓過就不再抓；颱風假不在這份裡，是從市場成交看出來的
-    jobs = [(task.crawl_notice, {"date_yyyymmdd": d}) for d in days
-            if d not in fetched["notice"]]
+    # 收盤行情排第一個：注意股、處置股、注意累計名單要靠它判斷那天是不是交易日（task.day_status）
+    jobs = [(task.crawl_stock_price, {"date_yyyymmdd": d}) for d in days
+            if d not in fetched["stock_price"]]
+    jobs += [(task.crawl_notice, {"date_yyyymmdd": d}) for d in days
+             if d not in fetched["notice"]]
     jobs += [(task.crawl_punish, {"date_yyyymmdd": d}) for d in days
              if d not in fetched["punish"]]
-    jobs += [(task.crawl_stock_price, {"date_yyyymmdd": d}) for d in days
-             if d not in fetched["stock_price"]]
     if end == today_yyyymmdd():
-        jobs += [(task.crawl_punish_watchlist, {})]   # 只有最新一天，回補時抓不到舊的
+        jobs += [(task.crawl_punish_watchlist, {"date_yyyymmdd": end})]   # 只有最新一天，回補時抓不到舊的
     jobs += [(task.crawl_market_daily, {"month_yyyymm": m}) for m in months
              if not is_complete(fetched["market_daily"], m, month_ready_at(m))]
     jobs += [(task.crawl_holiday, {"year": y}) for y in holiday_years(start, end) if str(y) not in fetched["holiday"]]

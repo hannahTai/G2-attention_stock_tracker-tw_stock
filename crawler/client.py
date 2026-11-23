@@ -215,14 +215,10 @@ def news_detail_text(page: bytes) -> str | None:
 
 
 # ---------- 檢查回應：有問題回傳原因（task 存成失敗），沒問題回傳 None ----------
-# 注意股、處置股收盤後 17:30～17:45 公布。看得到當天的資料就算公布了（is_published）；
-# 看不到的（休市、那天真的沒人被列注意），當天 20:00 以後抓的才算數
-COMPLETE_BY = datetime.time(20, 0)
-
-
-def complete_at(date_yyyymmdd: str) -> datetime.datetime:
-    """這天的注意股、處置股、收盤行情，最晚什麼時候起算公布完整（台灣時間）。"""
-    return datetime.datetime.combine(date_utils.parse_yyyymmdd(date_yyyymmdd), COMPLETE_BY, date_utils.TAIPEI)
+# 注意股、處置股收盤後 17:30～17:45 公布，收盤行情 14:30 左右。看得到當天的資料就算公布了（is_published）；
+# 看不到的，看那天是不是交易日（day_status）：休市才收；交易日和不知道的都不收（存成失敗，下一輪再抓），
+# 不用時間猜：猜錯會把「還沒公布」的空名單當成「沒人被列」
+TRADING, CLOSED, UNKNOWN = "trading", "closed", "unknown"   # day_status 的結果
 
 
 def is_published(source: str, body, date_yyyymmdd: str) -> bool:
@@ -258,21 +254,91 @@ def is_published(source: str, body, date_yyyymmdd: str) -> bool:
     raise ValueError(f"不認識的來源：{source}")
 
 
-def watchlist_problem(list_yyyymmdd: str | None, today_yyyymmdd: str) -> str | None:
-    """注意累計名單只有最新一份：上面的日期不是今天、又還沒 20:00 → 今天的還沒公布，回傳原因（下一輪再抓）。
-    不擋的話，公布前抓到的是前一天的名單，這一輪照樣算成功、放了跑完的記號，今天的名單就永遠沒抓到。
-    20:00 以後還不是今天的（休市）就照存。"""
-    if list_yyyymmdd == today_yyyymmdd or date_utils.now() >= complete_at(today_yyyymmdd):
+def calendar_days(body) -> tuple[set[str], set[str]]:
+    """開休市日期的回應 → (休市的日子, 有交易的日子)，都是 YYYYMMDD。
+    名稱是「…交易日」的（開始交易日、最後交易日、補行交易日）那天有交易，其他都是休市；
+    和 analyze 讀 stage_holiday 的規則一樣（holiday_name NOT LIKE '%交易日'）。不含颱風假這類臨時休市。
+
+    >>> calendar_days({"fields": ["日期", "名稱", "說明"], "data": [
+    ...     ["2027-01-01", "中華民國開國紀念日", ""], ["2027-01-04", "國曆新年開始交易日", ""]]})
+    ({'20270101'}, {'20270104'})
+    """
+    if not isinstance(body, dict) or "日期" not in (body.get("fields") or []) or "名稱" not in body["fields"]:
+        return set(), set()
+    at_date, at_name = body["fields"].index("日期"), body["fields"].index("名稱")
+    closed, open_ = set(), set()
+    for row in body.get("data") or []:
+        (open_ if row[at_name].strip().endswith("交易日") else closed).add(row[at_date].replace("-", ""))
+    return closed, open_
+
+
+def should_trade(date_yyyymmdd: str, closed: set[str], open_: set[str]) -> bool:
+    """日曆上這天應該有交易：開休市日期上寫休市的不會；寫有交易的會（週末的補行交易也是）；其他看是不是週末。
+
+    >>> should_trade("20261123", set(), set()), should_trade("20261128", set(), set())   # 平日、週六
+    (True, False)
+    >>> should_trade("20261225", {"20261225"}, set()), should_trade("20261128", set(), {"20261128"})   # 休市、週六補行交易
+    (False, True)
+    """
+    if date_yyyymmdd in closed:
+        return False
+    if date_yyyymmdd in open_:
+        return True
+    return date_utils.parse_yyyymmdd(date_yyyymmdd).weekday() < 5
+
+
+def day_status(date_yyyymmdd: str, price_body, closed: set[str], open_: set[str]) -> str:
+    """這天是不是交易日：先看日曆（應不應該有交易），再用交易確認（收盤行情有沒有個股資料）。
+
+    price_body：這天收盤行情的回應（還沒抓到為 None）；closed、open_：開休市日期上休市、有交易的日子（calendar_days）。
+    日曆上休市 → CLOSED；應該有交易、收盤行情有資料 → TRADING；應該有交易、收盤行情沒有 → UNKNOWN（颱風假、還沒出來）。
+
+    >>> price = {"tables": [{"fields": ["證券代號"], "data": [["2330"]]}]}
+    >>> day_status("20261123", price, set(), set()), day_status("20261128", price, set(), {"20261128"})   # 平日、週六補行交易
+    ('trading', 'trading')
+    >>> day_status("20261225", None, {"20261225"}, set()), day_status("20261128", None, set(), set())   # 休市、週末
+    ('closed', 'closed')
+    >>> day_status("20261124", {"stat": "很抱歉，沒有符合條件的資料!"}, set(), set())   # 平日、收盤行情沒有：不知道
+    'unknown'
+    """
+    if not should_trade(date_yyyymmdd, closed, open_):
+        return CLOSED
+    if price_body is not None and is_published("stock_price", price_body, date_yyyymmdd):
+        return TRADING
+    return UNKNOWN
+
+
+def accept_missing(status: str) -> bool:
+    """看不到這天的資料時，可不可以照存：只有休市可以。交易日一定有資料，只是還沒公布；
+    不知道的（平日、收盤行情一直沒有、日曆上沒寫，例如颱風假）不猜，存成失敗讓人看得到。"""
+    return status == CLOSED
+
+
+def watchlist_problem(list_yyyymmdd: str | None, today_yyyymmdd: str, status: str) -> str | None:
+    """注意累計名單只有最新一份：上面的日期不是今天 → 今天的還沒公布，回傳原因（存成失敗，下一輪再抓）。
+    不擋的話，抓到的是前一天的名單，這一輪照樣算成功、放了跑完的記號，今天的名單就永遠沒抓到。
+    status：今天是不是交易日（day_status）；休市就不會有今天的名單，照存前一天的。
+
+    >>> watchlist_problem("20261123", "20261123", TRADING) is None
+    True
+    >>> watchlist_problem("20261120", "20261123", TRADING)
+    '注意累計名單還是 20261120 的，今天（交易日）的還沒公布'
+    """
+    if list_yyyymmdd == today_yyyymmdd or accept_missing(status):
         return None
-    return f"注意累計名單還是 {list_yyyymmdd or '（找不到日期）'} 的，今天的還沒公布（{COMPLETE_BY:%H:%M} 以後才算）"
+    return f"注意累計名單還是 {list_yyyymmdd or '（找不到日期）'} 的，今天{'（交易日）' if status == TRADING else ''}的還沒公布"
 
 
-def not_published_problem(source: str, body, date_yyyymmdd: str) -> str | None:
+def not_published_problem(source: str, body, date_yyyymmdd: str, status: str) -> str | None:
     """還沒公布 → 回傳原因：這時回傳的空名單不是「沒人被列」，不能當成那天的資料。
-    看得到這天的資料就算公布了（不管幾點）；看不到的，這天 20:00 以後抓的才算（休市、真的沒人被列的日子）。"""
-    if is_published(source, body, date_yyyymmdd) or date_utils.now() >= complete_at(date_yyyymmdd):
+    看得到這天的資料就算公布了（不管幾點）；看不到的看 status（day_status）：休市就收；
+    交易日不收（一定有資料，只是證交所還沒公布）；不知道的也不收（可能是颱風假這類臨時休市，要人確認）。"""
+    if is_published(source, body, date_yyyymmdd) or accept_missing(status):
         return None
-    return f"{date_yyyymmdd} 還沒公布完整（看不到這天的資料；{COMPLETE_BY:%H:%M} 以後才算）"
+    if status == TRADING:
+        return f"{date_yyyymmdd} 是交易日，還沒公布完整（看不到這天的資料）"
+    return (f"{date_yyyymmdd} 還沒公布完整：日曆上應該有交易，但收盤行情沒有資料。"
+            "可能是颱風假這類臨時休市（那天會和週末一樣當成沒交易，資料不會寫錯，不用處理）；如果是交易日，表示證交所還沒公布")
 
 
 def holiday_problem(body, year: int) -> str | None:

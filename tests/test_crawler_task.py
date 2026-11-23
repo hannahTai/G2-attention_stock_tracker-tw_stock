@@ -104,11 +104,10 @@ TODAY_NOTICE = {"stat": "OK", "fields": ["證券代號", "日期"], "data": [["2
 @pytest.mark.parametrize(("now", "body", "saved_ok"), [
     ("2026-11-13T16:00:00", {"stat": "OK", "data": []}, False),   # 還沒公布：空名單不是「沒人被列」
     ("2026-11-13T18:00:00", TODAY_NOTICE, True),                  # 看得到當天的資料：公布了，不用等 20:00
-    ("2026-11-13T19:59:00", {"stat": "OK", "data": []}, False),
-    ("2026-11-13T20:00:00", {"stat": "OK", "data": []}, True),    # 20:00 以後還是空的：那天真的沒人被列（或休市）
+    ("2026-11-13T22:00:00", {"stat": "OK", "data": []}, False),   # 不知道是不是交易日：幾點都不猜，存成失敗
 ])
 def test_notice_before_published_saved_as_failure(raw_store, monkeypatch, now, body, saved_ok):
-    """注意股：看得到當天的資料就算公布了；看不到的，20:00 以前抓的存成失敗、20:00 以後才算。"""
+    """注意股：看得到當天的資料就算公布了；看不到、又不是已知的休市，幾點都存成失敗（不用時間猜）。"""
     monkeypatch.setattr(date_utils, "now", lambda: datetime.datetime.fromisoformat(now).replace(tzinfo=date_utils.TAIPEI))
     monkeypatch.setattr(client, "fetch_notice", lambda day: fake_response(body))
 
@@ -201,20 +200,96 @@ def test_crawl_news_detail_temporary_failures_raise_for_retry(raw_store, monkeyp
     assert runner.is_retryable(error.value) and raw_store.last("news_detail", url_md5(LINK)).http_status == 503
 
 
-@pytest.mark.parametrize(("now", "list_title", "saved_key", "saved_ok"), [
-    ("2026-11-23T18:00:00", "115年11月20日 公布注意累計次數可能達處置標準之有價證券一覽表", "20261120", False),   # 今天的還沒公布
-    ("2026-11-23T18:30:00", "115年11月23日 公布注意累計次數可能達處置標準之有價證券一覽表", "20261123", True),    # 公布了
-    ("2026-11-23T20:00:00", "115年11月20日 公布注意累計次數可能達處置標準之有價證券一覽表", "20261120", True),    # 20:00 以後還不是今天（休市）：照存
+OLD_LIST = "115年11月20日 公布注意累計次數可能達處置標準之有價證券一覽表"
+NEW_LIST = "115年11月23日 公布注意累計次數可能達處置標準之有價證券一覽表"
+PRICE_TODAY = {"tables": [{"fields": ["證券代號", "收盤價"], "data": [["2330", "1,000"]]}]}
+PRICE_HOLIDAY = {"stat": "很抱歉，沒有符合條件的資料!"}
+
+
+@pytest.mark.parametrize("source, crawl", [("notice", "crawl_notice"), ("punish", "crawl_punish"), ("stock_price", "crawl_stock_price")])
+def test_known_holiday_accepted_before_20(raw_store, monkeypatch, source, crawl):
+    """開休市日期上寫休市的日子：沒有資料是正常的，18:00 就算數（不會留下失敗）。"""
+    monkeypatch.setattr(date_utils, "now", lambda: datetime.datetime(2026, 12, 25, 18, 0, tzinfo=date_utils.TAIPEI))
+    raw_store.put("holiday", "2026", {"fields": ["日期", "名稱", "說明"], "data": [["2026-12-25", "行憲紀念日", ""]]})
+    monkeypatch.setattr(client, f"fetch_{source}", lambda day: fake_response({"stat": "OK", "data": []}))
+    getattr(task, crawl)("20261225")
+    assert raw_store.last(source, "20261225").ok
+
+
+def test_unknown_closure_is_not_guessed(raw_store, monkeypatch):
+    """開休市日期上沒有的（颱風假）：幾點都存成失敗，不猜是休市（要人確認）。"""
+    monkeypatch.setattr(date_utils, "now", lambda: datetime.datetime(2026, 12, 24, 22, 0, tzinfo=date_utils.TAIPEI))
+    raw_store.put("holiday", "2026", {"fields": ["日期", "名稱", "說明"], "data": [["2026-12-25", "行憲紀念日", ""]]})
+    monkeypatch.setattr(client, "fetch_notice", lambda day: fake_response({"stat": "OK", "data": []}))
+    with pytest.raises(repository.FetchError, match="還沒公布完整"):
+        task.crawl_notice("20261224")
+
+
+def test_watchlist_on_known_holiday_accepted_before_20(raw_store, monkeypatch):
+    monkeypatch.setattr(date_utils, "now", lambda: datetime.datetime(2026, 12, 25, 18, 0, tzinfo=date_utils.TAIPEI))
+    raw_store.put("holiday", "2026", {"fields": ["日期", "名稱", "說明"], "data": [["2026-12-25", "行憲紀念日", ""]]})
+    monkeypatch.setattr(client, "fetch_punish_watchlist",
+                        lambda: fake_response({"stat": "OK", "title": "115年12月24日 公布注意累計次數…", "data": []}))
+    task.crawl_punish_watchlist("20261225")
+    assert raw_store.last("punish_watchlist", "20261224").ok
+
+
+@pytest.mark.parametrize(("now", "price", "list_title", "saved_key", "saved_ok"), [
+    ("2026-11-23T18:00:00", PRICE_TODAY, OLD_LIST, "20261120", False),    # 交易日、今天的還沒公布
+    ("2026-11-23T18:30:00", PRICE_TODAY, NEW_LIST, "20261123", True),     # 公布了
+    ("2026-11-23T21:00:00", PRICE_TODAY, OLD_LIST, "20261120", False),    # 交易日，20:00 以後還是舊的：證交所晚了，照樣失敗
+    ("2026-11-23T22:00:00", PRICE_HOLIDAY, OLD_LIST, "20261120", False),  # 平日沒有收盤行情、日曆上沒寫：不猜，存成失敗
 ])
-def test_watchlist_from_before_today_saved_as_failure(raw_store, monkeypatch, now, list_title, saved_key, saved_ok):
-    """注意累計名單只有最新一份：20:00 前抓到的還是前一天的，存成失敗（不然這一輪算成功、放了記號，今天的名單就沒抓到）。"""
+def test_watchlist_from_before_today_saved_as_failure(raw_store, monkeypatch, now, price, list_title, saved_key, saved_ok):
+    """注意累計名單只有最新一份：不是今天的就存成失敗（不然這一輪算成功、放了記號，今天的名單就沒抓到）；
+    只有確定休市的日子（週末、開休市日期）才照存前一天的。"""
     moment = datetime.datetime.fromisoformat(now).replace(tzinfo=date_utils.TAIPEI)
     monkeypatch.setattr(date_utils, "now", lambda: moment)
-    monkeypatch.setattr(task, "today_yyyymmdd", lambda: "20261123")
+    raw_store.put("stock_price", "20261123", price, fetched_at=moment.isoformat())
     monkeypatch.setattr(client, "fetch_punish_watchlist", lambda: fake_response({"stat": "OK", "title": list_title, "data": []}))
     if saved_ok:
-        task.crawl_punish_watchlist()
+        task.crawl_punish_watchlist("20261123")
     else:
-        with pytest.raises(repository.FetchError, match="今天的還沒公布"):
-            task.crawl_punish_watchlist()
+        with pytest.raises(repository.FetchError, match="還沒公布"):
+            task.crawl_punish_watchlist("20261123")
     assert raw_store.last("punish_watchlist", saved_key).ok is saved_ok
+
+
+PRICE_1123 = {"tables": [{"fields": ["證券代號", "收盤價"], "data": [["2330", "1,000"]]}]}
+
+
+@pytest.mark.parametrize("now", ["2026-11-23T18:00:00", "2026-11-23T21:00:00"])
+def test_trading_day_never_accepts_empty_notice(raw_store, monkeypatch, now):
+    """交易日（收盤行情有個股資料）：注意股一定有資料，看不到就是證交所還沒公布，20:00 以後也存成失敗（不會把空名單當成沒人被列）。"""
+    monkeypatch.setattr(date_utils, "now", lambda: datetime.datetime.fromisoformat(now).replace(tzinfo=date_utils.TAIPEI))
+    raw_store.put("stock_price", "20261123", PRICE_1123)
+    monkeypatch.setattr(client, "fetch_notice", lambda day: fake_response({"stat": "OK", "data": []}))
+    with pytest.raises(repository.FetchError, match="是交易日，還沒公布完整"):
+        task.crawl_notice("20261123")
+
+
+def test_weekend_accepted_before_20(raw_store, monkeypatch):
+    """週末：沒有資料是正常的，馬上算數。"""
+    monkeypatch.setattr(date_utils, "now", lambda: datetime.datetime(2026, 11, 28, 18, 0, tzinfo=date_utils.TAIPEI))
+    monkeypatch.setattr(client, "fetch_notice", lambda day: fake_response({"stat": "OK", "data": []}))
+    task.crawl_notice("20261128")
+    assert raw_store.last("notice", "20261128").ok
+
+
+def test_saturday_with_trading_is_a_trading_day(raw_store, monkeypatch):
+    """週六補行交易（開休市日期上寫「…交易日」）、有收盤行情：當交易日，注意股看不到資料就存成失敗。"""
+    monkeypatch.setattr(date_utils, "now", lambda: datetime.datetime(2026, 11, 28, 18, 0, tzinfo=date_utils.TAIPEI))
+    raw_store.put("holiday", "2026", {"fields": ["日期", "名稱", "說明"], "data": [["2026-11-28", "補行交易日", ""]]})
+    raw_store.put("stock_price", "20261128", {"tables": [{"fields": ["證券代號"], "data": [["2330"]]}]})
+    monkeypatch.setattr(client, "fetch_notice", lambda day: fake_response({"stat": "OK", "data": []}))
+    with pytest.raises(repository.FetchError, match="是交易日"):
+        task.crawl_notice("20261128")
+
+
+def test_watchlist_uses_the_run_date_not_the_clock(raw_store, monkeypatch):
+    """跑過午夜：用這一輪的那天（20261123）判斷，不會拿 11/24 的日期去比，把 11/23 的名單當成舊的。"""
+    monkeypatch.setattr(date_utils, "now", lambda: datetime.datetime(2026, 11, 24, 0, 10, tzinfo=date_utils.TAIPEI))
+    raw_store.put("stock_price", "20261123", PRICE_TODAY)
+    monkeypatch.setattr(client, "fetch_punish_watchlist", lambda: fake_response({"stat": "OK", "title": NEW_LIST, "data": []}))
+    task.crawl_punish_watchlist("20261123")
+    assert raw_store.last("punish_watchlist", "20261123").ok

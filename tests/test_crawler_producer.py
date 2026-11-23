@@ -161,3 +161,16 @@ def test_news_detail_jobs_from_stock_news(raw_store, monkeypatch):
     monkeypatch.setattr(repository, "raw_keys_done", lambda source: {url_md5("https://ltn.com.tw/2")})
     assert [kw["link"] for _, kw in pc.build_news_detail_jobs("20261113", "20261113")] == ["https://ctee.com.tw/3", "https://udn.com/1"]
     assert len(pc.build_news_detail_jobs("20261113", "20261113", refetch=True)) == 3   # --refetch：抓過的也重開
+
+
+def test_twse_fetches_stock_price_first(raw_store):
+    """收盤行情排第一個：注意股、處置股、注意累計名單要靠它判斷那天是不是交易日。"""
+    names = [f.__name__ for f, kw in pc.build_twse_jobs("20261113", "20261113")]
+    assert names.index("crawl_stock_price") < names.index("crawl_notice") < names.index("crawl_punish")
+
+
+def test_watchlist_gets_the_run_date(raw_store, monkeypatch):
+    """注意累計名單的任務拿到這一輪的那天（end），不自己查「今天」。"""
+    monkeypatch.setattr(pc, "today_yyyymmdd", lambda: "20261123")
+    jobs = pc.build_twse_jobs("20261123", "20261123")
+    assert [kw for f, kw in jobs if f.__name__ == "crawl_punish_watchlist"] == [{"date_yyyymmdd": "20261123"}]
