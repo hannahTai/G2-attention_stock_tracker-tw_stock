@@ -6,8 +6,10 @@
 
 任務清單的每一項是 (任務函式, 參數 dict)，例如 (task.crawl_notice, {"date_yyyymmdd": "20261113"})，
 交給 common/runner.py 執行（每個任務間隔一下、暫時性的失敗重試）。
-分五批：證交所先跑完，觀測站才能依當天的注意股、處置股決定要查哪些公司；
-有了公告清單，才知道要查哪幾則公告的全文。新聞同樣兩步：FinMind 新聞清單（同一批公司），再打開每則新聞的網頁。
+分五批：證交所先跑完，觀測站、FinMind 才能依當天的注意股、處置股決定要查哪些公司。之後分成兩條鏈同時進行：
+- 觀測站：重大訊息清單 → 公告全文（有了清單，才知道要查哪幾則公告的全文）
+- 新聞：FinMind 新聞清單（同一批公司）→ 打開每則新聞的網頁
+兩條鏈打的是不同的網站、不同的佇列，不會互相影響；同一條鏈裡上一批做完才送下一批。
 
 已經抓完整的不再抓（加 --refetch 就全部重抓）。「完整」＝在那份資料不會再變之後抓的，見 is_complete()。
 注意累計名單、上市公司清單只有當下一份，每次都抓。
@@ -185,12 +187,16 @@ def main() -> None:
     args = cli.parse_args()   # daily：今天；backfill：--start～--end，--refetch 全部重抓
     repository.create_tables()   # 建表（已經有就跳過）；全新的資料庫第一步就是 crawler
 
-    # queue：開 Celery 時，證交所、觀測站各自一個 worker 一次做一個（見 common/worker.py）
-    failed = runner.run_jobs(build_twse_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS, queue="crawl_twse")
-    failed += runner.run_jobs(build_mops_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_MOPS, queue="crawl_mops")
-    failed += runner.run_jobs(build_detail_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_MOPS, queue="crawl_mops")
-    failed += runner.run_jobs(build_stock_news_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_FINMIND, queue="crawl_finmind")
-    failed += runner.run_jobs(build_news_detail_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_NEWS_DETAIL, queue="crawl_news")
+    span = (args.start, args.end, args.refetch)
+    # queue：開 Celery 時，每個來源各自一個佇列、一個 worker（見 common/worker.py）
+    # 證交所先做完（要知道哪些股票被關注），之後觀測站、新聞兩條鏈同時進行，各自上一批做完才送下一批
+    failed = runner.run_jobs(build_twse_jobs(*span), sleep=SLEEP_SECONDS, queue="crawl_twse")
+    failed += runner.run_chains([
+        [(lambda: build_mops_jobs(*span), SLEEP_SECONDS_MOPS, "crawl_mops"),
+         (lambda: build_detail_jobs(*span), SLEEP_SECONDS_MOPS, "crawl_mops")],
+        [(lambda: build_stock_news_jobs(*span), SLEEP_SECONDS_FINMIND, "crawl_finmind"),
+         (lambda: build_news_detail_jobs(*span), SLEEP_SECONDS_NEWS_DETAIL, "crawl_news")],
+    ])
     runner.finish(failed)
 
 

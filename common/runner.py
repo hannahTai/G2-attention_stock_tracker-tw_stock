@@ -2,6 +2,8 @@
 
     failed = runner.run_jobs(jobs, queue="transform")              # 依序執行（或送進佇列），回傳失敗的任務
     failed = runner.run_jobs(jobs, sleep=1.0, queue="crawl_twse")   # crawler：每個任務之後再等一下（打 API 太快會被擋）
+    failed = runner.run_chains([[(build_a1, 0.6, "crawl_mops"), (build_a2, 0.6, "crawl_mops")],
+                                [(build_b1, 1.0, "crawl_finmind")]])   # 好幾條任務鏈同時進行（見 run_chains）
     runner.finish(failed)                       # 印出失敗清單；有失敗就結束代碼 1
 
 任務清單的每一項是 (任務函式, 參數 dict)，例如 (task.crawl_notice, {"date_yyyymmdd": "20261113"})。
@@ -125,8 +127,18 @@ def run_jobs_on_workers(jobs: list[tuple], queue: str) -> list[str]:
 
     送法和課程一樣：task.s(**參數) 建立簽章（signature），apply_async(queue=...) 指定佇列送出。
     """
+    return collect_results(send_jobs(jobs, queue))
+
+
+def send_jobs(jobs: list[tuple], queue: str) -> list[tuple]:
+    """整批送進佇列，回傳 [(任務名稱, AsyncResult), ...]。"""
     sent = [(job_name(func, kwargs), func.s(**kwargs).apply_async(queue=queue)) for func, kwargs in jobs]
-    print(f"送出 {len(sent)} 個任務到佇列 {queue}")
+    print(f"送出 {len(sent)} 個任務到佇列 {queue}", flush=True)
+    return sent
+
+
+def collect_results(sent: list[tuple]) -> list[str]:
+    """照送出的順序等每個結果、印出來，回傳失敗的任務名稱。"""
     failed = []
     for name, result in sent:
         try:
@@ -134,6 +146,52 @@ def run_jobs_on_workers(jobs: list[tuple], queue: str) -> list[str]:
         except Exception as e:
             print(name, "✗", e)
             failed.append(name)
+    return failed
+
+
+def run_chains(chains: list[list[tuple]], poll_seconds: float = 1.0) -> list[str]:
+    """好幾條任務鏈同時進行，回傳全部失敗的任務名稱。
+
+    每條鏈是好幾批 [(產生任務清單的函式, sleep, queue), ...]：同一條鏈裡上一批做完，才產生、送出下一批
+    （例如重大訊息全文要先有清單才知道要抓哪幾則）；鏈和鏈之間不互等，各自的佇列同時在做。
+    任務清單是做到那一批才產生的，所以傳函式，不傳清單。
+    USE_CELERY=1：一個迴圈每 poll_seconds 秒看一次每條鏈的這一批做完沒（AsyncResult.ready()），做完就送下一批。
+    沒開：在本機一條鏈一條鏈依序執行（本機一次只能做一件事）。
+    """
+    if not USE_CELERY:
+        return [name for chain in chains for build, sleep, queue in chain
+                for name in run_jobs(build(), sleep=sleep, queue=queue)]
+    failed = []
+    steps = [iter(chain) for chain in chains]
+    running = {}   # 第幾條鏈 → 這一批送出的 [(任務名稱, AsyncResult), ...]
+
+    def send_next(i: int) -> None:
+        """第 i 條鏈送出下一批；空的批次（沒有要做的）跳過；整條做完就不再放進 running。
+        產生任務清單出錯（例如資料庫連不上）：記成一個失敗、這條鏈停下來，其他鏈照做完，最後一起列出失敗。"""
+        for build, _sleep, queue in steps[i]:   # 間隔在 worker 上做，這裡用不到 sleep
+            if queue is None:
+                raise ValueError("USE_CELERY=1 要指定 queue（見 common/worker.py）")   # 程式寫錯，直接停
+            try:
+                jobs = build()
+            except Exception as e:
+                name = f"第 {i + 1} 條鏈產生 {queue} 的任務清單"
+                print(name, "✗", error_text(e), flush=True)
+                failed.append(name)
+                return
+            if jobs:
+                running[i] = send_jobs(jobs, queue)
+                return
+
+    for i in range(len(chains)):
+        send_next(i)
+    while running:
+        for i, sent in list(running.items()):
+            if all(result.ready() for _, result in sent):
+                failed += collect_results(sent)
+                del running[i]
+                send_next(i)
+        if running:
+            time.sleep(poll_seconds)
     return failed
 
 
