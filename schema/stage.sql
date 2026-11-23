@@ -344,6 +344,7 @@ CREATE TABLE IF NOT EXISTS stage_stock_news (
     source_fetched_at TIMESTAMP(6),
     PRIMARY KEY (stock_id, news_id)
 );
+CREATE INDEX IF NOT EXISTS idx_stage_stock_news_news ON stage_stock_news (news_id);   -- 用新聞查是哪幾檔的（新聞摘要只做關注的股票、同一件事歸類）；主鍵是代號在前，用新聞查不到
 COMMENT ON TABLE stage_stock_news IS '哪檔有哪則新聞（資料來源：FinMind；新聞本身在 stage_news）';
 COMMENT ON COLUMN stage_stock_news.stock_id IS '證券代號';
 COMMENT ON COLUMN stage_stock_news.news_id IS '新聞代號（stage_news.news_id）';
