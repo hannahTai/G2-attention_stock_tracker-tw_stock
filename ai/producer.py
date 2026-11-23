@@ -1,7 +1,9 @@
-"""producer 層（AI）：決定這一輪要分類哪些公告、摘要哪些新聞、轉哪些向量、寫哪些卡片摘要。要在 analyze 之後執行（要用 stage、app_card）。
+"""producer 層（AI）：決定這一輪要分類哪些公告、摘要哪些新聞、轉哪些向量、寫哪些卡片摘要。
 
     uv run python -m ai.producer                            # 只處理今天（daily）
     uv run python -m ai.producer backfill --start 20261101  # 處理一段期間（可加 --end）
+
+只讀 stage 和前面的 AI 結果，不讀規則引擎的結果（app），所以 main.py 讓它和 analyze 同時跑（要在 transform 之後）。
 
 任務清單的格式和其他 producer 一樣，交給 common/runner.py：
 - 公告分類：區間內發言、有全文、這個 prompt 版本還沒分類的公告 → ai_announcement_label（佇列 ai）
@@ -11,7 +13,7 @@
 - 同一件事：整段區間（往前多 NEWS_LOOKBACK_DAYS 天）一個任務，好幾家報同一件事的新聞歸在一起 → ai_news_story（佇列 ai，不用 API key）
 - 卡片 AI 摘要：區間內每天的注意股、聽牌股，一檔一天一個任務 → ai_card_summary（佇列 embed：查詢也要轉向量；要在公告分類、新聞 RAG 之後）
 順序：公告分類 → 新聞摘要 → 新聞 RAG → 同一件事 → 卡片 AI 摘要。
-沒設 ANTHROPIC_API_KEY 就跳過要呼叫 Claude 的項目（新聞 RAG 的向量照樣轉，只用標題和導言），不算失敗。失敗只影響 AI 的結果，資料線（crawler、transform、analyze）已經跑完了。
+沒設 ANTHROPIC_API_KEY 就跳過要呼叫 Claude 的項目（新聞 RAG 的向量照樣轉，只用標題和導言），不算失敗。失敗只影響 AI 的結果，規則引擎算的還差幾次不受影響。
 新聞（FinMind 清單、新聞網頁的導言）由 crawler、transform 抓和整理；摘要要的全文由 task 當場再抓（見 ai/task.py）。
 """
 from ai import card_summarizer, classifier, summarizer, task
@@ -53,23 +55,29 @@ def build_card_jobs(start: str, end: str) -> list[tuple]:
     return [(task.summarize_card, {"stock_id": stock_id, "date_yyyymmdd": to_yyyymmdd(day)}) for stock_id, day in rows]
 
 
+def run_all(start: str, end: str) -> list[str]:
+    """公告分類 → 新聞摘要 → 新聞 RAG → 同一件事 → 卡片 AI 摘要，回傳失敗的任務。
+
+    用到本機 embedding 模型的任務送 embed 佇列（只有 celery-embed 載入模型），其他送 ai。
+    要呼叫 Claude 的項目沒有 API key 就跳過；向量、同一件事不用 key，照樣跑（夾在中間，順序不能換）。
+    """
+    failed = []
+    if ANTHROPIC_API_KEY:
+        failed += runner.run_jobs(build_classify_jobs(start, end), queue="ai")
+        failed += runner.run_jobs(build_summary_jobs(start, end), queue="ai")
+    else:
+        print("沒設 ANTHROPIC_API_KEY，跳過公告分類、新聞摘要、卡片 AI 摘要")
+    failed += runner.run_jobs(build_embed_jobs(start, end), queue="embed")   # 轉標題＋新聞摘要，排在新聞摘要後面
+    failed += runner.run_jobs(build_story_jobs(start, end), queue="ai")      # 用新聞向量，不用 API key
+    if ANTHROPIC_API_KEY:
+        failed += runner.run_jobs(build_card_jobs(start, end), queue="embed")   # 用到公告分類、新聞 RAG 的結果，排最後
+    return failed
+
+
 def main() -> None:
     args = cli.parse_args()   # daily：今天；backfill：--start～--end
     repository.create_tables()   # 建表（已經有就跳過）
-
-    # 用到本機 embedding 模型的任務送 embed 佇列（只有 celery-embed 載入模型），其他送 ai。
-    # 要呼叫 Claude 的項目沒有 API key 就跳過；向量、同一件事不用 key，夾在中間照樣跑（順序不能換，所以分成前後兩段）
-    failed = []
-    if ANTHROPIC_API_KEY:
-        failed += runner.run_jobs(build_classify_jobs(args.start, args.end), queue="ai")
-        failed += runner.run_jobs(build_summary_jobs(args.start, args.end), queue="ai")
-    else:
-        print("沒設 ANTHROPIC_API_KEY，跳過要呼叫 Claude 的 AI 項目")
-    failed += runner.run_jobs(build_embed_jobs(args.start, args.end), queue="embed")   # 轉標題＋新聞摘要，排在新聞摘要後面
-    failed += runner.run_jobs(build_story_jobs(args.start, args.end), queue="ai")      # 用新聞向量，不用 API key
-    if ANTHROPIC_API_KEY:
-        failed += runner.run_jobs(build_card_jobs(args.start, args.end), queue="embed")   # 用到公告分類、新聞 RAG 的結果，排最後
-    runner.finish(failed)
+    runner.finish(run_all(args.start, args.end))
 
 
 if __name__ == "__main__":

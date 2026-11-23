@@ -63,13 +63,22 @@ def admin_execute(sql: str) -> None:
         conn.execute(sqlalchemy.text(sql))
 
 
+# 同時建同一個資料庫時，後建的會得到的 SQLSTATE：42P04＝資料庫已經存在，23505＝系統表的唯一鍵重複（兩邊幾乎同時建）
+DATABASE_EXISTS_ERRORS = ("42P04", "23505")
+
+
 def create_database(database: str = DB_NAME) -> None:
-    """資料庫不存在就建（PostgreSQL 沒有 CREATE DATABASE IF NOT EXISTS，先查再建）。"""
+    """資料庫不存在就建（PostgreSQL 沒有 CREATE DATABASE IF NOT EXISTS，先查再建）。
+    兩個 producer 同時查到「不存在」、同時建（analyze 和 ai 同時開始）：後建的那個會得到「已經存在」（DATABASE_EXISTS_ERRORS），當成成功。"""
     with get_engine("").connect() as conn:
         exists = conn.execute(sqlalchemy.text("SELECT 1 FROM pg_database WHERE datname = :name"),
                               {"name": database}).scalar()
     if not exists:
-        admin_execute(f"CREATE DATABASE \"{database}\" ENCODING 'UTF8' TEMPLATE template0")
+        try:
+            admin_execute(f"CREATE DATABASE \"{database}\" ENCODING 'UTF8' TEMPLATE template0")
+        except sqlalchemy.exc.DBAPIError as e:
+            if getattr(e.orig, "sqlstate", None) not in DATABASE_EXISTS_ERRORS:
+                raise
 
 
 def drop_database(database: str) -> None:
@@ -87,10 +96,19 @@ def run_sql_files(conn) -> None:
                 conn.execute(sqlalchemy.text(statement))
 
 
+# create_tables 的鎖（PostgreSQL advisory lock 的代號，隨便一個固定的數字）
+SCHEMA_LOCK_KEY = 20261123
+
+
 def create_tables(database: str = DB_NAME) -> None:
-    """建資料庫，再執行 schema/*.sql 建表。已經存在的表跳過，不刪任何表（欄位改了要自己 ALTER）；VIEW 每次重建。"""
+    """建資料庫，再執行 schema/*.sql 建表。已經存在的表跳過，不刪任何表（欄位改了要自己 ALTER）；VIEW 每次重建。
+
+    同一時間只讓一個執行：analyze 和 ai 的 producer 同時開始，都會先 create_tables，
+    兩邊同時 DROP、CREATE VIEW 會 deadlock。交易一開始先拿 advisory lock，別人拿著就等，交易結束自動放掉。
+    """
     create_database(database)
     with get_engine(database).begin() as conn:
+        conn.execute(sqlalchemy.text("SELECT pg_advisory_xact_lock(:key)"), {"key": SCHEMA_LOCK_KEY})
         run_sql_files(conn)
 
 
@@ -424,16 +442,27 @@ def insert_news_summary(row: dict) -> None:
 
 
 # ---------- 新聞 RAG（pgvector）----------
+# 好幾則新聞共用同一句導言（網站介紹、個股概覽頁）不是這則新聞的內容，當成沒有；和 app_stock_news（schema/view.sql）同一個門檻
+SHARED_LEAD_MIN_NEWS = 3
+
+
 def list_news_to_embed(start: datetime.date, end: datetime.date, model: str) -> list[dict]:
-    """新聞日期在區間內的新聞：標題、新聞摘要、導言（照 app_stock_news：通過檢查的摘要、不是網站共用的導言），
-    和這個模型上次轉的文字的雜湊值（還沒轉過是 None）。要不要重轉由 task 比對雜湊值決定。"""
+    """新聞日期在區間內的新聞：標題、新聞摘要（最新一版、通過檢查的）、導言（網站共用的當成沒有），
+    和這個模型上次轉的文字的雜湊值（還沒轉過是 None）。要不要重轉由 task 比對雜湊值決定。
+    ai 只讀 stage 和 AI 結果，不讀 app 的 VIEW（ai 和 analyze 同時跑）。"""
     rows = query_rows(
-        "SELECT DISTINCT ON (v.news_id) v.news_id, v.title, v.ai_summary, v.lead, e.input_hash "
-        "FROM tw_stock.app_stock_news v "
-        "LEFT JOIN tw_stock.ai_news_embedding e ON e.news_id = v.news_id AND e.model = :model "
-        "WHERE v.news_date BETWEEN :start AND :end "
-        "ORDER BY v.news_id",
-        {"start": start, "end": end, "model": model})
+        "SELECT n.news_id, n.title, summary.summary AS ai_summary, "
+        "       CASE WHEN shared.news_count >= :shared_min THEN NULL ELSE d.lead END AS lead, e.input_hash "
+        "FROM tw_stock.stage_news n "
+        "LEFT JOIN tw_stock.stage_news_detail d ON d.news_id = n.news_id "
+        "LEFT JOIN (SELECT lead, COUNT(*) AS news_count FROM tw_stock.stage_news_detail "
+        "           WHERE lead IS NOT NULL GROUP BY lead) shared ON shared.lead = d.lead "
+        "LEFT JOIN LATERAL (SELECT a.summary FROM tw_stock.ai_news_summary a WHERE a.news_id = n.news_id AND a.summary_ok "
+        "                   ORDER BY a.summarized_at DESC LIMIT 1) summary ON TRUE "
+        "LEFT JOIN tw_stock.ai_news_embedding e ON e.news_id = n.news_id AND e.model = :model "
+        "WHERE n.news_date BETWEEN :start AND :end "
+        "ORDER BY n.news_id",
+        {"start": start, "end": end, "model": model, "shared_min": SHARED_LEAD_MIN_NEWS})
     return [row._asdict() for row in rows]
 
 

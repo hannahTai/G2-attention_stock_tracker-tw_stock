@@ -59,3 +59,83 @@ def test_lock_released_after_error(tmp_path):
             raise RuntimeError("這一輪出錯")
     with main.pipeline_lock(lock_file, wait_seconds=0.1):
         pass
+
+
+# ---------- 一輪的順序 ----------
+@pytest.fixture
+def steps(monkeypatch):
+    """不真的執行：記下 run（一步）、run_parallel（同時好幾步）被叫的順序；codes 可以指定某一步的結束代碼。"""
+    calls, codes = [], {}
+
+    def fake_run(module, args):
+        calls.append((module, args[-1]))
+        return codes.get(module, 0)
+
+    def fake_parallel(group):
+        calls.append([(module, args[-1]) for module, args in group])
+        return [codes.get(module, 0) for module, _ in group]
+    monkeypatch.setattr(main, "run", fake_run)
+    monkeypatch.setattr(main, "run_parallel", fake_parallel)
+    return calls, codes
+
+
+def test_analyze_and_ai_run_together_after_transform(steps):
+    """crawler → transform → analyze 和 ai 同時（兩邊都只讀 stage）。"""
+    calls, _ = steps
+    main.run_pipeline(["daily"])
+    assert calls == [("crawler.producer", "daily"), ("transform.producer", "daily"),
+                     [("analyze.producer", "daily"), ("ai.producer", "daily")]]
+
+
+def test_transform_failure_stops_before_analyze_and_ai(steps):
+    calls, codes = steps
+    codes["transform.producer"] = 1
+    with pytest.raises(SystemExit):
+        main.run_pipeline(["daily"])
+    assert calls == [("crawler.producer", "daily"), ("transform.producer", "daily")]
+
+
+def test_analyze_failure_does_not_stop_ai_but_exits_1(steps):
+    """analyze 失敗：ai 照跑完（不讀 app），最後結束代碼 1。"""
+    calls, codes = steps
+    codes["analyze.producer"] = 1
+    with pytest.raises(SystemExit):
+        main.run_pipeline(["daily"])
+    assert calls[-1] == [("analyze.producer", "daily"), ("ai.producer", "daily")]
+
+
+def test_run_parallel_returns_each_exit_code():
+    """真的同時開兩個 process，照傳進來的順序回傳結束代碼。"""
+    assert main.run_parallel([("json.tool", ["--help"]), ("this_module_does_not_exist", [])]) == [0, 1]
+
+
+def test_run_parallel_stops_started_processes_when_interrupted(monkeypatch):
+    """開第二個子程序時出錯（或等的時候被 Ctrl+C）：已經開的子程序要關掉，不能留著繼續寫資料表。"""
+    class FakeProcess:
+        stopped = False
+
+        def poll(self):
+            return 0 if self.stopped else None
+
+        def terminate(self):
+            self.stopped = True
+
+        def wait(self, timeout=None):
+            return 0
+    started = []
+
+    def fake_popen(command):
+        if started:
+            raise KeyboardInterrupt
+        started.append(FakeProcess())
+        return started[-1]
+    monkeypatch.setattr(main.subprocess, "Popen", fake_popen)
+    with pytest.raises(KeyboardInterrupt):
+        main.run_parallel([("analyze.producer", []), ("ai.producer", [])])
+    assert started[0].stopped
+
+
+def test_stop_processes_ends_a_real_running_process():
+    process = main.subprocess.Popen([main.sys.executable, "-c", "import time; time.sleep(30)"])
+    main.stop_processes([process], wait_seconds=5)
+    assert process.poll() is not None

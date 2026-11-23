@@ -1,4 +1,4 @@
-"""一次跑完整條資料線：crawler（API → raw）→ transform（raw → stage）→ analyze（stage → app）→ ai（AI 項目）。
+"""一次跑完整條資料線：crawler（API → raw）→ transform（raw → stage）→ analyze（stage → app）和 ai（stage → ai）同時。
 
     python main.py                              # 只處理今天（daily）
     python main.py backfill --start 20260701        # 處理一段期間（可加 --end 20261031）
@@ -7,7 +7,8 @@
 期間在這裡算一次（例如 backfill 沒給 --end 就是今天），再明確傳給四步：跑過午夜，四步的「今天」也一樣。
 - crawler 有任務失敗：照樣往下跑。transform 會跳過沒抓到的 raw；analyze 會檢查需要的 stage，缺了那天就不算。
 - transform 有任務失敗（程式錯誤）：不跑 analyze、ai。
-- ai 最後跑：失敗只影響 AI 的結果，網站照常。
+- analyze 和 ai 都只讀 stage，互不讀對方的結果，同時跑；網站的 VIEW 再把 app 和 ai 合起來。
+- ai 失敗只影響 AI 的結果，網站照常（規則引擎不讀 AI 的結果）。
 有任何一步失敗，最後結束代碼是 1。每一步也可以單獨執行，見 docs/flow.md。
 
 同一時間只跑一輪：開始前鎖住 data/pipeline.lock 這個檔案（作業系統的檔案鎖，不是資料庫）。
@@ -81,14 +82,43 @@ def run(module: str, args: list[str]) -> int:
     return subprocess.run([sys.executable, "-m", module, *args]).returncode
 
 
+def run_parallel(steps: list[tuple[str, list[str]]]) -> list[int]:
+    """同時執行好幾步（每步一個 python -m <module> <args>），全部做完才回傳各自的結束代碼（照傳進來的順序）。
+    畫面上的輸出會交錯；每個任務另外記在任務歷史（job_run）和 worker 的 log 檔。
+    等的時候被中斷（Ctrl+C、排程停掉）：先把已經開的子程序都關掉再丟出錯誤，
+    不然鎖放掉了、子程序還在寫資料表，下一輪會和它們同時跑。"""
+    processes = []
+    try:
+        for module, args in steps:
+            print(f"===== {module} {' '.join(args)}（同時）", flush=True)
+            processes.append(subprocess.Popen([sys.executable, "-m", module, *args]))
+        return [process.wait() for process in processes]
+    except BaseException:
+        stop_processes(processes)
+        raise
+
+
+def stop_processes(processes: list, wait_seconds: float = 10) -> None:
+    """關掉還在跑的子程序：先請它結束（terminate），等不到就強制關掉（kill）。"""
+    for process in processes:
+        if process.poll() is None:
+            process.terminate()
+    for process in processes:
+        try:
+            process.wait(timeout=wait_seconds)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+
 def run_pipeline(args: list[str]) -> None:
     crawler_code = run("crawler.producer", args)
     transform_code = run("transform.producer", args)
     if transform_code:
         print("\ntransform 有任務失敗，不跑 analyze、ai")
         raise SystemExit(1)
-    analyze_code = run("analyze.producer", args)
-    ai_code = run("ai.producer", args)
+    # analyze（規則引擎，stage → app）和 ai（stage → ai）都只讀 stage，互不讀對方的結果：同時跑
+    analyze_code, ai_code = run_parallel([("analyze.producer", args), ("ai.producer", args)])
 
     if crawler_code or analyze_code or ai_code:
         raise SystemExit(1)

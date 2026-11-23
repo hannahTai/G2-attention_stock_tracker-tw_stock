@@ -8,6 +8,7 @@ import celery.canvas
 import pytest
 import requests
 
+from ai import producer as ai_producer
 from analyze import producer as analyze_producer
 from common import config, runner, worker
 from crawler import producer as crawler_producer
@@ -233,6 +234,23 @@ def test_job_log_failure_does_not_break_the_task(monkeypatch, capsys):
     monkeypatch.setattr(runner.repository, "insert_job_run", broken_insert)
     assert runner.run_jobs([(lambda: "ok", {})]) == []
     assert "任務歷史沒寫進去" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("key, expected", [
+    ("key", [("build_classify_jobs", "ai"), ("build_summary_jobs", "ai"), ("build_embed_jobs", "embed"),
+             ("build_story_jobs", "ai"), ("build_card_jobs", "embed")]),
+    ("", [("build_embed_jobs", "embed"), ("build_story_jobs", "ai")]),
+])
+def test_ai_producer_order_and_queues(monkeypatch, key, expected):
+    """公告分類 → 新聞摘要 → 新聞向量 → 同一件事 → 卡片 AI 摘要；用本機模型的送 embed，其他送 ai。
+    沒有 API key：只做不用 Claude 的新聞向量、同一件事。"""
+    sent = []
+    monkeypatch.setattr(ai_producer, "ANTHROPIC_API_KEY", key)
+    monkeypatch.setattr(ai_producer.runner, "run_jobs", lambda jobs, queue: sent.append((jobs[0], queue)) or [])
+    for name in ("build_classify_jobs", "build_summary_jobs", "build_embed_jobs", "build_story_jobs", "build_card_jobs"):
+        monkeypatch.setattr(ai_producer, name, lambda start, end, name=name: [name])
+    ai_producer.run_all("20261120", "20261120")
+    assert sent == expected
 
 
 def test_run_chains_keeps_going_when_one_chain_cannot_build(monkeypatch):

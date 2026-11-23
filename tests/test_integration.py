@@ -430,3 +430,24 @@ def test_same_story_grouped_and_listed_once(db):
     with db.connect() as conn:
         listed = queries.stock_news(conn, "3653", day, day)
     assert [(n["title"], n["also_reported_by"]) for n in listed] == [("【下週觀察】健策跌近一成仍留3清單", ["CMoney投資網誌"]), ("健策除息", []), ("健策接獲大單", ["自由時報", "鉅亨網"])]
+
+
+def test_create_tables_can_run_at_the_same_time(db):
+    """analyze 和 ai 同時開始，兩個 producer 都會先 create_tables（DROP、CREATE VIEW）：同時跑也不會出錯。"""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        for future in [pool.submit(repository.create_tables, TEST_DATABASE) for _ in range(4)]:
+            future.result()   # 出錯會在這裡丟出來
+    with db.connect() as conn:
+        assert conn.execute(sqlalchemy.text("SELECT count(*) FROM app_card")).scalar() == 0
+
+
+def test_create_database_can_run_at_the_same_time(test_engine):
+    """全新的伺服器上 analyze、ai 同時開始：兩邊都查到資料庫不存在、同時建，後建的不算失敗。"""
+    name = f"{TEST_DATABASE}_race"
+    repository.drop_database(name)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            for future in [pool.submit(repository.create_database, name) for _ in range(4)]:
+                future.result()
+    finally:
+        repository.drop_database(name)
