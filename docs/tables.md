@@ -1,6 +1,8 @@
 # 資料表說明
 
-資料庫分四層：
+> 2026-11-14 整理，2026-11-23 更新
+
+資料庫分四層，另外一張任務歷史：
 
 | 層 | 表名開頭 | 內容 | 建表 SQL |
 |---|---|---|---|
@@ -9,6 +11,7 @@
 | app | `app_` | 規則引擎算出的結果，給網頁讀 | [`schema/app.sql`](../schema/app.sql) |
 | app（VIEW） | `app_` | 網頁需要的 stage（和 ai）欄位，網頁只讀 `app_*` | [`schema/view.sql`](../schema/view.sql) |
 | ai | `ai_` | AI 項目的結果、LLM 呼叫紀錄 | [`schema/ai.sql`](../schema/ai.sql) |
+| 任務歷史 | `job_run` | 每個任務每跑一次一列 | [`schema/log.sql`](../schema/log.sql) |
 
 每天只處理當天的資料；每張表另有 `loaded_at`（寫入時間）。時間欄位（`fetched_at`、`loaded_at`）都是 TIMESTAMP（不含時區）、台灣時間。期間為 2026/11/14 的資料。
 
@@ -27,7 +30,7 @@
 | request_body | TEXT | POST 的參數（JSON 字串）；GET 為 NULL |
 | body | TEXT | API 回應原文（JSON 字串） |
 
-- 例外：`raw_news_detail`（新聞網頁）的 `body` 不是回應原文，是 `crawl_news_detail` 組的 JSON（`<head>`、轉址後的網址、全文有幾個字），全文不存；`raw_key` 是 32 個字的 news_id；沒打的轉址連結 `http_status` 為 NULL。
+- 例外：`raw_news_detail`（新聞網頁）的 `body` 不是回應原文，是 `crawl_news_detail` 組的 JSON（`<head>`、轉址後的網址、全文有幾個字），全文不存；`raw_key` 是 32 個字的 news_id；沒打的（Google 轉址、內部網址、轉址超過 5 次）`http_status` 為 NULL，`final_url` 記原本的連結。
 
 | 表 | raw_key | 整理成 |
 |---|---|---|
@@ -69,124 +72,21 @@
 | `stage_stock_news` | 哪檔有哪則新聞（FinMind；同一則新聞好幾檔就好幾列） | stock_id, news_id | 同上 |
 | `stage_news_detail` | 一則新聞的網頁：導言、全文有幾個字（新聞網站本身；全文不存，抓不到的沒有列） | news_id | 同上 |
 
-## 關聯圖
+## 表之間的關聯
 
-```mermaid
-erDiagram
-    stage_company |o--o{ stage_notice : "stock_id"
-    stage_company |o--o{ stage_punish : "stock_id"
-    stage_company |o--o{ stage_punish_watchlist : "stock_id"
-    stage_company ||--o{ stage_announcement : "company_id"
-    stage_announcement ||--o| stage_announcement_detail : "company_id + enter_date + serial_number"
-    stage_announcement_clause ||--o{ stage_announcement_detail : "announce_clause"
-    stage_company |o--o{ stage_stock_news : "stock_id"
-    stage_news ||--o{ stage_stock_news : "news_id"
-    stage_news ||--o| stage_news_detail : "news_id"
-    stage_notice ||--|{ stage_notice_clause : "trade_date + stock_id"
-    stage_trading_day ||--o{ stage_notice : "trade_date"
-    stage_notice_day ||--o{ stage_notice : "query_date = trade_date"
+stage 表之間用哪個欄位對起來（關聯是邏輯上的，資料庫沒設外鍵）。每張表的欄位見下面「欄位」。
 
-    stage_company {
-        varchar company_id PK
-        varchar short_name
-        varchar full_name
-        varchar industry_code
-        date listed_date
-        date snapshot_date
-        timestamp loaded_at
-    }
-    stage_notice {
-        date trade_date PK, FK
-        varchar stock_id PK, FK
-        varchar stock_name
-        text reason_text
-        decimal close_price
-        decimal pe_ratio
-        timestamp loaded_at
-    }
-    stage_notice_clause {
-        date trade_date PK, FK
-        varchar stock_id PK, FK
-        smallint clause PK
-        timestamp loaded_at
-    }
-    stage_notice_day {
-        date query_date PK
-        int notice_count
-        timestamp loaded_at
-    }
-    stage_punish_day {
-        date query_date PK
-        int punish_count
-        timestamp loaded_at
-    }
-    stage_punish {
-        date announce_date PK
-        varchar stock_id PK, FK
-        varchar stock_name
-        varchar trigger_condition
-        date period_start
-        date period_end
-        varchar measure_type
-        smallint match_interval_minutes
-        text content
-        boolean has_star_mark
-        timestamp source_fetched_at
-        timestamp loaded_at
-    }
-    stage_punish_watchlist {
-        date data_date PK
-        varchar stock_id PK, FK
-        varchar stock_name
-        text progress_text
-        timestamp loaded_at
-    }
-    stage_announcement {
-        varchar company_id PK, FK
-        date announce_date
-        date enter_date PK
-        int serial_number PK
-        char announcement_id UK
-        time announce_time
-        varchar company_name
-        text subject
-        timestamp loaded_at
-    }
-    stage_announcement_detail {
-        varchar company_id PK, FK
-        date enter_date PK, FK
-        int serial_number PK, FK
-        varchar announce_clause FK
-        date fact_date
-        text content
-        timestamp loaded_at
-    }
-    stage_announcement_clause {
-        varchar announce_clause PK
-        smallint clause_no
-        varchar short_name
-        varchar description
-        timestamp loaded_at
-    }
-    stage_trading_day {
-        date trade_date PK
-        boolean is_trading
-        bigint volume_shares
-        bigint amount_twd
-        bigint trade_count
-        decimal taiex_index
-        decimal taiex_change_points
-        timestamp loaded_at
-    }
-    stage_holiday {
-        date holiday_date PK
-        varchar holiday_name
-        text description
-        timestamp loaded_at
-    }
-```
-
-- PK＝主鍵，FK＝關聯到另一張表的欄位；關聯是邏輯上的，資料庫沒設 FK。
+| 表 | 對到 | 用哪個欄位 | 幾對幾 |
+|---|---|---|---|
+| `stage_company` | `stage_notice`、`stage_punish`、`stage_punish_watchlist`、`stage_stock_news` | `stock_id` | 一家公司對多列（權證、ETF 不在公司清單裡，所以這邊可能對不到） |
+| `stage_company` | `stage_announcement` | `company_id` | 一家公司對多則公告 |
+| `stage_announcement` | `stage_announcement_detail` | `company_id`＋`enter_date`＋`serial_number` | 一則公告對一份全文（可能還沒抓到） |
+| `stage_announcement_clause` | `stage_announcement_detail` | `announce_clause` | 一個條款對多份全文 |
+| `stage_news` | `stage_stock_news` | `news_id` | 一則新聞對多檔股票 |
+| `stage_news` | `stage_news_detail` | `news_id` | 一則新聞對一份網頁（可能抓不到） |
+| `stage_notice` | `stage_notice_clause` | `trade_date`＋`stock_id` | 一筆注意對一到多個款次 |
+| `stage_trading_day` | `stage_notice` | `trade_date` | 一個交易日對多筆注意 |
+| `stage_notice_day` | `stage_notice` | `query_date`＝`trade_date` | 一個查詢日對多筆注意 |
 
 ## 欄位
 
@@ -384,7 +284,7 @@ erDiagram
 
 ### stage_announcement_clause　重大訊息條款對照表
 
-- 固定資料，不用爬：寫在 `schema/stage.sql`，每次建表（transform 開始時）一併寫入／更新。條文修正時改那裡。
+- 固定資料，不用爬：寫在 `schema/stage.sql`，每次建表（`main.py` 一輪開始時）一併寫入／更新。條文修正時改那裡。
 - 來源：證交所《對有價證券上市公司重大訊息之查證暨公開處理程序》第 4 條第 1 項（115.09.30 版），共 51 款（第 39 款已刪除）。
 - `short_name`、`description` 是整理後的摘要，不是條文原文。第 51 款是概括條款（其他重大事項），被列注意後公司被要求公布的財務業務資訊也是這款。
 
@@ -424,7 +324,7 @@ erDiagram
 ### stage_news_detail　新聞網頁
 
 - 來源：`raw_news_detail`（新聞網站本身：`crawl_news_detail` 打開每則新聞的連結）。raw 只存 `<head>`（標題、meta 摘要）：`<body>` 就是新聞全文，不存進資料庫（著作權）；全文只在記憶體裡抽，這裡只記有幾個字。
-- 抓不到的（被擋 4xx、不是網頁、Google 轉址）沒有列，原因在 `raw_news_detail.problem`。
+- 抓不到的（被擋 4xx、不是網頁、Google 轉址、內部網址、超過 5 MB）沒有列，原因在 `raw_news_detail.problem`。
 
 | 欄位 | 型別 | raw 欄位 | 轉換／說明 |
 |---|---|---|---|
@@ -490,32 +390,6 @@ erDiagram
 | path | VARCHAR(10) | `streak3`／`streak5`／`in10`／`in30` |
 | counted_date | DATE | 這一條計入的一天 |
 | process_date | DATE | 哪一天算的（台灣日期；重跑會更新） |
-
-### job_run　任務歷史
-
-- 每個任務每跑一次一列（成功、要重試、失敗都寫），本機依序執行和 Celery worker 都寫；只新增、不修改，永久保留。
-- 由 `common/runner.py` 的 `record()` 寫入（worker 上由 `common/worker.py` 的 `Job` 呼叫）；寫不進去只印警告，不影響任務。
-
-| 欄位 | 型別 | 說明 |
-|---|---|---|
-| run_id | BIGINT | 流水號（主鍵） |
-| task | VARCHAR(80) | 任務名稱，例如 `crawler.task.crawl_notice` |
-| args | JSONB | 參數，例如 `{"date_yyyymmdd": "20261120"}` |
-| status | VARCHAR(10) | `success`／`retry`（暫時性失敗、等一下重做）／`failure` |
-| result | TEXT | 成功時的一行結果，例如 `raw_notice/20261120` |
-| error | TEXT | 失敗時的錯誤（類型: 訊息） |
-| attempt | SMALLINT | 第幾次嘗試（1＝第一次） |
-| mode | VARCHAR(10) | `celery`＝worker 上跑；`local`＝本機依序執行 |
-| worker | VARCHAR(80) | 哪個 worker，例如 `crawl_twse@tw_stock`；本機為 NULL |
-| started_at、finished_at | TIMESTAMP(3) | 開始、結束（台灣時間） |
-| seconds | DECIMAL(10,3) | 花了幾秒 |
-
-```sql
--- 今天失敗的任務
-SELECT task, args, error FROM tw_stock.job_run WHERE status = 'failure' AND started_at >= CURRENT_DATE;
--- 每個任務跑幾次、平均幾秒、失敗幾次
-SELECT task, COUNT(*), ROUND(AVG(seconds), 2), COUNT(*) FILTER (WHERE status = 'failure') FROM tw_stock.job_run GROUP BY task;
-```
 
 ### VIEW（給網頁讀）
 
@@ -658,3 +532,31 @@ JOIN tw_stock.ai_llm_call c
 ```
 
 - 分類、摘要和呼叫紀錄不用外鍵連：一個結果可能來自 1～2 次呼叫（縮短重問），失敗的呼叫沒有結果。`ref_key` 一律記結果表的代號，用上面的 JOIN 對。
+
+## 任務歷史
+
+### job_run　任務歷史
+
+- 每個任務每跑一次一列（成功、要重試、失敗都寫），本機依序執行和 Celery worker 都寫；只新增、不修改，永久保留。
+- 由 `common/runner.py` 的 `record()` 寫入（worker 上由 `common/worker.py` 的 `Job` 呼叫）；寫不進去只印警告，不影響任務。
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| run_id | BIGINT | 流水號（主鍵） |
+| task | VARCHAR(80) | 任務名稱，例如 `crawler.task.crawl_notice` |
+| args | JSONB | 參數，例如 `{"date_yyyymmdd": "20261120"}` |
+| status | VARCHAR(10) | `success`／`retry`（暫時性失敗、等一下重做）／`failure` |
+| result | TEXT | 成功時的一行結果，例如 `raw_notice/20261120` |
+| error | TEXT | 失敗時的錯誤（類型: 訊息） |
+| attempt | SMALLINT | 第幾次嘗試（1＝第一次） |
+| mode | VARCHAR(10) | `celery`＝worker 上跑；`local`＝本機依序執行 |
+| worker | VARCHAR(80) | 哪個 worker，例如 `crawl_twse@tw_stock`；本機為 NULL |
+| started_at、finished_at | TIMESTAMP(3) | 開始、結束（台灣時間） |
+| seconds | DECIMAL(10,3) | 花了幾秒 |
+
+```sql
+-- 今天失敗的任務
+SELECT task, args, error FROM tw_stock.job_run WHERE status = 'failure' AND started_at >= CURRENT_DATE;
+-- 每個任務跑幾次、平均幾秒、失敗幾次
+SELECT task, COUNT(*), ROUND(AVG(seconds), 2), COUNT(*) FILTER (WHERE status = 'failure') FROM tw_stock.job_run GROUP BY task;
+```

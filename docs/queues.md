@@ -1,50 +1,104 @@
-# 注意股專題：任務與佇列
+# 任務與佇列
 
 > 2026-11-23 整理
 
-每一件事都寫成一個 Celery 任務，producer（`main.py`）送進 RabbitMQ 的佇列，worker 拿出來做、寫進資料庫。任務之間不直接溝通，靠資料表傳資料；先後順序由 producer 控制（一批做完才送下一批）。
+## 一張圖看懂
 
-## 佇列和 worker
+Celery 把「決定要做什麼」和「真的去做」分開，中間用 RabbitMQ 排隊：
 
-一個佇列守一種限制，一個 worker 聽一個佇列（8 個佇列、8 個 worker，同一份程式，只差 `-Q` 和 `--concurrency`）：
+```
+producer（列出要做的任務）
+  → RabbitMQ（8 個佇列，任務在這裡排隊）
+  → worker（8 個，各自從自己的佇列拿任務去做）
+  → PostgreSQL（寫結果）
+  → 做完回報給 producer
+```
 
-| 佇列 | 同時做幾個 | 任務 | 守的限制 |
+| 角色 | 在這個專案 | 比喻 |
+|---|---|---|
+| producer | `crawler/`、`transform/`、`analyze/`、`ai/` 各一個 `producer.py` | 主管：寫工作單 |
+| 佇列（RabbitMQ） | 8 個佇列 | 收件匣：工作單在這裡排隊 |
+| worker | 8 個 `celery-*` 容器，一個聽一個佇列 | 員工：從自己的收件匣拿工作單去做 |
+
+一個任務＝一件小事，例如「抓 11/23 的注意股」「替這則新聞寫摘要」。
+
+## 所有任務和 worker
+
+後面的任務要用前面的結果，所以 producer 一步做完才送下一步。同一步的任務互不等。
+
+![任務和 worker](images/workers-and-tasks.png)
+
+表裡的「佇列」是任務送進哪個佇列；聽這個佇列的 worker 見下面「8 個 worker」。
+
+| 步驟 | 任務 | 佇列 | 為什麼排在這裡 |
 |---|---|---|---|
-| `crawl_twse` | 1（每個做完等 1 秒） | 注意股、處置股、收盤行情、市場成交、休市日、公司清單、注意累計名單 | 證交所：太快會被擋 IP |
-| `crawl_mops` | 1（等 0.6 秒） | 重大訊息清單、全文 | 觀測站：太快會被擋 IP |
-| `crawl_finmind` | 1（等 6 秒） | 個股新聞清單 | FinMind：每小時 600 次（6 秒一個剛好）；回補也走這個佇列，加起來才不會超過 |
-| `crawl_news` | 4（等 0.5 秒） | 新聞網頁 | 分散在十幾個網站，各網站分開算 |
-| `transform` | 4 | raw → stage | 沒有外部限制 |
-| `analyze` | 2 | stage → app（還差幾次） | 沒有外部限制 |
-| `ai` | 2 | 公告分類、新聞摘要、同一件事 | Claude API：每分鐘的次數上限 |
-| `embed` | 1 | 新聞向量、卡片 AI 摘要 | bge-m3 模型約 2.3 GB 記憶體，只載入一份 |
+| 1 | `crawl_holiday` 開休市日期、`crawl_market_daily` 市場成交 | `crawl_twse` | 判斷那天是不是交易日的依據，最先抓 |
+| 2 | `crawl_stock_price` 收盤行情 | `crawl_twse` | 要先知道那天該不該有交易 |
+| 3 | `crawl_punish` 處置股 | `crawl_twse` | 同上 |
+| 4 | `crawl_notice` 注意股、`crawl_punish_watchlist` 注意累計名單、`crawl_company` 公司清單 | `crawl_twse` | 注意股還沒公布時名單是空的；和它一起公布的處置股公布了，空名單才代表真的沒人被列 |
+| 5 | `crawl_announcement` 重大訊息清單 → `crawl_announcement_detail` 全文 | `crawl_mops` | 要先知道哪些股票被關注；和下一列同時 |
+| 5 | `crawl_stock_news` 新聞清單 → `crawl_news_detail` 新聞網頁 | `crawl_finmind` → `crawl_news` | 同上 |
+| 6 | `transform_xxx` 整理（11 種） | `transform` | 要先抓好 |
+| 7 | `analyze_progress` 還差幾次 | `analyze` | 只讀整理好的資料；和下面的 AI 同時 |
+| 7 | `classify_announcement` 公告分類 | `ai` | AI 照這個順序：後面的用前面的結果 |
+| 7 | `summarize_news` 新聞摘要 | `ai` | ↑ |
+| 7 | `embed_news` 新聞向量 | `embed` | ↑ |
+| 7 | `group_news_stories` 同一件事 | `ai` | ↑ |
+| 7 | `summarize_card` 卡片 AI 摘要 | `embed` | ↑ |
 
-## 為什麼這樣分
+## 每小時一輪
 
-Celery 的「同時做幾個」設在 worker 上，不是設在任務上。所以要讓不同的工作各自限速，標準做法就是分佇列、各自開 worker（Celery 官方文件 Routing Tasks）。只用一個佇列會：
+週一～五 18:00～22:00，每個整點跑一次 `main.py`（一輪＝上面全部）。同一時間只跑一輪：上一輪還沒跑完，這一輪排隊等。
 
-- **被官方網站擋**：好幾個 worker 同時打觀測站，IP 被擋好幾個小時。
-- **記憶體不夠**：每個 process 都可能拿到要用模型的任務，每個都載入一份 2.3 GB。
-- **快的被慢的卡住**：幾千個 FinMind 任務排在前面，後面的 transform 等十幾個小時。
+![每小時一輪](images/hourly-round.png)
 
-transform、analyze 其實可以共用一個佇列（producer 本來就不會讓它們搶），分開是讓佇列和資料夾對得起來，Flower、log 上一眼看出是哪一步。
+| 哪裡失敗 | 這一輪 |
+|---|---|
+| crawler 的某個任務 | 其他的照抓；transform、analyze、ai 照跑（用已經抓到的）。少的那份資料：transform 跳過、analyze 那天不算，不會算錯 |
+| transform | **停**：不跑 analyze、ai（stage 不完整，算出來會錯） |
+| analyze 或 ai | 另一邊照跑 |
 
-## 什麼時候同時在忙
+- **全部成功**：放當天的完成記號（`data/done/YYYYMMDD`），之後的整點看到就直接結束。
+- **有任何失敗**：不放記號，**下一個整點再跑一輪**：做過的跳過，只補失敗、還沒做的。
+- 暫時性的失敗（逾時、伺服器錯誤、太多請求）在這一輪裡就先自動重做（5 秒後，最多 3 次）；worker 掛掉，沒做完的任務回到佇列給別人做。
 
-- crawler 的觀測站、新聞兩條同時（`crawl_mops` 和 `crawl_finmind`、`crawl_news`）。
-- analyze 和 ai 同時（`analyze` 和 `ai`、`embed`）。
-- 好幾個 producer 同時跑，例如回補和每天的資料線：各排各的佇列，不會互相卡住。
+## 重跑不會怎樣
 
-## 所有任務共用的行為（`common/worker.py` 的 `Job`）
+同一天重跑幾次、好幾個 worker 同時做，結果都一樣：
 
-- 暫時性的失敗（逾時、429、5xx、資料庫鎖衝突）5 秒後重做，最多 3 次；任務是冪等的，重做沒有副作用。
-- 做完才確認（`task_acks_late`）：worker 掛掉，任務回到佇列；一次只先拿一個（`worker_prefetch_multiplier=1`）。
-- 每次嘗試寫一列 `tw_stock.job_run`；log 在 `data/logs/<佇列名稱>-YYYY-MM-DD.log`。
+| 層 | 重跑時 |
+|---|---|
+| raw | 已經抓完整的不再抓；抓了就新增一列，舊的不改 |
+| stage | 用主鍵更新，比較新的抓取才蓋掉舊的 |
+| app | 先刪那天、再寫入（同一個交易） |
+| ai | 同一版 prompt 已經有結果的不再問，不會重複花錢 |
+
+## 8 個 worker
+
+一個 worker 聽一個佇列。三個名字各用在不同地方：Docker 服務（`docker compose restart`）、Celery worker 名稱（Flower、`job_run.worker`）、佇列（RabbitMQ、送任務時指定）。
+
+| Docker 服務 | Celery worker 名稱 | 聽的佇列 | 做什麼 | 同時做幾個 | 為什麼是這個數字 |
+|---|---|---|---|---|---|
+| `celery-crawl-twse` | `crawl_twse@tw_stock` | `crawl_twse` | 抓證交所 | 1，每個等 1 秒 | 太快會被擋 |
+| `celery-crawl-mops` | `crawl_mops@tw_stock` | `crawl_mops` | 抓公開資訊觀測站 | 1，每個等 0.6 秒 | 太快會被擋 |
+| `celery-crawl-finmind` | `crawl_finmind@tw_stock` | `crawl_finmind` | 抓 FinMind 新聞清單 | 1，每個等 6 秒 | 每小時上限 600 次 |
+| `celery-crawl-news` | `crawl_news@tw_stock` | `crawl_news` | 打開新聞網頁 | 4 | 分散在十幾個網站 |
+| `celery-transform` | `transform@tw_stock` | `transform` | raw → stage | 4 | 只碰資料庫 |
+| `celery-analyze` | `analyze@tw_stock` | `analyze` | 算還差幾次 | 2 | 只碰資料庫 |
+| `celery-ai` | `ai@tw_stock` | `ai` | 呼叫 Claude | 2 | API 有每分鐘的上限 |
+| `celery-embed` | `embed@tw_stock` | `embed` | 用 bge-m3 轉向量、寫卡片摘要 | 1 | 模型吃 2.3 GB 記憶體 |
+
+**為什麼要分這麼多個**：Celery 的「同時做幾個」設在 worker 上，所以每個來源要自己的速度，就要自己的佇列和 worker。只用一個佇列會：
+
+- 好幾個 worker 同時打觀測站，被擋好幾個小時；
+- FinMind 6 秒一個的任務排在前面，後面的全部跟著等；
+- 每個 worker 都可能拿到要用模型的任務，每個都載入一份 2.3 GB。
 
 ## 怎麼看
 
-- Flower：http://localhost:5556（worker 在不在線、每個佇列排了幾個、成功或失敗）。
-- 任務歷史：
+- **Flower**（http://localhost:5556）：每個 worker 在做什麼、成功或失敗。
+- **RabbitMQ 管理介面**（http://localhost:15673）：Queues 頁的 Ready＝每個佇列還排幾個。
+- **任務歷史**：每個任務每跑一次一列。
 
 ```sql
 SELECT task, status, count(*), round(avg(seconds), 1) AS avg_seconds

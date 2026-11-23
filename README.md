@@ -24,13 +24,18 @@ TibaMe 資料工程專題（NKR204），個人製作。2026/11 起實作，預�
 Source → Ingest → Storage → Process → Serve → Observe
 ```
 
-```mermaid
-flowchart LR
-    S["📁 Source<br/>證交所 API<br/>觀測站 API<br/>FinMind 新聞<br/>新聞網站"] --> I["📥 Ingest<br/>Python requests<br/>每日 18:00 起每小時排程"]
-    I --> ST["💾 Storage<br/>PostgreSQL<br/>raw / stage / app"]
-    ST --> P["⚙️ Process<br/>pandas<br/>清理 + 規則引擎"]
-    P --> SE["🖥 Serve<br/>FastAPI 資料 API<br/>Streamlit 網頁"]
-    SE --> O["📡 Observe<br/>log + 任務歷史 + 回測<br/>失敗通知"]
+```
+📁 Source：證交所 API、觀測站 API、FinMind 新聞、新聞網站
+  ↓
+📥 Ingest：Python requests，每日 18:00 起每小時排程
+  ↓
+💾 Storage：PostgreSQL（raw / stage / app）
+  ↓
+⚙️ Process：pandas，清理 + 規則引擎
+  ↓
+🖥 Serve：FastAPI 資料 API、Streamlit 網頁
+  ↓
+📡 Observe：log + 任務歷史 + 回測、失敗通知
 ```
 
 | 階段 | 工具 |
@@ -107,7 +112,7 @@ common/                     各資料夾共用（crawler、transform、analyze �
 schema/                     建表 SQL：raw.sql、stage.sql、app.sql、view.sql（給網頁讀的 VIEW）、ai.sql（AI 結果）、log.sql（任務歷史）
 scripts/                    .bat：每日排程（daily）、回補（backfill）、從 raw 重算（rebuild）、備份（backup）、網站（web：API ＋ 網頁）
 tests/                      測試
-docs/                       流程說明（flow.md）、任務與佇列（queues.md）、資料表（tables.md）、處置規則（rules.md）、AI 規劃（ai_plan.md）、提案
+docs/                       流程說明（flow.md）、任務與佇列（queues.md）、資料表（tables.md）、處置規則（rules.md）、AI 項目（ai_plan.md）、提案
 main.py                     一次跑完：crawler → transform → analyze 和 ai 同時（同一時間只跑一輪）
 ```
 
@@ -123,7 +128,12 @@ PostgreSQL、RabbitMQ、8 個 Celery worker、Flower、資料 API、網頁全部
 cp .env.example .env                                # 填入密碼（AI 項目要 ANTHROPIC_API_KEY，沒填就跳過）
 docker compose up -d --build                        # 啟動（第一次會建表）
 docker compose run --rm producer python main.py     # 跑一次資料線：任務送進 RabbitMQ，由 worker 執行
-# 開發時 .env 的 COMPOSE_FILE 把 docker-compose.local.yml 疊上來：程式碼直接掛進容器，api、web 存檔自動重載；改了任務的程式 docker compose restart celery-crawl-twse celery-crawl-mops celery-crawl-finmind celery-crawl-news celery-transform celery-analyze celery-ai celery-embed
+```
+
+開發時 `.env` 的 `COMPOSE_FILE` 把 `docker-compose.local.yml` 疊上來：程式碼直接掛進容器，api、web 存檔自動重載；改了任務的程式要重啟 worker：
+
+```bash
+docker compose restart celery-crawl-twse celery-crawl-mops celery-crawl-finmind celery-crawl-news   celery-transform celery-analyze celery-ai celery-embed
 ```
 
 | 服務 | 網址 |
@@ -133,7 +143,7 @@ docker compose run --rm producer python main.py     # 跑一次資料線：任�
 | Flower（worker、任務狀況） | http://localhost:5556 |
 | RabbitMQ 管理介面 | http://localhost:15673 |
 
-worker 的分法：`celery-crawl-twse`、`celery-crawl-mops`、`celery-crawl-finmind`（佇列 `crawl_twse`、`crawl_mops`、`crawl_finmind`）打外部網站，一次只做一個、每個任務後等一下（太快會被擋；限制是對網站、對 IP，多開 worker 一起打只會更快被擋）；`celery-crawl-news`（佇列 `crawl_news`）打開新聞網頁，連結分散在十幾個網站，同時做 4 個、照網站輪流排；`celery-transform`（佇列 `transform`）做 transform，同時做 4 個；`celery-analyze`（佇列 `analyze`）做 analyze，同時做 2 個；`celery-ai`（佇列 `ai`）呼叫 Claude API，同時做 2 個；`celery-embed`（佇列 `embed`）跑要用本機 embedding 模型的任務（新聞 RAG、卡片 AI 摘要），一次做一個，只有它載入模型。說明見 `docker-compose.yml`、`common/worker.py`。
+8 個 worker 各聽一個佇列（`crawl_twse`、`crawl_mops`、`crawl_finmind`、`crawl_news`、`transform`、`analyze`、`ai`、`embed`），各自控制速度：打外部網站的一次做一個、做完等一下，只碰資料庫的同時做好幾個。
 log 在 `data/logs/`，每天一個檔、留 30 天：`daily-YYYY-MM-DD.log`（每天的資料線）、`crawl_twse-…`、`crawl_mops-…`、`crawl_finmind-…`、`crawl_news-…`、`transform-…`、`analyze-…`、`ai-…`、`embed-…`（八個 worker）。每個任務每跑一次另外記一列在 `tw_stock.job_run`（任務歷史，永久保留）。
 
 ### 本機（不用 Docker 跑程式，資料庫還是要有）
@@ -145,7 +155,7 @@ git clone https://github.com/hannahTai/G2-attention_stock_tracker-tw_stock.git
 cd G2-attention_stock_tracker-tw_stock
 cp .env.example .env   # 填入 PostgreSQL 連線資訊
 uv sync                # 安裝套件（依 uv.lock）
-uv run python main.py  # 建表（第一次）→ 抓今天 → 整理 → 算還差幾次和 AI 項目（同時）
+uv run python main.py  # 建表、更新 VIEW → 抓今天 → 整理 → 算還差幾次和 AI 項目（同時）
 ```
 
 回補一段期間：`uv run python main.py backfill --start 20260701`（已經抓完整的跳過，加 `--refetch` 全部重抓）。
@@ -158,7 +168,7 @@ uv run streamlit run dashboard/app.py              # 2. 網頁，打開 http://l
 ```
 
 第一次要先跑過 `main.py`（建表、建 VIEW、算出至少一天）。
-每一步單獨執行、排程設定見 [`docs/flow.md`](docs/flow.md)；資料表見 [`docs/tables.md`](docs/tables.md)；規則見 [`docs/rules.md`](docs/rules.md)。
+每一步單獨執行、排程設定見 [`docs/flow.md`](docs/flow.md)；任務和佇列見 [`docs/queues.md`](docs/queues.md)；資料表見 [`docs/tables.md`](docs/tables.md)；規則見 [`docs/rules.md`](docs/rules.md)；AI 項目見 [`docs/ai_plan.md`](docs/ai_plan.md)。
 
 ---
 

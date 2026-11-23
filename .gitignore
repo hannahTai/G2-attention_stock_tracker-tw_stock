@@ -61,7 +61,6 @@ desktop.ini
 
 # ===== 個人調查筆記（不進版控）=====
 survey/
-docs/ai_task.md
 
 # ===== Claude Code 本機設定（不進版控）=====
 .claude/
