@@ -64,7 +64,7 @@ def test_resume_day_with_one_step_goes_to_one_section():
     page = views.overview([resumed])
     assert section_names(page, "cards") == ["己公司"] and section_names(page, "rest") == []
     steps = views.stock_page(stock_detail(resumed))["timeline"]
-    assert ("11/13–11/19" in [s.when for s in steps]) and ("今日出關，恢復正常交易" in [s.text for s in steps])
+    assert ("11/13–11/19" in [s.when for s in steps]) and ("出關，恢復正常交易" in [s.text for s in steps])
 
 
 # ---------- 個股頁 ----------

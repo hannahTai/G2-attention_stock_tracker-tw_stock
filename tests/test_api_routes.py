@@ -34,6 +34,8 @@ def client(monkeypatch):
                         lambda conn, stock_id, start, end: [{"trade_date": DAY, "clauses": "1", "is_counted": 1}])
     monkeypatch.setattr(queries, "punish_history", lambda conn, stock_id, start, end: [])
     monkeypatch.setattr(queries, "announcements", lambda conn, stock_id, start, end: [dict(a) for a in ANNOUNCEMENTS])
+    monkeypatch.setattr(queries, "stock_news", lambda conn, stock_id, start, end: [])
+    monkeypatch.setattr(queries, "news_by_ids", lambda conn, news_ids: [])
     return fastapi.testclient.TestClient(main.app)
 
 
@@ -72,9 +74,21 @@ def test_eight_digit_date_works(client):
 def test_stock_returns_everything_the_page_needs(client):
     body = client.get("/stocks/2222").json()
     assert set(body) == {"trade_date", "card", "counted_dates", "trading_days", "notice_history",
-                         "punish_history", "announcements"}
+                         "punish_history", "announcements", "ai_summary", "news"}
     assert body["counted_dates"] == {"streak3": ["2026-11-19", "2026-11-20"]}
     assert body["announcements"][0]["announce_time"] == "15:26:00"
+    assert body["ai_summary"] is None and body["news"] == []   # 還沒寫摘要、沒有新聞
+
+
+def test_stock_ai_summary_comes_with_its_news_sources(client, monkeypatch):
+    """卡片 AI 摘要第三句用到的新聞：標題、連結從資料庫查（照 news_ids 的順序），不用 LLM 打的字。"""
+    monkeypatch.setattr(queries, "card", lambda conn, stock_id, day: {
+        **card_of(stock_id), "ai_summary": "因累積漲幅太大被列注意（新聞 1）", "ai_summary_news_ids": ["n1"]})
+    monkeypatch.setattr(queries, "news_by_ids", lambda conn, news_ids: [
+        {"news_id": n, "title": "健策營收創高", "link": "https://udn.com/1", "publisher": "UDN"} for n in news_ids])
+    body = client.get("/stocks/2222").json()
+    assert body["ai_summary"]["summary"].startswith("因累積漲幅太大")
+    assert [s["title"] for s in body["ai_summary"]["sources"]] == ["健策營收創高"]
 
 
 def test_unknown_stock_is_404(client):

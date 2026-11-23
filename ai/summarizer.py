@@ -9,13 +9,14 @@ import json
 
 from ai import verifier
 
-PROMPT_VERSION = "v3"   # v2：上限 80 → 250 字；v3：上限依文章長度（文章的三成，80～1200 字）
+PROMPT_VERSION = "v4"   # v2：上限 80 → 250 字；v3：上限依文章長度（文章的三成，80～1200 字）；v4：跟 LLM 說上限的八五成
 
 # 摘要上限依文章長度（中文、英文、數字、標點都算一個字）：文章的 SUMMARY_RATIO，最少 SUMMARY_MIN_CHARS、最多 SUMMARY_MAX_CHARS。
 # 照比例才一直是「摘要」：短文章不會被寫成跟原文差不多長。超過就請 LLM 縮短一次（ai/task.py），還是超過就 summary_ok＝否
 SUMMARY_RATIO = 0.3
 SUMMARY_MIN_CHARS = 80
 SUMMARY_MAX_CHARS = 1200   # 也是 ai_news_summary.summary 欄位的大小
+TARGET_RATIO = 0.85   # 跟 LLM 說的字數是上限的八五成：LLM 常常多寫一點，才不會超過上限（檢查還是用上限）
 MIN_TEXT_CHARS = 200     # 全文太短的不摘要（個股概覽頁、只有一兩句的快訊）：導言就夠了
 MAX_TEXT_CHARS = 6000    # 全文太長只給前面這些字：新聞的重點在前面，也省 token
 
@@ -48,8 +49,17 @@ def summary_limit(text: str) -> int:
     return max(SUMMARY_MIN_CHARS, min(SUMMARY_MAX_CHARS, round(len(text) * SUMMARY_RATIO)))
 
 
+def target_chars(limit: int) -> int:
+    """跟 LLM 說的字數：上限的 TARGET_RATIO。
+
+    >>> target_chars(80), target_chars(1200)
+    (68, 1020)
+    """
+    return round(limit * TARGET_RATIO)
+
+
 def build_user_message(news: dict, text: str, limit: int) -> str:
-    """一則新聞 → 給 LLM 的訊息：標題、媒體、日期、全文（太長只給前 MAX_TEXT_CHARS 字），最後是摘要上限。
+    """一則新聞 → 給 LLM 的訊息：標題、媒體、日期、全文（太長只給前 MAX_TEXT_CHARS 字），最後是摘要的字數（上限的八五成）。
 
     >>> import datetime
     >>> print(build_user_message({"title": "健策營收創高", "publisher": "工商時報", "news_date": datetime.date(2026, 11, 20)}, "內文", 80))
@@ -60,7 +70,7 @@ def build_user_message(news: dict, text: str, limit: int) -> str:
     內文：
     內文
     </article>
-    summary 最多 80 個字。
+    summary 最多 68 個字。
     """
     return (
         "<article>\n"
@@ -69,7 +79,7 @@ def build_user_message(news: dict, text: str, limit: int) -> str:
         f"日期：{news['news_date'].isoformat()}\n"
         f"內文：\n{text[:MAX_TEXT_CHARS]}\n"
         "</article>\n"
-        f"summary 最多 {limit} 個字。"
+        f"summary 最多 {target_chars(limit)} 個字。"
     )
 
 
@@ -88,7 +98,7 @@ def shorten_messages(user_message: str, answer: dict, limit: int) -> list[dict]:
         {"role": "user", "content": user_message},
         {"role": "assistant", "content": json.dumps(answer, ensure_ascii=False)},
         {"role": "user", "content": f"summary 有 {len(summary)} 個字，超過 {limit} 個字。"
-                                    f"請縮短到 {limit} 個字以內，只留最重要的事和數字，重新回答一次。"},
+                                    f"請縮短到 {target_chars(limit)} 個字以內，只留最重要的事和數字，重新回答一次。"},
     ]
 
 

@@ -41,7 +41,7 @@ def test_tab_notes_are_in_the_tabs():
 
 def test_only_filter_counts_and_filtering():
     page = overview()
-    assert tab_count(page, "今日注意股") == 3 and tab_count(page, "明日出關") == 1
+    assert tab_count(page, "11/20 注意股") == 3 and tab_count(page, "明日出關") == 1
     filtered = overview(only="leave_tomorrow")
     assert "丙公司" in filtered and "甲公司" not in filtered
     assert tab_count(filtered, "全部") == 4 and tab_count(filtered, "聽牌") == 1    # 分頁數字是當天總數，不跟著篩選變
@@ -111,7 +111,7 @@ def test_resume_day_with_one_step_is_in_the_one_section():
     page = overview(cards=[resumed])
     assert '<article class="card tone-amber">' in page and 'class="rows"' not in page   # 聽牌：卡片，不在「其他」清單
     stock = render.stock_html(stock_detail(resumed))
-    assert "11/13–11/19" in stock and "今日出關，恢復正常交易" in stock
+    assert "11/13–11/19" in stock and "出關，恢復正常交易" in stock
 
 
 # ---------- 個股頁 ----------
@@ -155,13 +155,13 @@ def test_style_has_the_original_css_and_hides_streamlit_toolbar():
 
 def test_zero_filter_is_not_a_link():
     page = overview()
-    assert '<span class="chip zero" aria-disabled="true">今日出關 <span class="count">0</span></span>' in page
+    assert '<span class="chip zero" aria-disabled="true">11/20 出關 <span class="count">0</span></span>' in page
     assert "only=leave_today" not in page
 
 
 def test_empty_filter_result_explains_and_offers_to_clear():
     page = overview(only="leave_today")   # 網址自己打 only=leave_today，但這天沒有
-    assert "11/20 沒有符合「今日出關」的股票" in page and '<a href="?date=20261120">清除篩選</a>' in page
+    assert "11/20 沒有符合「11/20 出關」的股票" in page and '<a href="?date=20261120">清除篩選</a>' in page
 
 
 def test_empty_tab_says_which_kind_is_missing():
@@ -194,8 +194,8 @@ def test_no_disposition_says_none():
 
 
 def test_filter_counts_follow_the_tab():
-    assert tab_count(overview(), "今日注意股") == 3           # 全部：甲、乙、丁
-    assert tab_count(overview(tab="punish"), "今日注意股") == 0   # 處置中只有丙，今天沒被列
+    assert tab_count(overview(), "11/20 注意股") == 3           # 全部：甲、乙、丁
+    assert tab_count(overview(tab="punish"), "11/20 注意股") == 0   # 處置中只有丙，今天沒被列
     assert tab_count(overview(tab="punish"), "明日出關") == 1
     assert tab_count(overview(tab="punish"), "全部") == 4          # 分頁數字照樣是當天總數
 
@@ -295,25 +295,33 @@ def test_ai_summary_block_above_notice_log():
 def test_ai_summary_shows_text_and_sources():
     """有摘要時顯示全文和新聞來源連結（標題要跳脫）。"""
     detail = stock_detail(card_of("2222"))
-    detail["ai_summary"] = {"summary": "今天因第一款被列注意。", "model": "m", "prompt_version": "v1",
-                            "sources": [{"title": "訂單<增加>", "link": "https://example.com/n1", "source": "經濟日報", "date": "11/19"}]}
+    detail["ai_summary"] = {"summary": "今天因第一款被列注意。",   # API 的格式：出處是 stage_news 的欄位
+                            "sources": [{"title": "訂單<增加>", "link": "https://example.com/n1", "publisher": "經濟日報",
+                                         "news_date": datetime.date(2026, 11, 19)}]}
     page = render.stock_html(detail)
     assert "今天因第一款被列注意。" in page and "還沒產生" not in page
     assert 'href="https://example.com/n1"' in page and "訂單&lt;增加&gt;" in page
 
 
 def test_news_block_below_announcements():
-    """新聞資訊在公開資訊下面；還沒有資料就寫一行說明。"""
+    """新聞資訊在公開資訊下面；沒有新聞就寫一行說明。"""
     page = render.stock_html(stock_detail(card_of("2222")))
     assert page.index('id="announcements"') < page.index('id="news"')
-    assert "新聞還沒有資料" in page
+    assert "11/20 和前幾天都沒有新聞" in page
 
 
 def test_news_block_lists_titles_with_links():
     detail = stock_detail(card_of("2222"))
-    detail["news"] = [{"title": "接獲<大單>", "link": "https://example.com/a", "source": "經濟日報", "date": "11/19"}]
+    """當天的新聞先列，前幾天的收在「顯示前幾天的…」。"""
+    detail["news"] = [{"title": "今天<大單>", "link": "https://example.com/b", "publisher": "UDN",
+                       "news_date": datetime.date(2026, 11, 20), "also_reported_by": ["自由時報"]},
+                      {"title": "接獲<大單>", "link": "https://example.com/a", "publisher": "經濟日報",
+                       "news_date": datetime.date(2026, 11, 19)}]
     page = render.stock_html(detail)
-    assert 'href="https://example.com/a"' in page and "接獲&lt;大單&gt;" in page and "新聞還沒有資料" not in page
+    news = page.split('id="news"')[1].split("</section>")[0]
+    assert "近 7 天" in news and "今天&lt;大單&gt;" in news and "也有 自由時報 報導" in news
+    today, older = news.split("顯示前幾天的 1 則")
+    assert "今天&lt;大單&gt;" in today and 'href="https://example.com/a"' in older and "接獲&lt;大單&gt;" in older
 
 
 def test_rest_card_bar_matches_the_headline():
@@ -338,16 +346,16 @@ def test_card_has_footer_with_close_and_announcements():
 
 
 def test_leave_today_is_a_normal_card_with_a_small_tag():
-    """今日出關和一般卡片一樣：大字寫差幾次、有進度條，只多一個「今日出關」小標籤；排序也和一般卡片一樣。"""
+    """11/20 出關和一般卡片一樣：大字寫差幾次、有進度條，只多一個「11/20 出關」小標籤；排序也和一般卡片一樣。"""
     left = make_card("8888", "辛公司", steps_left=3, resume_date=DAY, streak5=2, streak5_left=3, in10=2, in30=2,
                      period_start=datetime.date(2026, 11, 6), period_end=datetime.date(2026, 11, 19))
     page = overview(cards=[left])
     card = page.split("辛公司")[1].split("</article>")[0]
-    assert '<span class="sub-tag ok">今日出關</span>' in card and "差 3 次" in card and 'class="bar"' in card
+    assert '<span class="sub-tag ok">11/20 出關</span>' in card and "差 3 次" in card and 'class="bar"' in card
 
 
 def test_rest_is_sorted_by_steps_then_how_full_the_bar_is():
-    """「其他」：差 2 次的在前；一樣差幾次，進度條填得多的（看格子比例）在前。今日出關不特別排前面。"""
+    """「其他」：差 2 次的在前；一樣差幾次，進度條填得多的（看格子比例）在前。11/20 出關不特別排前面。"""
     two = make_card("5001", "差二", steps_left=2, streak5=3, streak5_left=2, streak3_left=3, in10_left=4, in30_left=9)
     full = make_card("5002", "填多", steps_left=3, streak3=0, streak3_left=3, streak5=2, streak5_left=3, in10_left=4, in30_left=9)
     empty = make_card("5003", "空的", steps_left=3, streak3=0, streak3_left=3, streak5=0, streak5_left=5, in10=1, in30=1,
@@ -363,12 +371,12 @@ def test_secondary_tags_are_sub_tags_in_the_header():
 
 
 def test_leave_today_listed_again_shows_sub_tag_and_bar():
-    """今日出關又被列、差 1 次：主要標籤是聽牌，「今日出關」「今日注意股」是小標籤；大字差 1 次，進度條放差 1 次的那條。"""
+    """11/20 出關又被列、差 1 次：主要標籤是聽牌，「11/20 出關」「11/20 注意股」是小標籤；大字差 1 次，進度條放差 1 次的那條。"""
     again = make_card("8888", "辛公司", resume_date=DAY, is_listed_today=1, clauses="1", is_counted_today=1,
                       period_start=datetime.date(2026, 11, 6), period_end=datetime.date(2026, 11, 19),
                       steps_left=1, streak3=2, streak3_left=1, closest_path="streak3")
     card = overview(cards=[again]).split("辛公司")[1].split("</article>")[0]
-    assert ('<span class="sub-tag ok">今日出關</span><span class="sub-tag acc">今日注意股</span>'
+    assert ('<span class="sub-tag ok">11/20 出關</span><span class="sub-tag acc">11/20 注意股</span>'
             '<span class="pill amber">聽牌</span>') in card
     assert "差 1 次" in card and card.count('<i class="on">') == 2 and "連 3 日列第 1 款" in card
 
@@ -388,7 +396,7 @@ def test_listed_today_cards_get_a_tag():
     page = overview()   # 甲、乙、丁今天被列注意，丙沒有
     for name, listed in (("甲公司", True), ("乙公司", True), ("丁公司", True), ("丙公司", False)):
         card = page.split(name)[1].split("</article>")[0]
-        assert ('<span class="sub-tag acc">今日注意股</span>' in card) == listed, name
+        assert ('<span class="sub-tag acc">11/20 注意股</span>' in card) == listed, name
 
 
 def test_card_color_matches_the_main_tag():
@@ -404,5 +412,15 @@ def test_stock_hero_uses_the_card_layout():
     """個股頁最上面和總覽卡片同一個版面：標籤在名稱右邊（小框在左、色塊在右）、進度條、底部收盤價｜公告。"""
     page = render.stock_html(stock_detail(card_of("2222")))   # 乙公司：聽牌、今天被列
     hero = page[page.index('<div class="hero'):page.index("AI 摘要")]
-    assert '<div class="card-tags"><span class="sub-tag acc">今日注意股</span><span class="pill amber">聽牌</span></div>' in hero
+    assert '<div class="card-tags"><span class="sub-tag acc">11/20 注意股</span><span class="pill amber">聽牌</span></div>' in hero
     assert 'class="progress"' in hero and 'class="card-foot"' in hero and 'href="#announcements"' in hero
+
+
+def test_card_shows_change_next_to_close():
+    """收盤價旁邊寫漲跌幅：漲紅（up）、跌綠（down）；沒有漲跌幅就只寫收盤價。"""
+    up = make_card("7777", "庚公司", close_price=725.0, change_pct=3.5)
+    down = make_card("8888", "辛公司", close_price=50.0, change_pct=-1.2)
+    page = overview(cards=[up, down, make_card("9999", "壬公司", close_price=10.0)])
+    assert '725.00</span> <span class="chg up mono">▲3.50%</span>' in page
+    assert '<span class="chg down mono">▼1.20%</span>' in page
+    assert page.split("壬公司")[1].split("</article>")[0].count("chg ") == 0

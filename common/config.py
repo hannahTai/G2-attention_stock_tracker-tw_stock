@@ -20,7 +20,7 @@ TWSE_OPENAPI_BASE = os.environ.get("TWSE_OPENAPI_BASE", "https://openapi.twse.co
 MOPS_BASE = os.environ.get("MOPS_BASE", "https://mops.twse.com.tw/mops/api")
 FINMIND_BASE = os.environ.get("FINMIND_BASE", "https://api.finmindtrade.com/api/v4")
 FINMIND_TOKEN = secret("FINMIND_TOKEN")   # 選填：不帶也抓得到，帶了每小時的次數上限比較高
-NEWS_LOOKBACK_DAYS = int(os.environ.get("NEWS_LOOKBACK_DAYS", "7"))   # 新聞：被關注的股票往前抓幾天
+NEWS_LOOKBACK_DAYS = int(os.environ.get("NEWS_LOOKBACK_DAYS", "7"))   # 新聞：被關注的股票往前抓幾天；網站、卡片 AI 摘要看最近這幾天（含當天）
 
 # 請求間隔（秒），太快會被擋
 SLEEP_SECONDS = float(os.environ.get("SLEEP_SECONDS", "1.0"))
@@ -65,3 +65,6 @@ LOG_KEEP_DAYS = int(os.environ.get("LOG_KEEP_DAYS", "30"))
 ANTHROPIC_API_KEY = secret("ANTHROPIC_API_KEY")
 AI_CLASSIFY_MODEL = os.environ.get("AI_CLASSIFY_MODEL", "claude-haiku-5-5")   # 公告分類：便宜的小型模型
 AI_SUMMARY_MODEL = os.environ.get("AI_SUMMARY_MODEL", "claude-haiku-5-5")     # 新聞摘要
+AI_CARD_MODEL = os.environ.get("AI_CARD_MODEL", "claude-haiku-5-5")           # 卡片 AI 摘要
+# 新聞 RAG：本機的 embedding 模型（sentence-transformers；第一次用時下載，存在 HF_HOME）。換模型要改 schema/ai.sql 的 vector(維度)
+EMBED_MODEL = os.environ.get("EMBED_MODEL", "BAAI/bge-m3")

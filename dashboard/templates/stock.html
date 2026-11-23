@@ -22,8 +22,8 @@
   {{ ui.foot(wall, "#announcements") }}
 </div>
 
-{# AI 摘要（規劃見 docs/ai_plan.md 的卡片 AI 摘要）：目前只有畫面，資料還沒接；沒有摘要就寫一行說明。
-   之後有摘要時顯示全文和用到的新聞（標題連結、來源、日期） #}
+{# 卡片 AI 摘要（ai_card_summary，經 app_card、API）：沒有摘要（還沒寫、沒通過檢查）就寫一行說明。
+   有摘要時顯示全文和第三句用到的新聞（標題連結、媒體、日期） #}
 <section class="block">
   <h3>AI 摘要 <span class="muted">僅供參考，不構成投資建議</span></h3>
   <div class="box">
@@ -43,7 +43,7 @@
 </section>
 
 <section class="block" id="announcements">
-  <h3>公開資訊 <span class="muted">近 30 個營業日 {{ announcement_total }} 則</span></h3>
+  <h3>公開資訊 <span class="muted">近 30 個營業日</span></h3>
   <div class="box day-list">
     {% for g in announcements_recent %}{% include "_announcement_day.html" %}{% else %}
     <p class="muted small day-none">{{ '近 %d 天沒有公告' % recent_days if announcement_total else '近 30 個營業日沒有重大訊息' }}</p>
@@ -56,20 +56,29 @@
   </div>
 </section>
 
-{# 新聞資訊（規劃見 docs/ai_plan.md 的新聞 RAG，來源 FinMind TaiwanStockNews）：目前只有畫面，資料還沒接；
-   之後有新聞時一則一列：標題連結，下面一行來源・日期 #}
+{# 新聞資訊（app_stock_news，經 API；來源 FinMind TaiwanStockNews）：近幾天的新聞，新的在前；
+   先列當天的，前幾天的收在「顯示前幾天的…」；
+   一則一列：標題連結，下面一行媒體・日期；同一件事只列最早的那則，後面寫也報這件事的其他媒體 #}
+{% macro news_list(items) -%}
+<ul class="news">
+  {% for n in items %}
+  <li><a href="{{ n.link }}" target="_blank" rel="noopener noreferrer">{{ n.title }}</a>
+    <span class="news-meta">{{ n.source }}{% if n.date %}・<span class="mono">{{ n.date }}</span>{% endif %}{% if n.also %}・也有 {{ n.also }} 報導{% endif %}</span></li>
+  {% endfor %}
+</ul>
+{%- endmacro %}
 <section class="block" id="news">
   <h3>新聞資訊 <span class="muted">近 {{ recent_days }} 天</span></h3>
   <div class="box">
-    {% if news %}
-    <ul class="news">
-      {% for n in news %}
-      <li><a href="{{ n.link }}" target="_blank" rel="noopener noreferrer">{{ n.title }}</a>
-        <span class="news-meta">{{ n.source }}{% if n.date %}・<span class="mono">{{ n.date }}</span>{% endif %}</span></li>
-      {% endfor %}
-    </ul>
+    {% if news_today %}
+    {{ news_list(news_today) }}
     {% else %}
-    <p class="muted small">新聞還沒有資料（之後每天收盤後從 FinMind 更新）。</p>
+    <p class="muted small">{{ md(day) }} {{ '沒有新聞' if news_total else '和前幾天都沒有新聞' }}</p>
+    {% endif %}
+    {% if news_older %}
+    {% call ui.fold("顯示前幾天的 %d 則" % news_older|length) %}
+      {{ news_list(news_older) }}
+    {% endcall %}
     {% endif %}
   </div>
 </section>

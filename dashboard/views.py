@@ -63,15 +63,16 @@ EMPTY_TEXT = {
     "rest": "沒有差 2 次以上的股票",
 }
 
-# 「只看」篩選：和分頁不同，一檔可以同時符合好幾個，所以做成可以開關的篩選，不當分頁
+# 「只看」篩選：和分頁不同，一檔可以同時符合好幾個，所以做成可以開關的篩選，不當分頁。
+# 畫面上前面加資料的日期（filter_labels，例如「11/20 注意股」）：看的常常不是今天的資料，寫「今日」會誤會
 FILTERS = [
-    ("listed", "今日注意股"),
-    ("leave_today", "今日出關"),
+    ("listed", "注意股"),
+    ("leave_today", "出關"),
 ]
 FILTER_KEYS = [key for key, _ in FILTERS]
-FILTER_LABELS = dict(FILTERS)
 
-RECENT_DAYS = 7   # 個股頁的注意紀錄、處置紀錄（以前的處置）、公開資訊先顯示最近幾天（日曆天，含當天），更早的收起來
+RECENT_DAYS = 7   # 個股頁的注意紀錄、處置紀錄（以前的處置）、公開資訊先顯示最近幾天（日曆天，含當天），更早的收起來；
+                  # 新聞資訊也寫「近 7 天」：API 回最近 NEWS_LOOKBACK_DAYS（7）天的新聞，兩個要一樣
 
 # 公開資訊的類別標籤分 5 種顏色，看顏色就知道是哪一類公告（條款意思見 schema/stage.sql 的 stage_announcement_clause）。
 # 只看條款分「事件種類」，不判斷利多利空。沒列在這裡的（第51款其他重大事項等）是 other，灰色
@@ -139,6 +140,40 @@ def roc(day: datetime.date) -> str:
     '115/11/20'
     """
     return f"{day.year - 1911}/{day:%m/%d}"
+
+
+# ---------- 卡片 AI 摘要、新聞 ----------
+def news_item(news: dict) -> dict:
+    """API 的一則新聞 → 網頁一列：標題、連結、媒體、日期（MM/DD）、也報這件事的其他媒體。
+
+    >>> news_item({"title": "健策營收創高", "link": "https://udn.com/1", "publisher": "UDN", "news_date": datetime.date(2026, 11, 20),
+    ...            "also_reported_by": ["自由時報", "鉅亨網"]})
+    {'title': '健策營收創高', 'link': 'https://udn.com/1', 'source': 'UDN', 'date': '11/20', 'also': '自由時報、鉅亨網'}
+    """
+    return {"title": news["title"], "link": news["link"], "source": news["publisher"], "date": md(news.get("news_date")),
+            "also": "、".join(news.get("also_reported_by") or [])}
+
+
+def ai_summary_box(ai_summary: dict | None) -> dict | None:
+    """API 的卡片 AI 摘要 → 網頁的框：摘要全文、第三句用到的新聞（標題連結、媒體、日期）。沒有摘要就是 None。"""
+    if not ai_summary:
+        return None
+    return {"summary": ai_summary["summary"], "sources": [news_item(s) for s in ai_summary.get("sources") or []]}
+
+
+def change(pct: decimal.Decimal | float | None) -> dict | None:
+    """漲跌幅（%）→ 收盤價旁邊的字和顏色（台股習慣：漲紅▲、跌綠▼）；沒有為 None（畫面就不顯示）。
+
+    >>> change(decimal.Decimal("3.5")), change(-1.234), change(0)
+    ({'text': '▲3.50%', 'kind': 'up'}, {'text': '▼1.23%', 'kind': 'down'}, {'text': '0.00%', 'kind': 'flat'})
+    >>> change(None) is None
+    True
+    """
+    if pct is None:
+        return None
+    kind = "up" if pct > 0 else "down" if pct < 0 else "flat"
+    arrow = {"up": "▲", "down": "▼", "flat": ""}[kind]
+    return {"text": f"{arrow}{abs(pct):.2f}%", "kind": kind}
 
 
 def price(value: decimal.Decimal | float | None) -> str | None:
@@ -337,16 +372,16 @@ def headline(card: dict) -> dict:
         return {"text": f"{md(start)} 起處置" if start else "達標", "kind": "orange"}
     if state == "punish":   # 處置最後一天（明日出關）用紫色，和標籤、卡片顏色一樣
         return {"text": f"{md(card['resume_date'])} 出關", "kind": "violet" if card.get("period_end") == card["trade_date"] else "seal"}
-    steps = card.get("steps_left")   # 今日出關也一樣寫差幾次（處置結束了，看的是下一次），「今日出關」放小標籤
+    steps = card.get("steps_left")   # 當天出關也一樣寫差幾次（處置結束了，看的是下一次），「11/20 出關」放小標籤
     return {"text": f"差 {steps} 次", "kind": "amber" if steps == 1 else "quiet"}
 
 
 def tags(card: dict) -> list[dict]:
     """狀態標籤（kind 對應 CSS 的 class）。main＝主要狀態，和分頁名稱同一個詞（即將處置、處置中、聽牌），最多一個、放第一個；
     處置最後一天的主要標籤是「明日出關」（和分頁同名），不另外標處置中。
-    其他是次要標籤（第二次處置、今日出關、聽牌、今日注意股）。
-    今日注意股＝今天被列注意（任何一款，不管算不算次數），每種卡片都標。今日出關的卡片和一般卡片一樣（大字寫差幾次），
-    只多一個「今日出關」小標籤；又只差 1 次的，主要標籤是聽牌。
+    其他是次要標籤（第二次處置、「11/20 出關」、聽牌、「11/20 注意股」，日期是資料的那天）。
+    「11/20 注意股」＝那天被列注意（任何一款，不管算不算次數），每種卡片都標。當天出關的卡片和一般卡片一樣（大字寫差幾次），
+    只多一個「11/20 出關」小標籤；又只差 1 次的，主要標籤是聽牌。
     即將處置是推算還是已公布，看大字（「達標」或「11/23 起處置」）。總覽和個股頁都全部顯示。
 
     >>> [t["text"] for t in tags({"trade_date": datetime.date(2026, 11, 20), "punished_by": "streak3"})]
@@ -366,16 +401,16 @@ def tags(card: dict) -> list[dict]:
     if state == "leave_today" and one_step:
         state = "one"   # 今天出關、又只差 1 次：主要是聽牌
     if state == "punish" and card.get("period_end") == day:
-        main["punish"] = {"text": "明日出關", "kind": "violet", "main": True}   # 明日出關分頁的卡片；紫色，和今日出關（綠）分開
+        main["punish"] = {"text": "明日出關", "kind": "violet", "main": True}   # 明日出關分頁的卡片；紫色，和當天出關（綠）分開
     result = [main[state]] if state in main else []
     if state == "punish" and round_of(card.get("measure_type")) == 2:
         result.append({"text": "第二次處置", "kind": "mut", "main": False})
     if card.get("resume_date") == day:
-        result.append({"text": "今日出關", "kind": "ok", "main": False})
+        result.append({"text": f"{md(day)} 出關", "kind": "ok", "main": False})
     if state != "one" and one_step:   # 處置中又差 1 次就會再處置
         result.append({"text": "聽牌", "kind": "amber", "main": False})
     if card.get("is_listed_today"):
-        result.append({"text": "今日注意股", "kind": "acc", "main": False})
+        result.append({"text": f"{md(day)} 注意股", "kind": "acc", "main": False})
     return result
 
 
@@ -423,7 +458,7 @@ def path_progress(card: dict, path: str) -> dict:
 
 def card_progress(card: dict) -> dict | None:
     """卡片上的進度條：放大字「差 N 次」算出來的那條路徑，兩個數字才對得起來。
-    好幾條一樣差 N 次的，放進度最多的那條。即將處置、處置中不放（今日出關照樣放：出關後又被列的話看得到進度）；
+    好幾條一樣差 N 次的，放進度最多的那條。即將處置、處置中不放（當天出關照樣放：出關後又被列的話看得到進度）；
     四條都是 0 也照樣放（空的進度條），每張卡片長得一樣。
 
     >>> base = {"trade_date": datetime.date(2026, 11, 20), "streak3": 0, "streak5": 2, "in10": 2, "in30": 2,
@@ -452,6 +487,7 @@ def wall_card(card: dict) -> dict:
         "stock_id": card["stock_id"],
         "name": card.get("stock_name") or card["stock_id"],
         "close": price(card.get("close_price")),
+        "change": change(card.get("change_pct")),
         "status": status(card),
         "section": section_of(card),
         "headline": headline(card),
@@ -476,14 +512,23 @@ def matches(card: dict, search: str) -> bool:
     return text in card["stock_id"].casefold() or text in (card.get("stock_name") or "").casefold()
 
 
+def filter_labels(day: datetime.date) -> list[tuple[str, str]]:
+    """「只看」篩選的（代號, 名稱），名稱前面加資料的日期。
+
+    >>> filter_labels(datetime.date(2026, 11, 20))
+    [('listed', '11/20 注意股'), ('leave_today', '11/20 出關')]
+    """
+    return [(key, f"{md(day)} {label}") for key, label in FILTERS]
+
+
 def overview(rows: list[dict], tab: str = "all", only: str = "", search: str = "") -> dict:
     """總覽：一天所有上市公司分成五區（SECTIONS）。分頁＝分區（加起來等於全部），「只看」是另外疊上去的篩選。
 
     分頁上的數字固定是這一天的總數，不跟著「只看」改變：數字本身就是資訊（今天處置中 3 檔），
-    跟著篩選跳反而會讓人誤會（開「今日注意股」時處置中變 0，像是沒有人在處置）。
+    跟著篩選跳反而會讓人誤會（開「11/20 注意股」時處置中變 0，像是沒有人在處置）。
     「只看」的數字跟著分頁：這個分頁裡有幾檔符合，也就是點了會看到幾檔。
 
-    回傳 tab、only、search（看不懂的值換成預設）、only_label（「只看」的名稱）、counts（各分頁幾檔）、
+    回傳 tab、only、search（看不懂的值換成預設）、counts（各分頁幾檔）、
     filter_counts（這個分頁裡各篩選幾檔）、shown（篩選、搜尋後顯示幾檔）、
     sections（要顯示的區塊：一般卡片 cards、「其他」的小卡片 rest；「全部」不分區，卡片照聽牌→即將處置→處置中→明日出關排在一起）。
     沒東西可看的（四條路徑都是 0）不列出，也不算進檔數。
@@ -517,7 +562,7 @@ def overview(rows: list[dict], tab: str = "all", only: str = "", search: str = "
     cards = [wall_card(row) for row in rows if tab == "all" or section_of(row) == tab]
     sections = [{"key": "cards", "cards": [c for c in cards if c["section"] != "rest"]},
                 {"key": "rest", "cards": [c for c in cards if c["section"] == "rest"]}]
-    return {"tab": tab, "only": only, "only_label": FILTER_LABELS.get(only, ""), "search": search,
+    return {"tab": tab, "only": only, "search": search,
             "counts": counts, "filter_counts": filter_counts, "shown": len(cards),
             "sections": [s for s in sections if s["cards"]]}
 
@@ -559,11 +604,11 @@ def timeline(card: dict) -> list[Step]:
         steps.append(Step(md_range(card["period_start"], card["period_end"]),
                           f"{measure}{condition}・{measures_text(rule)}", "seal", resume_when=resume))
         if state == "leave_today":
-            steps.append(Step(md(card.get("resume_date")), "今日出關，恢復正常交易", "ok"))
+            steps.append(Step(md(card.get("resume_date")), "出關，恢復正常交易", "ok"))
     elif state == "soon":
         steps.append(Step(md(day), f"{met_paths(card.get('punished_by'))}達標，等官方公布處置日期", "seal"))
     elif state == "leave_today":
-        steps.append(Step(md(day), "今日出關，恢復正常交易", "ok"))
+        steps.append(Step(md(day), "出關，恢復正常交易", "ok"))
     return steps
 
 
@@ -773,6 +818,7 @@ def stock_page(detail: dict) -> dict:
 
     版面（一欄）：狀態 → AI 摘要 → 公開資訊 → 新聞資訊 → 處置進度 → 注意紀錄 → 處置紀錄。
     注意紀錄、以前的處置、公開資訊都先顯示最近 RECENT_DAYS 天的，更早的收起來（*_recent、*_older）。
+    新聞資訊先顯示當天的（news_today），前幾天的收起來（news_older）。
     """
     day, row, days = detail["trade_date"], detail["card"], detail["trading_days"]
     history = {h["trade_date"]: h for h in detail["notice_history"]}
@@ -806,8 +852,11 @@ def stock_page(detail: dict) -> dict:
         "card": row,
         "wall": wall_card(row),
         "recent_days": RECENT_DAYS,
-        "ai_summary": detail.get("ai_summary"),   # 目前 API 還沒有這個欄位，網頁先顯示「還沒產生」的框
-        "news": detail.get("news") or [],          # 同上：之後 API 給 FinMind 新聞（title、link、source、date），現在是空的
+        "ai_summary": ai_summary_box(detail.get("ai_summary")),   # 卡片 AI 摘要；還沒寫、沒通過檢查的是 None（網頁顯示說明）
+        # 新聞資訊：當天的先列，前幾天的收起來
+        "news_total": len(detail.get("news") or []),
+        "news_today": [news_item(n) for n in detail.get("news") or [] if n.get("news_date") == day],
+        "news_older": [news_item(n) for n in detail.get("news") or [] if n.get("news_date") != day],
         # 公開資訊
         "announcement_total": len(detail["announcements"]),
         "announcements_recent": [g for g in groups if g["day"] >= since],

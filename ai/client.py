@@ -1,7 +1,8 @@
 """client 層（AI）：只負責呼叫 Claude API，不存檔（存進 ai_llm_call 的是 task.py → repository.save_llm_call）。
 
   create_message()：送出一次請求，回傳原始回應（和 crawler/client.py 的 http_get 一樣，是共用的）
-  fetch_xxx()：一個 AI 項目的請求：fetch_announcement_label()（公告分類）、fetch_news_summary()（新聞摘要），一則問一次
+  fetch_xxx()：一個 AI 項目的請求：fetch_announcement_label()（公告分類）、fetch_news_summary()（新聞摘要）、
+             fetch_card_summary()（卡片 AI 摘要），一則問一次
   xxx_problem()：檢查回應，有問題回傳原因（task 存成失敗），沒問題回傳 None
   parse_answer()、call_record()：從回應取值（回答、要記進 ai_llm_call 的 token 和花費）
 
@@ -16,9 +17,9 @@ import json
 
 import anthropic
 
-from ai import classifier, summarizer
+from ai import card_summarizer, classifier, summarizer
 from common import date_utils
-from common.config import AI_CLASSIFY_MODEL, AI_SUMMARY_MODEL
+from common.config import AI_CARD_MODEL, AI_CLASSIFY_MODEL, AI_SUMMARY_MODEL
 
 # 每百萬 token 的價格（美元）：(輸入, 輸出)。輸出含思考的 token。快取讀約 0.1 倍、寫約 1.25 倍輸入價
 PRICES = {
@@ -63,6 +64,11 @@ def fetch_news_summary(messages: list[dict]) -> anthropic.types.Message:
     return create_message(AI_SUMMARY_MODEL, summarizer.SYSTEM_PROMPT, messages, summarizer.SCHEMA)
 
 
+def fetch_card_summary(messages: list[dict]) -> anthropic.types.Message:
+    """卡片 AI 摘要：messages 是一張卡片的資料（card_summarizer.build_user_message）。"""
+    return create_message(AI_CARD_MODEL, card_summarizer.SYSTEM_PROMPT, messages, card_summarizer.SCHEMA)
+
+
 # ---------- 檢查回應：有問題回傳原因（task 存成失敗），沒問題回傳 None ----------
 def announcement_label_problem(response) -> str | None:
     """公告分類的回應能不能用，見 json_answer_problem。"""
@@ -71,6 +77,11 @@ def announcement_label_problem(response) -> str | None:
 
 def news_summary_problem(response) -> str | None:
     """新聞摘要的回應能不能用，見 json_answer_problem。"""
+    return json_answer_problem(response)
+
+
+def card_summary_problem(response) -> str | None:
+    """卡片 AI 摘要的回應能不能用，見 json_answer_problem。"""
     return json_answer_problem(response)
 
 

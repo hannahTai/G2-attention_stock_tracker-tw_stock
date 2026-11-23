@@ -18,6 +18,7 @@ import sqlalchemy
 import sqlalchemy.exc
 
 from api import queries
+from common.config import NEWS_LOOKBACK_DAYS
 from common.date_utils import parse_yyyymmdd
 from common.repository import get_engine
 
@@ -84,7 +85,8 @@ def list_cards(date: str | None = fastapi.Query(None, description=DATE_HELP)) ->
 
 @router.get("/stocks/{stock_id}", tags=[TAG_STOCK])
 def get_stock(stock_id: str, date: str | None = fastapi.Query(None, description=DATE_HELP)) -> dict:
-    """個股：卡片、四條路徑計入的日子、近 30 個營業日的注意紀錄、處置紀錄、公開資訊（重大訊息）。"""
+    """個股：卡片、四條路徑計入的日子、近 30 個營業日的注意紀錄、處置紀錄、公開資訊（重大訊息）、
+    卡片 AI 摘要（和第三句的出處）、近 NEWS_LOOKBACK_DAYS 天的新聞。"""
     with get_engine().connect() as conn:
         day = pick_day(conn, parse_date(date))
         card = queries.card(conn, stock_id, day)
@@ -100,4 +102,8 @@ def get_stock(stock_id: str, date: str | None = fastapi.Query(None, description=
             "notice_history": queries.notice_history(conn, stock_id, start, day),
             "punish_history": queries.punish_history(conn, stock_id, start, day),
             "announcements": queries.announcements(conn, stock_id, start, day),
+            "ai_summary": ({"summary": card["ai_summary"],
+                            "sources": queries.news_by_ids(conn, card["ai_summary_news_ids"] or [])}
+                           if card.get("ai_summary") else None),
+            "news": queries.stock_news(conn, stock_id, day - datetime.timedelta(days=NEWS_LOOKBACK_DAYS - 1), day),   # 含當天
         }

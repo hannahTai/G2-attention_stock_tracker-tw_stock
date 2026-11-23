@@ -36,9 +36,9 @@ flowchart LR
 | 階段 | 工具 |
 |---|---|
 | Source | 證交所 API（注意股、處置股、注意累計名單、開休市日期、市場成交、收盤行情、上市公司）、公開資訊觀測站 API（重大訊息、重大訊息全文）、FinMind API（個股新聞）、新聞網站（新聞網頁的 `<head>`） |
-| Ingest | Python requests；Celery + RabbitMQ 任務佇列（證交所、觀測站、FinMind 各一個 worker 限速，Flower 監看）；Windows 工作排程器（之後 Airflow） |
+| Ingest | Python requests；Celery + RabbitMQ 任務佇列（證交所、觀測站、FinMind 各一個 worker 限速，新聞網頁同時 4 個、照網站輪流，Flower 監看）；Windows 工作排程器（之後 Airflow） |
 | Storage | PostgreSQL 三層：`raw_*`（API 原文）→ `stage_*`（清理後）→ `app_*`（引擎結果），另外 `ai_*`（AI 結果、LLM 呼叫紀錄）；之後 Cloud SQL、BigQuery |
-| Process | pandas：`transform/` 整理（raw → stage）、`analyze/` 規則引擎——依要點第六條算離處置還差幾次（stage → app）；`ai/` Claude API——公告分類、新聞摘要（結構化輸出） |
+| Process | pandas：`transform/` 整理（raw → stage）、`analyze/` 規則引擎——依要點第六條算離處置還差幾次（stage → app）；`ai/` Claude API——公告分類、新聞摘要、卡片 AI 摘要（結構化輸出），新聞 RAG（本機 bge-m3 轉向量，pgvector 檢索） |
 | Serve | FastAPI 資料 API（只讀 `app_*` 表和 VIEW，回 JSON）＋ Streamlit 網頁（卡片牆、個股頁，只打 API、不連資料庫）；Metabase → Looker Studio 儀表板 |
 | Observe | `data/logs/`、任務歷史 `tw_stock.job_run`、回測（真實處置 75 筆全部算到，條件也都對上）；之後失敗通知 |
 
@@ -51,7 +51,7 @@ flowchart LR
 | 畫面 | 內容 |
 | --- | --- |
 | 個股卡片 | 狀態和收盤價、AI 摘要、近 30 個營業日公告（公開資訊）、新聞資訊、四條路徑還差幾次（處置進度，列出計入的日期）、注意紀錄、處置紀錄（幾號出關） |
-| 卡片牆 | 每間上市公司一張卡片（不含權證、ETF）；分頁：全部、聽牌、即將處置、處置中、明日出關、其他；另可只看今日注意股、今日出關 |
+| 卡片牆 | 每間上市公司一張卡片（不含權證、ETF）；分頁：全部、聽牌、即將處置、處置中、明日出關、其他；另可只看那天的注意股、出關（標籤寫日期，例如「11/20 注意股」） |
 | 統計儀表板 | 各款次進入處置的比例、有無公告的差異、產業分布 |
 
 線框圖見 [`docs/images/`](docs/images/)，詳細定義見 [`docs/proposal.md`](docs/proposal.md) 第 5 節。
@@ -74,14 +74,17 @@ analyze/                    分析：stage → app（同樣的 producer → task
 ├─ task.py                    task：analyze_progress(date_yyyymmdd)，一天一個任務
 ├─ engine.py                  規則引擎：依要點第六條算還差幾次、若再列注意的處置日期、幾號出關
 └─ backtest.py                回測（Observe）：引擎預測的處置 vs 真實處置公告
-ai/                         AI 項目：只讀 stage、呼叫 LLM、存進 ai_* 表（同樣的 producer → task → client → repository 寫法；
+ai/                         AI 項目：讀 stage 和網站的 VIEW、呼叫 LLM、存進 ai_* 表（同樣的 producer → task → client → repository 寫法；
                             新聞摘要例外：全文不存，當場用 crawler/client.py 重抓網頁）
-├─ producer.py                producer：產生任務清單（還沒分類的公告、還沒摘要的新聞，每則一個任務）
-├─ task.py                    task：classify_announcement → ai_announcement_label；summarize_news → ai_news_summary
+├─ producer.py                producer：產生任務清單（公告、新聞、每天的向量、同一件事、卡片，各自還沒做過的）
+├─ task.py                    task：classify_announcement、summarize_news、embed_news、group_news_stories、summarize_card
 ├─ client.py                  client：呼叫 Claude API（fetch_xxx，結構化輸出，不存檔）、檢查回應、算 token 花費
 ├─ classifier.py              公告分類的 prompt、JSON schema（13 類）、檢查摘要的長度
 ├─ summarizer.py              新聞摘要的 prompt、JSON schema、檢查摘要的長度
-└─ verifier.py                檢查 AI 的回答，兩個項目共用（摘要裡的數字要出現在原文裡）
+├─ card_summarizer.py         卡片 AI 摘要的 prompt、款次的白話說法、整理輸入、檢查數字和引用的新聞
+├─ embedder.py                新聞 RAG：本機跑 bge-m3，把文字轉成向量（pgvector 的寫法）
+├─ retriever.py               新聞 RAG：轉向量的文字、挑新聞（去掉沒內容的、合併同一件事的報導、最多 5 則）、同一件事的歸類
+└─ verifier.py                檢查 AI 的回答，三個項目共用（摘要裡的數字要出現在原文裡）
 api/                        資料 API：FastAPI 讀 app_* 表和 VIEW，回 JSON
 ├─ main.py                    進入點（uvicorn api.main:app）
 ├─ routes.py                  端點：/health、/dates、/cards、/stocks/{代號}（文件在 /docs）
@@ -97,7 +100,7 @@ common/                     各資料夾共用（crawler、transform、analyze �
 ├─ runner.py                  四個 producer 共用的任務執行：依序執行、暫時性失敗重試、列出失敗
 ├─ cli.py                     四個 producer 共用的指令參數（daily／backfill、--refetch）
 ├─ config.py                  設定（會因環境改變的值，從 .env 讀）
-├─ worker.py                  Celery app 和任務共用的行為（重試、間隔）；USE_CELERY=1 時任務送進 RabbitMQ（佇列 crawl_twse、crawl_mops、crawl_finmind、process、ai）
+├─ worker.py                  Celery app 和任務共用的行為（重試、間隔）；USE_CELERY=1 時任務送進 RabbitMQ（佇列 crawl_twse、crawl_mops、crawl_finmind、crawl_news、transform、analyze、ai、embed）
 ├─ date_utils.py              日期工具
 └─ hash_utils.py              雜湊工具：url_md5（新聞的 news_id＝連結的 md5）
 schema/                     建表 SQL：raw.sql、stage.sql、app.sql、view.sql（給網頁讀的 VIEW）、ai.sql（AI 結果）、log.sql（任務歷史）
@@ -113,13 +116,13 @@ main.py                     一次跑完：crawler → transform → analyze →
 
 ### Docker Compose（一鍵啟動）
 
-PostgreSQL、RabbitMQ、6 個 Celery worker、Flower、資料 API、網頁全部用 Docker 跑：
+PostgreSQL、RabbitMQ、8 個 Celery worker、Flower、資料 API、網頁全部用 Docker 跑：
 
 ```bash
 cp .env.example .env                                # 填入密碼（AI 項目要 ANTHROPIC_API_KEY，沒填就跳過）
 docker compose up -d --build                        # 啟動（第一次會建表）
 docker compose run --rm producer python main.py     # 跑一次資料線：任務送進 RabbitMQ，由 worker 執行
-# 開發時 .env 的 COMPOSE_FILE 把 docker-compose.local.yml 疊上來：程式碼直接掛進容器，api、web 存檔自動重載；改了任務的程式 docker compose restart celery-crawl-twse celery-crawl-mops celery-crawl-finmind celery-transform celery-analyze celery-ai
+# 開發時 .env 的 COMPOSE_FILE 把 docker-compose.local.yml 疊上來：程式碼直接掛進容器，api、web 存檔自動重載；改了任務的程式 docker compose restart celery-crawl-twse celery-crawl-mops celery-crawl-finmind celery-crawl-news celery-transform celery-analyze celery-ai celery-embed
 ```
 
 | 服務 | 網址 |
@@ -129,8 +132,8 @@ docker compose run --rm producer python main.py     # 跑一次資料線：任�
 | Flower（worker、任務狀況） | http://localhost:5556 |
 | RabbitMQ 管理介面 | http://localhost:15673 |
 
-worker 的分法：`celery-crawl-twse`、`celery-crawl-mops`、`celery-crawl-finmind`（佇列 `crawl_twse`、`crawl_mops`、`crawl_finmind`）打外部網站，一次只做一個、每個任務後等一下（太快會被擋；限制是對網站、對 IP，多開 worker 一起打只會更快被擋）；`celery-transform`（佇列 `transform`）做 transform，同時做 4 個；`celery-analyze`（佇列 `analyze`）做 analyze，同時做 2 個；`celery-ai`（佇列 `ai`）呼叫 Claude API，同時做 2 個。說明見 `docker-compose.yml`、`common/worker.py`。
-log 在 `data/logs/`，每天一個檔、留 30 天：`daily-YYYY-MM-DD.log`（每天的資料線）、`crawl_twse-…`、`crawl_mops-…`、`crawl_finmind-…`、`transform-…`、`analyze-…`、`ai-…`（六個 worker）。每個任務每跑一次另外記一列在 `tw_stock.job_run`（任務歷史，永久保留）。
+worker 的分法：`celery-crawl-twse`、`celery-crawl-mops`、`celery-crawl-finmind`（佇列 `crawl_twse`、`crawl_mops`、`crawl_finmind`）打外部網站，一次只做一個、每個任務後等一下（太快會被擋；限制是對網站、對 IP，多開 worker 一起打只會更快被擋）；`celery-crawl-news`（佇列 `crawl_news`）打開新聞網頁，連結分散在十幾個網站，同時做 4 個、照網站輪流排；`celery-transform`（佇列 `transform`）做 transform，同時做 4 個；`celery-analyze`（佇列 `analyze`）做 analyze，同時做 2 個；`celery-ai`（佇列 `ai`）呼叫 Claude API，同時做 2 個；`celery-embed`（佇列 `embed`）跑要用本機 embedding 模型的任務（新聞 RAG、卡片 AI 摘要），一次做一個，只有它載入模型。說明見 `docker-compose.yml`、`common/worker.py`。
+log 在 `data/logs/`，每天一個檔、留 30 天：`daily-YYYY-MM-DD.log`（每天的資料線）、`crawl_twse-…`、`crawl_mops-…`、`crawl_finmind-…`、`crawl_news-…`、`transform-…`、`analyze-…`、`ai-…`、`embed-…`（八個 worker）。每個任務每跑一次另外記一列在 `tw_stock.job_run`（任務歷史，永久保留）。
 
 ### 本機（不用 Docker 跑程式，資料庫還是要有）
 

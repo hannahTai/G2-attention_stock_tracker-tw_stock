@@ -3,12 +3,15 @@ import re
 
 
 def numbers_in(text: str) -> set[str]:
-    """文字裡的數字（去掉千分位逗號）。
+    """文字裡的數字（去掉千分位逗號；小數點後面多的 0 去掉，350.00、350.0、350 算同一個數）。
 
     >>> sorted(numbers_in("10月營收1,520萬元，年增31.5%"))
     ['10', '1520', '31.5']
+    >>> sorted(numbers_in("價差達350.00元、漲幅31.50%、0.80倍"))
+    ['0.8', '31.5', '350']
     """
-    return set(re.findall(r"\d+(?:\.\d+)?", text.replace(",", "")))
+    numbers = re.findall(r"\d+(?:\.\d+)?", text.replace(",", ""))
+    return {n.rstrip("0").rstrip(".") if "." in n else n for n in numbers}
 
 
 def numbers_ok(summary: str, source: str) -> bool:

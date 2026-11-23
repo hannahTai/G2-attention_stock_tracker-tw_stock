@@ -8,8 +8,8 @@
         橘 orange   ＝ 即將處置（已達標、處置還沒開始）
         紅 seal     ＝ 處置中
         紫 violet   ＝ 明日出關（處置最後一天）
-        綠 ok       ＝ 今日出關、恢復交易
-        藍 accent   ＝ 連結、會累計的款次、今日注意股
+        綠 ok       ＝ 當天出關、恢復交易
+        藍 accent   ＝ 連結、會累計的款次、注意股標籤
       公開資訊的類別標籤另外分 5 色（.ann-cat，見 views.CLAUSE_GROUPS）。其他文字一律用墨色、灰色，重要程度靠字級和粗細分。
       卡片的顏色（上緣色條）和主要狀態的色塊（.pill）同色；次要的狀態用小框（.sub-tag），公告的盤中、更正用有顏色的字（.flag）。
    3. 一樣的東西放一樣的位置：每張卡片都是 名稱｜狀態 → 大字 → 進度條 → 資訊列 → 底部（收盤價｜公告）。
@@ -243,6 +243,8 @@ details pre { white-space: pre; overflow: auto; font-family: var(--f-mono); font
 .card-foot { margin-top: auto; padding-top: 8px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
   font-size: 13px; color: var(--faint); }
 .card-foot .mono { color: var(--muted); }
+/* 收盤價旁邊的漲跌幅：台股習慣漲紅、跌綠（借用處置的紅、出關的綠）；選擇器要比上一行具體，不然會被蓋成灰色 */
+.card-foot .chg { margin-left: 8px; } .card-foot .chg.up { color: var(--seal); font-weight: 600; } .card-foot .chg.down { color: var(--ok); font-weight: 600; }
 .ann-link { position: relative; z-index: 1; color: var(--muted); text-decoration: none; }
 .ann-link:hover { color: var(--accent); text-decoration: underline; }
 /* 「其他」（差 2 次以上）：同一種卡片、同樣寬（和上面的卡片對齊），只是矮一點——內距、間距、字小一點 */

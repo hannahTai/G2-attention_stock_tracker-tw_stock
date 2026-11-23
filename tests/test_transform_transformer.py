@@ -314,6 +314,7 @@ def test_stock_price_picks_the_price_table_and_drops_untraded():
     assert df["stock_id"].tolist() == ["2466"]
     row = df.iloc[0]
     assert (row["trade_date"], row["close_price"], row["high_price"], row["volume_shares"]) == (day, 315.5, 318.0, 1234000)
+    assert row["price_change"] == 5.5
 
 
 def test_stock_price_on_closed_day_is_empty():

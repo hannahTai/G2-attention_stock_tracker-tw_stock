@@ -2,23 +2,29 @@
 
     classify_announcement：公告分類，一則重大訊息 → ai_announcement_label
     summarize_news：新聞摘要，一則新聞 → ai_news_summary
+    embed_news：新聞 RAG，一天的新聞（標題＋新聞摘要）轉成向量 → ai_news_embedding（本機的 bge-m3，不呼叫 API）
+    group_news_stories：同一件事，一段區間的新聞歸類 → ai_news_story（用新聞向量，不呼叫 API）
+    summarize_card：卡片 AI 摘要，一檔一天 → ai_card_summary（輸入和前一天一樣就沿用，不呼叫 API）
 
-問 LLM 和 crawler 打 API 同樣三步（label_once、summary_once）：
+問 LLM 和 crawler 打 API 同樣三步（label_once、summary_once、card_once）：
     1. response = client.fetch_xxx(...)：呼叫 Claude API
     2. problem = client.xxx_problem(response)：檢查回應
     3. repository.save_llm_call(紀錄, problem)：每次呼叫都記一列 ai_llm_call（token、花費）；有問題的存完丟 FetchError
-       ref_key 一律記結果表的代號（公告 announcement_id、新聞 news_id），JOIN 結果表都是 ref_key ＝ 代號
+       ref_key 一律記結果表的代號（公告 announcement_id、新聞 news_id、卡片 card_id），JOIN 結果表都是 ref_key ＝ 代號
 同一個 prompt 版本已經有結果的就跳過（不重複花錢）；還沒有全文的公告也跳過，下次再分類。
 摘要超過上限（公告 60 字；新聞依文章長度，見 summarizer.summary_limit）：帶著上次的回答請 LLM 縮短，只重問一次；
 還是太長、或縮短失敗就用手上的回答照存，summary_ok＝否。
-只讀 stage 表、只寫自己的 ai_* 表，失敗不影響資料線和其他任務。
+讀 stage 表和網站的 VIEW（app_card、app_announcement、app_stock_news），只寫自己的 ai_* 表，失敗不影響資料線和其他任務。
 例外：summarize_news 要新聞全文，全文不存進資料庫（著作權），只能當場再抓一次網頁（用 crawler/client.py 的函式，不另寫爬蟲）。
-每個函式都用 @app.task 註冊成 Celery 任務（見 common/worker.py），在 ai 佇列上跑；shorten_once、label_once、summary_once 是任務用的小函式，不是任務。
+每個函式都用 @app.task 註冊成 Celery 任務（見 common/worker.py）；要用本機 embedding 模型的（embed_news、summarize_card）
+在 embed 佇列上跑，其他在 ai 佇列；
+shorten_once、label_once、summary_once、card_once、card_news 是任務用的小函式，不是任務。
 """
-from ai import classifier, client, summarizer
+from ai import card_summarizer, classifier, client, embedder, retriever, summarizer
 from common import date_utils, repository
-from common.date_utils import parse_yyyymmdd
-from common.hash_utils import key_md5
+from common.config import EMBED_MODEL, NEWS_LOOKBACK_DAYS
+from common.date_utils import days_before, parse_yyyymmdd
+from common.hash_utils import key_md5, text_md5
 from common.worker import Job, app
 from crawler import client as crawler_client
 
@@ -26,7 +32,7 @@ from crawler import client as crawler_client
 def shorten_once(ask, key: str, user_message: str, answer: dict, model: str, limit: int, shorten_messages) -> tuple[dict, str, str]:
     """摘要超過 limit 字：帶著上次的回答請 LLM 縮短，只重問一次。
 
-    ask：label_once 或 summary_once。limit、shorten_messages：classifier 或 summarizer 的上限和縮短的說法。
+    ask：label_once、summary_once 或 card_once。limit、shorten_messages：classifier、summarizer 或 card_summarizer 的上限和縮短的說法。
     回傳 (回答, 模型, 附註)。縮短失敗（拒答、API 錯誤）就用手上的回答（已經付過錢），附註寫給結果那一行看。
     """
     if len(answer["summary"].strip()) <= limit:
@@ -109,3 +115,93 @@ def summarize_news(news_id: str) -> str:
     row = summarizer.to_summary_row(news_id, answer, f"{news['title']}\n{text}", limit, model)
     repository.insert_news_summary(row)
     return f"ai_news_summary/{news_id}：{row['summary'][:30]}{'' if row['summary_ok'] else '（summary_ok＝否）'}{note}"
+
+
+# ---------- 新聞 RAG ----------
+@app.task(base=Job)
+def embed_news(date_yyyymmdd: str) -> str:
+    """一天的新聞 → ai_news_embedding（EMBED_MODEL 的向量）。轉的是標題＋新聞摘要（retriever.news_text）；
+    文字的雜湊值和上次一樣的跳過，摘要後來才寫好的會重轉。本機跑模型，不花錢。"""
+    day = parse_yyyymmdd(date_yyyymmdd)
+    todo = []   # (news_id, 文字, 文字的 md5)
+    for row in repository.list_news_to_embed(day, day, EMBED_MODEL):
+        text = retriever.news_text(row["title"], row["ai_summary"], row["lead"])
+        text_hash = text_md5(text)
+        if text_hash != row["input_hash"]:
+            todo.append((row["news_id"], text, text_hash))
+    if not todo:
+        return f"{date_yyyymmdd} 沒有要轉的新聞"
+    vectors = embedder.embed([text for _, text, _ in todo])
+    repository.save_news_embeddings([{"news_id": news_id, "model": EMBED_MODEL, "embedding": embedder.to_pgvector(vector),
+                                      "input_hash": text_hash} for (news_id, _, text_hash), vector in zip(todo, vectors)])
+    return f"ai_news_embedding/{date_yyyymmdd}：{len(todo)} 則"
+
+
+@app.task(base=Job)
+def group_news_stories(start_yyyymmdd: str, end_yyyymmdd: str) -> str:
+    """區間內的新聞歸成同一件事 → ai_news_story（要在 embed_news 之後）。一天一天有先後（後面的歸到前面的），
+    所以整段區間一個任務，不拆成每天一個（同時做會互相等不到）。不呼叫 API。"""
+    news_ids, links, known = repository.news_story_links(parse_yyyymmdd(start_yyyymmdd), parse_yyyymmdd(end_yyyymmdd), EMBED_MODEL,
+                                                         retriever.DUPLICATE_SIMILARITY, retriever.STORY_DAYS,
+                                                         retriever.SAME_TITLE_MIN_CHARS)
+    if not news_ids:
+        return f"{start_yyyymmdd}～{end_yyyymmdd} 沒有要歸類的新聞"
+    stories = retriever.assign_stories(news_ids, links, known)
+    repository.save_news_stories([{"news_id": news_id, "model": EMBED_MODEL, "story_id": story_id} for news_id, story_id in stories.items()])
+    grouped = sum(1 for news_id, story_id in stories.items() if news_id != story_id)
+    return f"ai_news_story/{start_yyyymmdd}～{end_yyyymmdd}：{len(stories)} 則，{grouped} 則和別則是同一件事"
+
+
+# ---------- 卡片 AI 摘要 ----------
+def card_news(card: dict, announcements: list[dict]) -> list[dict]:
+    """新聞 RAG：這檔最近 NEWS_LOOKBACK_DAYS 天（含當天）的新聞，挑出跟股票名稱、公告最相關的幾則（見 ai/retriever.py）。"""
+    query = embedder.embed([retriever.query_text(card, announcements)])[0]
+    day = card["trade_date"]
+    start = parse_yyyymmdd(days_before(date_utils.to_yyyymmdd(day), NEWS_LOOKBACK_DAYS - 1))
+    candidates = repository.stock_news_candidates(card["stock_id"], start, day, EMBED_MODEL, embedder.to_pgvector(query))
+    return retriever.related_news(candidates)
+
+
+def card_once(card_id: str, messages: list[dict]) -> tuple[dict, str]:
+    """問一次卡片 AI 摘要，記一列 ai_llm_call（ref_key＝card_id），回傳 (回答, 實際回答的模型)。"""
+    started = date_utils.now()
+    response = client.fetch_card_summary(messages)
+    problem = client.card_summary_problem(response)
+    repository.save_llm_call(client.call_record("summarize_card", card_id, card_summarizer.PROMPT_VERSION, response, started), problem)
+    return client.parse_answer(response), response.model
+
+
+@app.task(base=Job)
+def summarize_card(stock_id: str, date_yyyymmdd: str) -> str:
+    """一張卡片（一檔一天）→ ai_card_summary：2～3 句白話（股價最近怎麼了、公告和新聞裡可能的原因）。
+
+    輸入：app_card 那天的一列、近 30 天公告（含公告分類）、新聞 RAG 挑出的新聞（有就帶，沒有或出錯照寫）。
+    輸入的雜湊值和前一天一樣（例如處置中、沒有新公告、新聞）就沿用前一天的摘要，不呼叫 API。
+    """
+    key = f"{stock_id}_{date_yyyymmdd}"                       # 結果那一行看得懂
+    card_id = key_md5(stock_id, date_yyyymmdd)                # ai_card_summary 的主鍵、ai_llm_call.ref_key
+    if repository.has_card_summary(card_id, card_summarizer.PROMPT_VERSION):
+        return f"{key} 已經寫過（{card_summarizer.PROMPT_VERSION}），跳過"
+    day = parse_yyyymmdd(date_yyyymmdd)
+    card = repository.read_card(stock_id, day)
+    if card is None:
+        return f"{key} 沒有卡片，跳過"
+    announcements = repository.recent_announcements(stock_id, parse_yyyymmdd(days_before(date_yyyymmdd, 30)), day)
+    note = ""
+    try:
+        news = card_news(card, announcements)
+    except Exception as e:   # 新聞是選擇性的輸入：轉不了向量、查不到，照樣只用自己的資料寫
+        news, note = [], f"；沒有帶新聞（{type(e).__name__}）"
+
+    user_message = card_summarizer.build_user_message(card, announcements, news)
+    previous = repository.previous_card_summary(stock_id, day, card_summarizer.PROMPT_VERSION)
+    if previous and previous["input_hash"] == card_summarizer.input_hash(user_message):
+        repository.insert_card_summary({**previous, "card_id": card_id, "card_date": day, "reused": True})
+        return f"ai_card_summary/{key}：輸入和 {previous['card_date']} 一樣，沿用"
+
+    answer, model = card_once(card_id, [{"role": "user", "content": user_message}])
+    answer, model, shorten_note = shorten_once(card_once, card_id, user_message, answer, model,
+                                               card_summarizer.SUMMARY_MAX_CHARS, card_summarizer.shorten_messages)
+    row = card_summarizer.to_card_row(card, card_id, answer, news, user_message, model)
+    repository.insert_card_summary(row)
+    return f"ai_card_summary/{key}：{row['summary'][:30]}{'' if row['summary_ok'] else '（summary_ok＝否）'}{note}{shorten_note}"

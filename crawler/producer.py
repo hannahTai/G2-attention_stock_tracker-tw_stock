@@ -14,6 +14,7 @@
 """
 import calendar
 import datetime
+import urllib.parse
 
 from common import cli, repository, runner
 from common.config import (
@@ -160,7 +161,23 @@ def build_news_detail_jobs(start: str, end: str, refetch: bool = False) -> list[
     keys = [f"{s}_{d}" for s, d in stock_news_targets(start, end)]   # 例如 2330_20261120
     done = set() if refetch else repository.raw_keys_done("news_detail")
     links = {link for raw in repository.read_raws("stock_news", keys) for link in client.stock_news_links(raw["body"])}
-    return [(task.crawl_news_detail, {"link": link}) for link in sorted(links) if url_md5(link) not in done]
+    return [(task.crawl_news_detail, {"link": link}) for link in spread_by_site(sorted(links)) if url_md5(link) not in done]
+
+
+def spread_by_site(links: list[str]) -> list[str]:
+    """網站輪流排：A 站一則、B 站一則、C 站一則…，worker 同時做好幾個時，打的大多是不同網站（不會同時連打同一站）。
+
+    >>> spread_by_site(["https://a.com/1", "https://a.com/2", "https://a.com/3", "https://b.com/1", "https://c.com/1"])
+    ['https://a.com/1', 'https://b.com/1', 'https://c.com/1', 'https://a.com/2', 'https://a.com/3']
+    """
+    by_site: dict[str, list[str]] = {}
+    for link in links:
+        by_site.setdefault(urllib.parse.urlsplit(link).netloc, []).append(link)
+    queues = list(by_site.values())
+    spread = []
+    for i in range(max((len(q) for q in queues), default=0)):
+        spread += [q[i] for q in queues if i < len(q)]
+    return spread
 
 
 # ---------- 執行 ----------
@@ -173,7 +190,7 @@ def main() -> None:
     failed += runner.run_jobs(build_mops_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_MOPS, queue="crawl_mops")
     failed += runner.run_jobs(build_detail_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_MOPS, queue="crawl_mops")
     failed += runner.run_jobs(build_stock_news_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_FINMIND, queue="crawl_finmind")
-    failed += runner.run_jobs(build_news_detail_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_NEWS_DETAIL, queue="crawl_finmind")
+    failed += runner.run_jobs(build_news_detail_jobs(args.start, args.end, args.refetch), sleep=SLEEP_SECONDS_NEWS_DETAIL, queue="crawl_news")
     runner.finish(failed)
 
 

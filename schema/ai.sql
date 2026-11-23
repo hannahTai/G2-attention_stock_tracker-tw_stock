@@ -26,8 +26,8 @@ CREATE TABLE IF NOT EXISTS ai_llm_call (
 CREATE INDEX IF NOT EXISTS idx_ai_llm_call_called ON ai_llm_call (called_at);   -- 每天花多少
 COMMENT ON TABLE ai_llm_call IS '每次呼叫 LLM 一列（token、花費、延遲）';
 COMMENT ON COLUMN ai_llm_call.call_id IS '流水號';
-COMMENT ON COLUMN ai_llm_call.task IS '哪個任務，例如 classify_announcement、summarize_news';
-COMMENT ON COLUMN ai_llm_call.ref_key IS '處理哪一筆：結果表的代號（公告 announcement_id、新聞 news_id），JOIN 結果表就是 ref_key ＝ 代號';
+COMMENT ON COLUMN ai_llm_call.task IS '哪個任務，例如 classify_announcement、summarize_news、summarize_card';
+COMMENT ON COLUMN ai_llm_call.ref_key IS '處理哪一筆：結果表的代號（公告 announcement_id、新聞 news_id、卡片 card_id），JOIN 結果表就是 ref_key ＝ 代號';
 COMMENT ON COLUMN ai_llm_call.model IS '模型，例如 claude-haiku-5-5';
 COMMENT ON COLUMN ai_llm_call.prompt_version IS 'prompt 版本，例如 v2';
 COMMENT ON COLUMN ai_llm_call.status IS 'success＝拿到可用的結果；failure＝拒答、被截斷、格式不對';
@@ -87,3 +87,64 @@ COMMENT ON COLUMN ai_news_summary.summary IS '摘要（上限依文章長度：�
 COMMENT ON COLUMN ai_news_summary.summary_ok IS '摘要通過程式檢查：不是空的、不超過這篇的上限、數字都出現在原文裡；否的話不顯示';
 COMMENT ON COLUMN ai_news_summary.model IS '模型';
 COMMENT ON COLUMN ai_news_summary.summarized_at IS '摘要時間（台灣時間）';
+
+-- 新聞 RAG：新聞（標題＋新聞摘要）的向量（pgvector）。每則新聞每個模型一列；換模型另外存一份，比較完再換
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE TABLE IF NOT EXISTS ai_news_embedding (
+    news_id     CHAR(32)     NOT NULL,
+    model       VARCHAR(80)  NOT NULL,
+    embedding   vector(1024) NOT NULL,
+    input_hash  CHAR(32)     NOT NULL,
+    embedded_at TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
+    PRIMARY KEY (news_id, model)
+);
+COMMENT ON TABLE ai_news_embedding IS '新聞 RAG：新聞的向量（標題＋新聞摘要；本機的 embedding 模型，不呼叫 API）';
+COMMENT ON COLUMN ai_news_embedding.news_id IS '新聞代號（stage_news.news_id）';
+COMMENT ON COLUMN ai_news_embedding.model IS 'embedding 模型，例如 BAAI/bge-m3；不同模型的向量不能互相比';
+COMMENT ON COLUMN ai_news_embedding.embedding IS '標題＋新聞摘要的向量（沒有摘要用導言，都沒有就只有標題；1024 維，長度 1：cosine 相似度＝內積；用 <=> 算 cosine 距離）';
+COMMENT ON COLUMN ai_news_embedding.input_hash IS '轉成向量的文字的 md5；摘要後來才寫好、文字變了就重轉';
+COMMENT ON COLUMN ai_news_embedding.embedded_at IS '轉成向量的時間（台灣時間）';
+
+-- 同一件事：好幾家媒體報同一件事，歸成一個 story（story_id＝這件事最早的那則新聞）。每則新聞一列（換模型就換成新模型的歸類）
+CREATE TABLE IF NOT EXISTS ai_news_story (
+    news_id    CHAR(32)     NOT NULL,
+    model      VARCHAR(80)  NOT NULL,
+    story_id   CHAR(32)     NOT NULL,
+    grouped_at TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
+    PRIMARY KEY (news_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_news_story_story ON ai_news_story (story_id);
+COMMENT ON TABLE ai_news_story IS '同一件事的新聞歸在一起（新聞 RAG 的向量判斷，不呼叫 API）';
+COMMENT ON COLUMN ai_news_story.news_id IS '新聞代號（stage_news.news_id）';
+COMMENT ON COLUMN ai_news_story.model IS '用哪個 embedding 模型的向量判斷';
+COMMENT ON COLUMN ai_news_story.story_id IS '這件事最早的那則新聞的 news_id；自己就是最早的（或沒有別家報）等於自己的 news_id';
+COMMENT ON COLUMN ai_news_story.grouped_at IS '歸類的時間（台灣時間）';
+
+-- 卡片 AI 摘要：每張卡片（一檔一天）每個 prompt 版本一列；輸入和前一天一樣就沿用（reused），不呼叫 API
+CREATE TABLE IF NOT EXISTS ai_card_summary (
+    card_id         CHAR(32)     NOT NULL,
+    prompt_version  VARCHAR(20)  NOT NULL,
+    stock_id        VARCHAR(10)  NOT NULL,
+    card_date       DATE         NOT NULL,
+    summary         VARCHAR(300) NOT NULL,
+    news_ids        TEXT[]       NOT NULL DEFAULT '{}',
+    input_hash      CHAR(32)     NOT NULL,
+    summary_ok      BOOLEAN      NOT NULL,
+    reused          BOOLEAN      NOT NULL DEFAULT FALSE,
+    model           VARCHAR(50)  NOT NULL,
+    summarized_at   TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
+    PRIMARY KEY (card_id, prompt_version)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_card_summary_stock ON ai_card_summary (stock_id, card_date);   -- app_card 用它接
+COMMENT ON TABLE ai_card_summary IS '卡片 AI 摘要：每檔注意股、聽牌股每天 2～3 句白話（為什麼被注意、走到哪、相關新聞）';
+COMMENT ON COLUMN ai_card_summary.card_id IS '卡片代號：md5(證券代號_日期)，例如 md5(''2330_20261120'')；ai_llm_call.ref_key 記這個';
+COMMENT ON COLUMN ai_card_summary.prompt_version IS 'prompt 版本（ai/card_summarizer.py 的 PROMPT_VERSION）';
+COMMENT ON COLUMN ai_card_summary.stock_id IS '證券代號';
+COMMENT ON COLUMN ai_card_summary.card_date IS '卡片的日期（交易日）';
+COMMENT ON COLUMN ai_card_summary.summary IS '2～3 句白話摘要（程式限制 150 字，超過會請 LLM 縮短一次）';
+COMMENT ON COLUMN ai_card_summary.news_ids IS '第三句用到的新聞（stage_news.news_id）；網站從 app_stock_news 查標題、連結，不用 LLM 打的字';
+COMMENT ON COLUMN ai_card_summary.input_hash IS '輸入的雜湊值（prompt 版本＋整理好的輸入）；和前一天一樣就沿用前一天的摘要';
+COMMENT ON COLUMN ai_card_summary.summary_ok IS '摘要通過程式檢查：不超過 150 字、數字都出現在輸入裡、引用的新聞編號是這次給的；否的話不顯示';
+COMMENT ON COLUMN ai_card_summary.reused IS '沿用前一天的摘要（輸入一樣，沒有呼叫 API）';
+COMMENT ON COLUMN ai_card_summary.model IS '模型';
+COMMENT ON COLUMN ai_card_summary.summarized_at IS '寫入時間（台灣時間）';

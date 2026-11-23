@@ -20,7 +20,7 @@
 # 帳號密碼沒在 .env 設的話用預設值（資料庫 postgres／postgres、RabbitMQ rabbitmq／rabbitmq），只適合本機開發；放上雲端一定要在 .env 設。
 # 不要用 docker compose down -v：-v 會連 volume 一起刪，資料庫就沒了。
 
-# 專案程式的共同設定：setup、api、web、producer、六個 Celery worker 都用同一個 image（Dockerfile），只是指令不同
+# 專案程式的共同設定：setup、api、web、producer、八個 Celery worker 都用同一個 image（Dockerfile），只是指令不同
 x-app: &app
   build: .
   image: attention-stock-tracker
@@ -33,6 +33,7 @@ x-app: &app
     USE_CELERY: "1"                     # 容器裡的 producer 把任務送進 RabbitMQ，給 worker 做
     API_URL: http://api:8001
     LOG_DIR: /app/logs
+    HF_HOME: /app/data/hf               # 新聞 RAG 的 embedding 模型（bge-m3，約 2.3 GB）下載到這裡，重建 image 不用再下載
   logging:                              # 畫面上的 log（docker compose logs）：每個容器最多 3 個 10MB 的檔，舊的自動丟掉
     driver: json-file
     options:
@@ -118,11 +119,18 @@ services:
     command: ["celery", "-A", "common.worker", "worker", "-Q", "crawl_mops", "--concurrency", "1",
               "--hostname", "crawl_mops@tw_stock", "--loglevel", "INFO"]
 
-  # 新聞：FinMind 新聞清單、新聞網頁的 <head>（導言），一次只做一個，每個任務後等一下（FinmindJob、NewsDetailJob）
+  # 新聞：FinMind 新聞清單，一次只做一個，每個任務後等一下（FinmindJob）；新聞網頁在下面的 celery-crawl-news
   celery-crawl-finmind:
     <<: *celery
     command: ["celery", "-A", "common.worker", "worker", "-Q", "crawl_finmind", "--concurrency", "1",
               "--hostname", "crawl_finmind@tw_stock", "--loglevel", "INFO"]
+
+  # 新聞網頁（crawl_news_detail，只存 <head>）：分散在十幾個網站，同時做 4 個；任務照網站輪流排（crawler/producer.py 的 spread_by_site），
+  # 同時打的大多是不同網站；每個任務後照樣等 SLEEP_SECONDS_NEWS_DETAIL 秒
+  celery-crawl-news:
+    <<: *celery
+    command: ["celery", "-A", "common.worker", "worker", "-Q", "crawl_news", "--concurrency", "4",
+              "--hostname", "crawl_news@tw_stock", "--loglevel", "INFO"]
 
   # transform（raw → stage）：只讀寫自己的資料庫，同時做 4 個
   celery-transform:
@@ -136,11 +144,21 @@ services:
     command: ["celery", "-A", "common.worker", "worker", "-Q", "analyze", "--concurrency", "2",
               "--hostname", "analyze@tw_stock", "--loglevel", "INFO"]
 
-  # AI（ai/）：呼叫 Claude API，同時做 2 個（API 有每分鐘的次數限制）；金鑰 ANTHROPIC_API_KEY 從 .env 讀
+  # AI（ai/）：呼叫 Claude API（公告分類、新聞摘要）、同一件事（不呼叫 API），同時做 2 個（API 有每分鐘的次數限制）；金鑰 ANTHROPIC_API_KEY 從 .env 讀
   celery-ai:
     <<: *celery
     command: ["celery", "-A", "common.worker", "worker", "-Q", "ai", "--concurrency", "2",
               "--hostname", "ai@tw_stock", "--loglevel", "INFO"]
+
+  # 要用本機 embedding 模型的 AI 任務（新聞 RAG 轉向量、卡片 AI 摘要的查詢向量）：只有這個 worker 載入模型（約 2.3 GB 記憶體），
+  # 一次做一個（吃 CPU；卡片 AI 摘要也要照日期先後寫，才能沿用前一天的）；模型載入後留在記憶體，下一個任務不用重載
+  celery-embed:
+    <<: *celery
+    command: ["celery", "-A", "common.worker", "worker", "-Q", "embed", "--concurrency", "1",
+              "--hostname", "embed@tw_stock", "--loglevel", "INFO"]
+    volumes:
+      - ./data/logs:/app/logs
+      - ./data/hf:/app/data/hf          # embedding 模型的快取（見上面的 HF_HOME）
 
   # Flower：網頁上看 worker、任務的執行狀況（帳號密碼和上面的 RabbitMQ 同一組）
   flower:
@@ -171,11 +189,15 @@ services:
         condition: service_started
       celery-crawl-finmind:
         condition: service_started
+      celery-crawl-news:
+        condition: service_started
       celery-transform:
         condition: service_started
       celery-analyze:
         condition: service_started
       celery-ai:
+        condition: service_started
+      celery-embed:
         condition: service_started
 
   # ---------- 網站 ----------

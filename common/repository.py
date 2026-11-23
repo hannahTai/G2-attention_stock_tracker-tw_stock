@@ -10,10 +10,13 @@
   一列寫入     insert_one()（任務一次寫一列：raw、ai_* 表）
   AI（ai/）    讀：list_unlabeled_announcements()、read_announcement()、has_announcement_label()、
                    list_unsummarized_news()、read_news()、has_news_summary()
-               寫：insert_announcement_label()、insert_news_summary()、save_llm_call()（ai_* 表只新增，不修改）
+                   list_news_to_embed()、news_story_links()、stock_news_candidates()（新聞 RAG，pgvector）、
+                   list_unsummarized_cards()、read_card()、recent_announcements()、has_card_summary()、previous_card_summary()
+               寫：insert_announcement_label()、insert_news_summary()、save_news_embeddings()、save_news_stories()、insert_card_summary()、
+                   save_llm_call()（ai_* 表只新增，不修改；新聞向量、同一件事例外：內容變了就重轉、重新歸類）
 
 寫入的函式都收 conn：呼叫的人用 `with get_engine().begin() as conn:` 開一個交易，全部成功才寫入。
-例外：任務一次只寫一列的（raw 表、ai_* 表、job_run）自己開交易——沒有別的寫入要跟它一起成功。
+例外：任務一次只寫一列（或一批，例如一天的新聞向量）的（raw 表、ai_* 表、job_run）自己開交易——沒有別的寫入要跟它一起成功。
 連線設定從 .env 讀（見 config.py）。
 """
 import datetime
@@ -324,7 +327,7 @@ def insert_job_run(row: dict) -> None:
 
 # ---------- 一列寫入（任務一次寫一列）----------
 # 表名會拼進 SQL：只接受 raw 表和這些
-ONE_ROW_TABLES = ("ai_llm_call", "ai_announcement_label", "ai_news_summary")
+ONE_ROW_TABLES = ("ai_llm_call", "ai_announcement_label", "ai_news_summary", "ai_card_summary")
 
 
 def insert_one(table: str, row: dict, on_conflict: str = "") -> None:
@@ -384,11 +387,17 @@ def insert_announcement_label(row: dict) -> None:
 
 
 def list_unsummarized_news(start: datetime.date, end: datetime.date, prompt_version: str, min_text_chars: int) -> list[str]:
-    """這個 prompt 版本還沒摘要的新聞（news_id）：新聞日期在區間內、有抓到網頁、全文至少 min_text_chars 字。"""
+    """這個 prompt 版本還沒摘要的新聞（news_id）：新聞日期在區間內、有抓到網頁、全文至少 min_text_chars 字，
+    而且是區間內被關注的股票（被列注意、處置中）的新聞。其他公司的新聞（例如一次抓全部上市公司的回補）不摘要。"""
     rows = query_rows(
         "SELECT n.news_id FROM tw_stock.stage_news n "
         "JOIN tw_stock.stage_news_detail d USING (news_id) "
         "WHERE n.news_date BETWEEN :start AND :end AND d.text_chars >= :min_chars "
+        "  AND EXISTS (SELECT 1 FROM tw_stock.stage_stock_news sn WHERE sn.news_id = n.news_id AND ("
+        "        EXISTS (SELECT 1 FROM tw_stock.stage_notice x "
+        "                WHERE x.stock_id = sn.stock_id AND x.trade_date BETWEEN :start AND :end) "
+        "     OR EXISTS (SELECT 1 FROM tw_stock.stage_punish x "
+        "                WHERE x.stock_id = sn.stock_id AND x.period_start <= :end AND x.period_end >= :start))) "
         "  AND NOT EXISTS (SELECT 1 FROM tw_stock.ai_news_summary s "
         "                  WHERE s.news_id = n.news_id AND s.prompt_version = :version) "
         "ORDER BY n.news_time, n.news_id",
@@ -412,6 +421,142 @@ def has_news_summary(news_id: str, prompt_version: str) -> bool:
 def insert_news_summary(row: dict) -> None:
     """新聞摘要的結果新增一列（欄位見 schema/ai.sql）。同一則、同一版已經有了就不動（同一個任務被送了兩次）。"""
     insert_one("ai_news_summary", row, "ON CONFLICT (news_id, prompt_version) DO NOTHING")
+
+
+# ---------- 新聞 RAG（pgvector）----------
+def list_news_to_embed(start: datetime.date, end: datetime.date, model: str) -> list[dict]:
+    """新聞日期在區間內的新聞：標題、新聞摘要、導言（照 app_stock_news：通過檢查的摘要、不是網站共用的導言），
+    和這個模型上次轉的文字的雜湊值（還沒轉過是 None）。要不要重轉由 task 比對雜湊值決定。"""
+    rows = query_rows(
+        "SELECT DISTINCT ON (v.news_id) v.news_id, v.title, v.ai_summary, v.lead, e.input_hash "
+        "FROM tw_stock.app_stock_news v "
+        "LEFT JOIN tw_stock.ai_news_embedding e ON e.news_id = v.news_id AND e.model = :model "
+        "WHERE v.news_date BETWEEN :start AND :end "
+        "ORDER BY v.news_id",
+        {"start": start, "end": end, "model": model})
+    return [row._asdict() for row in rows]
+
+
+def save_news_embeddings(rows: list[dict]) -> None:
+    """一批新聞向量寫進 ai_news_embedding（一個交易）；同一則、同一個模型已經有就換成新的（文字變了才會重轉）。
+    embedding 是 pgvector 的字串 "[…]"。"""
+    with get_engine().begin() as conn:
+        conn.execute(sqlalchemy.text(
+            "INSERT INTO tw_stock.ai_news_embedding (news_id, model, embedding, input_hash) "
+            "VALUES (:news_id, :model, CAST(:embedding AS vector), :input_hash) "
+            "ON CONFLICT (news_id, model) DO UPDATE SET embedding = EXCLUDED.embedding, input_hash = EXCLUDED.input_hash, "
+            "  embedded_at = LOCALTIMESTAMP(0)"), rows)
+
+
+def news_story_links(start: datetime.date, end: datetime.date, model: str, threshold: float, days: int, min_title_chars: int
+                     ) -> tuple[list[str], list[tuple[str, str, float]], dict[str, str]]:
+    """同一件事的判斷要的資料（retriever.assign_stories）：
+    區間內有向量的新聞（照時間排）；每則和 days 天內、同一檔股票、比它早的新聞，同一篇（標題一樣，或一則是另一則的開頭、短的至少 min_title_chars 字）或相似度 ≥ threshold 的配對；
+    區間之前已經歸好的 story。"""
+    params = {"start": start, "end": end, "model": model, "threshold": threshold, "days": days, "min_chars": min_title_chars}
+    news = query_rows(
+        "SELECT n.news_id FROM tw_stock.stage_news n "
+        "JOIN tw_stock.ai_news_embedding e ON e.news_id = n.news_id AND e.model = :model "
+        "WHERE n.news_date BETWEEN :start AND :end ORDER BY n.news_time, n.news_id", params)
+    links = query_rows(
+        "SELECT DISTINCT a.news_id, b.news_id AS earlier_id, 1 - (ea.embedding <=> eb.embedding) AS similarity "
+        "FROM tw_stock.stage_news a "
+        "JOIN tw_stock.ai_news_embedding ea ON ea.news_id = a.news_id AND ea.model = :model "
+        "JOIN tw_stock.stage_stock_news sa ON sa.news_id = a.news_id "
+        "JOIN tw_stock.stage_stock_news sb ON sb.stock_id = sa.stock_id AND sb.news_id <> a.news_id "
+        "JOIN tw_stock.stage_news b ON b.news_id = sb.news_id "
+        "JOIN tw_stock.ai_news_embedding eb ON eb.news_id = b.news_id AND eb.model = :model "
+        "WHERE a.news_date BETWEEN :start AND :end "
+        "  AND (b.news_time, b.news_id) < (a.news_time, a.news_id) AND b.news_time >= a.news_time - make_interval(days => :days) "
+        "  AND (b.title = a.title "
+        "       OR (LEAST(length(a.title), length(b.title)) >= :min_chars "
+        "           AND (starts_with(a.title, b.title) OR starts_with(b.title, a.title))) "
+        "       OR 1 - (ea.embedding <=> eb.embedding) >= :threshold)", params)
+    known = query_rows(
+        "SELECT st.news_id, st.story_id FROM tw_stock.ai_news_story st JOIN tw_stock.stage_news n USING (news_id) "
+        "WHERE st.model = :model AND n.news_date BETWEEN CAST(:start AS DATE) - :days AND CAST(:start AS DATE) - 1", params)
+    return ([row.news_id for row in news], [(row.news_id, row.earlier_id, row.similarity) for row in links],
+            {row.news_id: row.story_id for row in known})
+
+
+def save_news_stories(rows: list[dict]) -> None:
+    """一批新聞的 story 寫進 ai_news_story（一個交易）；已經有就換成新的（向量重轉、門檻調整、換模型後重新歸類）。"""
+    with get_engine().begin() as conn:
+        conn.execute(sqlalchemy.text(
+            "INSERT INTO tw_stock.ai_news_story (news_id, model, story_id) VALUES (:news_id, :model, :story_id) "
+            "ON CONFLICT (news_id) DO UPDATE SET model = EXCLUDED.model, story_id = EXCLUDED.story_id, grouped_at = LOCALTIMESTAMP(0)"), rows)
+
+
+def stock_news_candidates(stock_id: str, start: datetime.date, end: datetime.date, model: str, query: str,
+                          limit: int = 50) -> list[dict]:
+    """這檔區間內有向量的新聞，照和 query（pgvector 的字串）的 cosine 距離排（<=>，最近的在前）。
+    similarity＝1－距離；embedding 帶回去給 retriever 判斷重複的報導。"""
+    rows = query_rows(
+        "SELECT n.news_id, n.title, n.publisher, n.news_date, n.link, st.story_id, "
+        "       (SELECT a.summary FROM tw_stock.ai_news_summary a WHERE a.news_id = n.news_id AND a.summary_ok "
+        "        ORDER BY a.summarized_at DESC LIMIT 1) AS ai_summary, "
+        "       1 - (e.embedding <=> CAST(:query AS vector)) AS similarity, CAST(e.embedding AS TEXT) AS embedding "
+        "FROM tw_stock.stage_stock_news s "
+        "JOIN tw_stock.stage_news n ON n.news_id = s.news_id "
+        "JOIN tw_stock.ai_news_embedding e ON e.news_id = n.news_id AND e.model = :model "
+        "LEFT JOIN tw_stock.ai_news_story st ON st.news_id = n.news_id AND st.model = :model "
+        "WHERE s.stock_id = :stock_id AND n.news_date BETWEEN :start AND :end "
+        "ORDER BY e.embedding <=> CAST(:query AS vector) "
+        "LIMIT :limit",
+        {"stock_id": stock_id, "start": start, "end": end, "model": model, "query": query, "limit": limit})
+    return [row._asdict() for row in rows]
+
+
+# ---------- 卡片 AI 摘要 ----------
+def list_unsummarized_cards(start: datetime.date, end: datetime.date, prompt_version: str) -> list[tuple[str, datetime.date]]:
+    """區間內每天的注意股（今天被列）、聽牌股（還差 1 次），上市公司，這一版還沒寫摘要的：(證券代號, 日期)。"""
+    rows = query_rows(
+        "SELECT c.stock_id, c.trade_date FROM tw_stock.app_card c "
+        "WHERE c.trade_date BETWEEN :start AND :end AND c.is_company AND (c.is_listed_today OR c.steps_left = 1) "
+        "  AND NOT EXISTS (SELECT 1 FROM tw_stock.ai_card_summary s "
+        "                  WHERE s.stock_id = c.stock_id AND s.card_date = c.trade_date AND s.prompt_version = :version) "
+        "ORDER BY c.trade_date, c.stock_id",
+        {"start": start, "end": end, "version": prompt_version})
+    return [(row.stock_id, row.trade_date) for row in rows]
+
+
+def read_card(stock_id: str, day: datetime.date) -> dict | None:
+    """app_card 那天的一列（卡片 AI 摘要的輸入）；沒有就回傳 None。"""
+    rows = query_rows(
+        "SELECT trade_date, stock_id, stock_name, is_listed_today, clauses, reason_text, close_price, change_pct "
+        "FROM tw_stock.app_card WHERE stock_id = :stock_id AND trade_date = :day",
+        {"stock_id": stock_id, "day": day})
+    return rows[0]._asdict() if rows else None
+
+
+def recent_announcements(stock_id: str, start: datetime.date, end: datetime.date) -> list[dict]:
+    """區間內的公告（舊的在前），含公告分類的類型、有新消息、白話摘要。"""
+    rows = query_rows(
+        "SELECT announce_date, subject, category, has_news, is_negative, ai_summary FROM tw_stock.app_announcement "
+        "WHERE stock_id = :stock_id AND announce_date BETWEEN :start AND :end ORDER BY announce_date, announce_time",
+        {"stock_id": stock_id, "start": start, "end": end})
+    return [row._asdict() for row in rows]
+
+
+def has_card_summary(card_id: str, prompt_version: str) -> bool:
+    """這張卡片、這個 prompt 版本已經寫過摘要了嗎。"""
+    return bool(query_rows("SELECT 1 FROM tw_stock.ai_card_summary WHERE card_id = :card_id AND prompt_version = :version",
+                           {"card_id": card_id, "version": prompt_version}))
+
+
+def previous_card_summary(stock_id: str, before: datetime.date, prompt_version: str) -> dict | None:
+    """這檔、這一版、before 之前最近一天的摘要（輸入一樣就沿用）；沒有就回傳 None。"""
+    rows = query_rows(
+        "SELECT card_id, prompt_version, stock_id, card_date, summary, news_ids, input_hash, summary_ok, reused, model "
+        "FROM tw_stock.ai_card_summary WHERE stock_id = :stock_id AND card_date < :before AND prompt_version = :version "
+        "ORDER BY card_date DESC LIMIT 1",
+        {"stock_id": stock_id, "before": before, "version": prompt_version})
+    return rows[0]._asdict() if rows else None
+
+
+def insert_card_summary(row: dict) -> None:
+    """卡片 AI 摘要的結果新增一列（欄位見 schema/ai.sql）。同一張卡片、同一版已經有了就不動。"""
+    insert_one("ai_card_summary", row, "ON CONFLICT (card_id, prompt_version) DO NOTHING")
 
 
 def save_llm_call(row: dict, problem: str | None = None) -> str:

@@ -39,7 +39,7 @@
 
 {% macro foot(c, ann_href) -%}
 <div class="card-foot">
-  <span>{% if c.close %}收盤 <span class="mono">{{ c.close }}</span>{% endif %}</span>
+  <span>{% if c.close %}收盤 <span class="mono">{{ c.close }}</span>{% if c.change %} <span class="chg {{ c.change.kind }} mono">{{ c.change.text }}</span>{% endif %}{% endif %}</span>
   {% if c.announcement_count %}<a class="ann-link" href="{{ ann_href }}">公告 {{ c.announcement_count }} 則 ›</a>{% else %}<span>沒有公告</span>{% endif %}
 </div>
 {%- endmacro %}

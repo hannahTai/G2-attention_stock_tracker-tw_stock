@@ -4,7 +4,7 @@
 crawler    API        → raw_* 表     抓資料，存原文
 transform  raw_* 表   → stage_* 表   整理成表
 analyze    stage_* 表 → app_* 表     規則引擎算進度
-ai         stage_* 表 → ai_* 表     呼叫 LLM、存結果（公告分類、新聞摘要）
+ai         stage_* 表 → ai_* 表     呼叫 LLM、存結果（公告分類、新聞摘要、新聞 RAG、卡片 AI 摘要）
 ```
 
 ## 每天怎麼跑
@@ -39,11 +39,14 @@ ai         stage_* 表 → ai_* 表     呼叫 LLM、存結果（公告分類、
 
 **4. ai：AI 項目**
 
-只讀 stage 表、呼叫 LLM、把結果存進 ai_* 表。失敗只影響 AI 的結果，網站照常。
+讀 stage 表和網站的 VIEW（`app_card`、`app_announcement`、`app_stock_news`）、呼叫 LLM、把結果存進 ai_* 表。失敗只影響 AI 的結果，網站照常。
 
 - 公告分類：還沒分類、有全文的公告，每則一個任務 `classify_announcement` → `ai_announcement_label`。
-- 新聞摘要：有抓到網頁、全文夠長、還沒摘要的新聞，每則一個任務 `summarize_news` → `ai_news_summary`。
-- 沒設 `ANTHROPIC_API_KEY` 就整批跳過。
+- 新聞摘要：被關注的股票（被列注意、處置中）、有抓到網頁、全文夠長、還沒摘要的新聞，每則一個任務 `summarize_news` → `ai_news_summary`。
+- 新聞 RAG：每天一個任務 `embed_news`，新聞的標題＋新聞摘要轉成向量 → `ai_news_embedding`（本機的 bge-m3，不用 API key；排在新聞摘要後面）。
+- 同一件事：整段區間一個任務 `group_news_stories`，好幾家報同一件事的新聞歸在一起 → `ai_news_story`（用新聞向量，不用 API key）。
+- 卡片 AI 摘要：每天的注意股、聽牌股，一檔一天一個任務 `summarize_card` → `ai_card_summary`（用到公告分類、新聞 RAG、同一件事，排最後）。
+- 沒設 `ANTHROPIC_API_KEY` 就跳過要呼叫 Claude 的項目（新聞向量照樣轉）。
 
 **有失敗時怎麼查、怎麼補**
 
@@ -170,11 +173,26 @@ raw 是有主鍵又只新增：主鍵含 `fetched_at`（精確到微秒），每
 | 項目 | 任務 | 一次處理 | 範圍 | 摘要上限 | 寫入 |
 |---|---|---|---|---|---|
 | 公告分類 | `classify_announcement` | 一則公告 | 區間內發言的公告，加上全文在區間內才寫進來的（新被關注的公司，crawler 會補抓當月和上個月的公告） | 60 字 | `ai_announcement_label` |
-| 新聞摘要 | `summarize_news` | 一則新聞 | 區間內（往前多 `NEWS_LOOKBACK_DAYS` 天）有抓到網頁、全文至少 200 字的新聞 | 文章的三成（80～1200 字） | `ai_news_summary`（網站讀 `app_stock_news.ai_summary`） |
+| 新聞摘要 | `summarize_news` | 一則新聞 | 區間內（往前多 `NEWS_LOOKBACK_DAYS` 天）被關注的股票（被列注意、處置中）、有抓到網頁、全文至少 200 字的新聞 | 文章的三成（80～1200 字；跟 LLM 說八五成） | `ai_news_summary`（網站讀 `app_stock_news.ai_summary`） |
+| 新聞 RAG | `embed_news` | 一天的新聞 | 區間內（往前多 `NEWS_LOOKBACK_DAYS` 天）的新聞，標題＋新聞摘要；文字和上次一樣（`input_hash`）的跳過 | — | `ai_news_embedding` |
+| 同一件事 | `group_news_stories` | 整段區間 | 區間內（往前多 `NEWS_LOOKBACK_DAYS` 天）有向量的新聞 | — | `ai_news_story`（網站讀 `app_stock_news.story_id`） |
+| 卡片 AI 摘要 | `summarize_card` | 一檔一天 | 區間內每天的注意股（今天被列）、聽牌股（還差 1 次），上市公司 | 150 字 | `ai_card_summary`（網站讀 `app_card.ai_summary`） |
 
-- 只讀 stage 表、呼叫 Claude、結果存進自己的 `ai_*` 表。沒設 `ANTHROPIC_API_KEY` 就整批跳過。模型：`.env` 的 `AI_CLASSIFY_MODEL`、`AI_SUMMARY_MODEL`（預設 `claude-haiku-5-5`），結構化輸出（照 JSON schema 回答）。
+- 讀 stage 表和網站的 VIEW（`app_card`、`app_announcement`、`app_stock_news`）、呼叫 Claude、結果存進自己的 `ai_*` 表。沒設 `ANTHROPIC_API_KEY` 就跳過要呼叫 Claude 的項目。模型：`.env` 的 `AI_CLASSIFY_MODEL`、`AI_SUMMARY_MODEL`、`AI_CARD_MODEL`（預設 `claude-haiku-5-5`），結構化輸出（照 JSON schema 回答）。
 - 例外：新聞摘要要全文，但全文不存進資料庫（著作權），所以任務當場再打開網頁一次（用 `crawler/client.py` 的函式），全文交給 Claude 後就丟掉。打不開（被擋）、全文太短就跳過，不問 Claude。
-- 兩個項目同樣的規則：
+- 新聞 RAG（向量檢索）：
+  - 每則新聞的「標題＋新聞摘要」（沒有摘要用導言，都沒有就只有標題；排在新聞摘要後面，摘要後來才寫好就重轉）用本機的 embedding 模型（`.env` 的 `EMBED_MODEL`，預設 `BAAI/bge-m3`）轉成 1024 維的向量，存在同一個 PostgreSQL 的 pgvector（`ai_news_embedding`）。第一次用時下載模型（約 2.3 GB）到 `data/hf/`。
+  - 寫卡片摘要時：把「股票名稱＋近 30 天公告的主旨和摘要」也轉成向量當查詢（不放被注意的原因：條文字句會去比對「股價大漲」的快訊），先用 WHERE 篩這檔最近 7 天的新聞，再用 pgvector 的 cosine 距離（`<=>`）排序。
+  - 先拿掉沒有內容的新聞（論壇貼文、個股概覽、法人買賣超表、重複注意股名單的快訊）；相似度太低的不要；同一篇（標題一樣，或轉貼時標題後面多了欄目名稱）、或兩則相似度 ≥ 0.84 當成同一件事，只留最相關的一則；最多 5 則（`ai/retriever.py`）。
+  - 同一件事：好幾家報同一件事（3 天內、同一檔、同一篇或相似度 ≥ 0.84）歸成一個 story（`ai_news_story`），網站的新聞列表一件事只列一則，寫「也有 X、Y 報導」。
+  - 用到模型的任務（轉向量、卡片 AI 摘要）送 `embed` 佇列，只有 `celery-embed` 這個 worker 載入模型（約 2.3 GB 記憶體），一次做一個；其他 AI 任務照樣在 `ai`。
+- 卡片 AI 摘要：
+  - 資料由程式查好交給 Claude（`app_card` 那天的一列、近 30 天公告和公告分類、新聞 RAG 挑出的新聞），Claude 只負責寫成人話，重點是「這檔最近為什麼漲（跌）這麼多」：第一句股價最近怎麼了（漲跌幅照資料抄），接著是公告和新聞（標題＋新聞摘要）裡可能的原因，看不出原因就直說。被列注意的規定、離處置還差幾次卡片上已經有，摘要不寫；用到的新聞記在 `news_used`，文字裡不寫編號。
+  - 不給「若再被列就哪天處置」這種推算（輸入不放）；不預測漲跌、不給買賣建議。
+  - 輸入的雜湊值和前一天一樣（處置中、沒有新公告和新聞）就沿用前一天的摘要，不呼叫 API（`reused`）。
+  - 新聞的出處：網站照 `news_ids` 從 `app_stock_news` 查標題和連結，不用 Claude 打的字；引用的編號不是這次給的就 `summary_ok`＝否。
+  - 新聞是選擇性的輸入：新聞 RAG 出錯或沒有新聞，照樣只用自己的資料寫。
+- 要呼叫 Claude 的項目同樣的規則：
   - 同一個 prompt 版本已經有結果的不再問（不重複花錢）。
   - 每次呼叫都記一列 `ai_llm_call`（token、花費）。
   - 摘要超過上限：請 Claude 縮短，只重問一次；還是太長、或縮短那次失敗，就用第一次的回答照存，標 `summary_ok`＝否（網站不顯示）。
@@ -222,7 +240,7 @@ gzip -dc data/backup/tw_stock_20261114_233000.sql.gz | wsl docker exec -i postgr
 | `G2-attention_stock_tracker-backup` | 週一～五 23:30 | `scripts\run_backup.bat` | `data/backup.log` |
 
 - 用 `conhost.exe --headless` 背景執行；錯過時開機後補跑；電腦關機或睡眠時不會跑。
-- log 每天一個檔，只留 30 天（worker 的 log 也一樣：`data/logs/crawl_twse-…`、`crawl_mops-…`、`crawl_finmind-…`、`transform-…`、`analyze-…`、`ai-…`）；永久的紀錄是任務歷史 `tw_stock.job_run`（每個任務每跑一次一列）。
+- log 每天一個檔，只留 30 天（worker 的 log 也一樣：`data/logs/crawl_twse-…`、`crawl_mops-…`、`crawl_finmind-…`、`crawl_news-…`、`transform-…`、`analyze-…`、`ai-…`、`embed-…`）；永久的紀錄是任務歷史 `tw_stock.job_run`（每個任務每跑一次一列）。
 - `Start-ScheduledTask <工作名稱>` 手動跑一次；`Get-ScheduledTaskInfo <工作名稱>` 看結果（0＝成功）。
 
 重灌時重建（backup 把檔名、時間換掉，並加 `-ExecutionTimeLimit (New-TimeSpan -Hours 1)`）：

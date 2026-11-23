@@ -28,14 +28,14 @@ def plain(value):
     return value
 
 
-# app_card 給網頁的欄位：app_progress 的欄位（不含 process_date、loaded_at）＋ VIEW 加上的名稱、收盤價、款次、處置中那次
+# app_card 給網頁的欄位：app_progress 的欄位（不含 process_date、loaded_at）＋ VIEW 加上的名稱、收盤價、款次、處置中那次、卡片 AI 摘要
 CARD_COLUMNS = """
     trade_date, stock_id, count_start, streak3, streak5, in10, in30,
     streak3_left, streak5_left, in10_left, in30_left, steps_left, closest_path, punished_by, has_full_history,
     period_start, period_end, resume_date,
     next_listed_date, next_punish_round, next_period_start, next_period_end, next_resume_date,
-    stock_name, is_listed_today, is_company, close_price, reason_text, clauses, is_counted_today,
-    measure_type, trigger_condition, match_interval_minutes, announcement_count
+    stock_name, is_listed_today, is_company, close_price, price_change, change_pct, reason_text, clauses, is_counted_today,
+    measure_type, trigger_condition, match_interval_minutes, announcement_count, ai_summary, ai_summary_news_ids
 """
 
 
@@ -132,3 +132,40 @@ def announcements(conn: sqlalchemy.Connection, stock_id: str, start: datetime.da
         ORDER BY announce_date, announce_time
     """
     return _records(conn, sql, stock_id=stock_id, start=start, end=end)
+
+
+# 新聞列表不放的：標題有這些字的是論壇貼文，不是新聞
+HIDDEN_NEWS_TITLE_WORDS = ("股市爆料同學會",)
+
+
+def stock_news(conn: sqlalchemy.Connection, stock_id: str, start: datetime.date, end: datetime.date) -> list[dict]:
+    """期間內這檔的新聞（新的在前）：標題、連結、媒體、日期。同一件事（story_id 一樣）只列最早的那則，
+    also_reported_by 是其他報這件事的媒體。論壇貼文（HIDDEN_NEWS_TITLE_WORDS）不列。"""
+    sql = """
+        WITH news AS (
+            SELECT news_id, news_date, news_time, publisher, title, link, story_id
+            FROM app_stock_news
+            WHERE stock_id = :stock_id AND news_date BETWEEN :start AND :end
+              AND NOT title LIKE ANY(:hidden)
+        ), firsts AS (
+            SELECT DISTINCT ON (story_id) *
+            FROM news
+            ORDER BY story_id, news_time, news_id
+        )
+        SELECT f.news_id, f.news_date, f.news_time, f.publisher, f.title, f.link,
+               ARRAY(SELECT DISTINCT o.publisher FROM news o
+                     WHERE o.story_id = f.story_id AND o.publisher <> f.publisher ORDER BY o.publisher) AS also_reported_by
+        FROM firsts f
+        ORDER BY f.news_time DESC
+    """
+    return _records(conn, sql, stock_id=stock_id, start=start, end=end, hidden=[f"%{w}%" for w in HIDDEN_NEWS_TITLE_WORDS])
+
+
+def news_by_ids(conn: sqlalchemy.Connection, news_ids: list[str]) -> list[dict]:
+    """這幾則新聞的標題、連結、媒體、日期（照給的順序）；卡片 AI 摘要第三句的出處用。"""
+    if not news_ids:
+        return []
+    rows = _records(conn, "SELECT DISTINCT ON (news_id) news_id, news_date, publisher, title, link "
+                          "FROM app_stock_news WHERE news_id = ANY(:ids) ORDER BY news_id", ids=news_ids)
+    by_id = {row["news_id"]: row for row in rows}
+    return [by_id[news_id] for news_id in news_ids if news_id in by_id]

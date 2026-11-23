@@ -137,6 +137,7 @@ CREATE TABLE IF NOT EXISTS stage_stock_price (
     high_price        DECIMAL(10, 2),
     low_price         DECIMAL(10, 2),
     close_price       DECIMAL(10, 2),
+    price_change      DECIMAL(10, 2),
     volume_shares     BIGINT,
     loaded_at         TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
     source_fetched_at TIMESTAMP(6),
@@ -150,6 +151,7 @@ COMMENT ON COLUMN stage_stock_price.open_price IS '開盤價';
 COMMENT ON COLUMN stage_stock_price.high_price IS '最高價';
 COMMENT ON COLUMN stage_stock_price.low_price IS '最低價';
 COMMENT ON COLUMN stage_stock_price.close_price IS '收盤價';
+COMMENT ON COLUMN stage_stock_price.price_change IS '漲跌（和參考價比，除權息日已經調整；正的漲、負的跌、0 平盤）；不比價的為 NULL';
 COMMENT ON COLUMN stage_stock_price.volume_shares IS '成交股數';
 COMMENT ON COLUMN stage_stock_price.loaded_at IS '寫入時間（台灣時間）';
 COMMENT ON COLUMN stage_stock_price.source_fetched_at IS '來自哪次抓取（raw 的 fetched_at）；寫入時只讓比較新的覆蓋';

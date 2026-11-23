@@ -177,8 +177,19 @@ def clean_trading_day(df: pd.DataFrame, month_yyyymm: str, through: datetime.dat
 
 
 # ---------- 每日收盤行情 → stage_stock_price ----------
-# 用得到的官方欄位（沒用到：成交筆數、成交金額、漲跌、最後揭示買賣價量、本益比）
-STOCK_PRICE_FIELDS = ["證券代號", "證券名稱", "成交股數", "開盤價", "最高價", "最低價", "收盤價"]
+# 用得到的官方欄位（沒用到：成交筆數、成交金額、最後揭示買賣價量、本益比）
+STOCK_PRICE_FIELDS = ["證券代號", "證券名稱", "成交股數", "開盤價", "最高價", "最低價", "收盤價", "漲跌(+/-)", "漲跌價差"]
+
+
+def signed_change(sign: pd.Series, amount: pd.Series) -> pd.Series:
+    """漲跌(+/-)（HTML，例如 <p style= color:red>+</p>）＋漲跌價差 → 帶正負號的漲跌；平盤是 0，不比價（X）是 NaN。
+
+    >>> signed_change(pd.Series(["<p style= color:red>+</p>", "<p style= color:green>-</p>", "<p> </p>", "<p>X</p>"]),
+    ...               pd.Series(["5.50", "100.00", "0.00", "0.00"])).tolist()
+    [5.5, -100.0, 0.0, nan]
+    """
+    factor = strip_html(sign).map({"+": 1.0, "-": -1.0, "": 0.0})   # 其他（X 不比價）→ NaN
+    return to_number(amount) * factor
 
 
 def stock_price_to_frame(raw: dict) -> pd.DataFrame:
@@ -198,6 +209,7 @@ def clean_stock_price(df: pd.DataFrame, day: datetime.date) -> pd.DataFrame:
         "high_price": to_number(df["最高價"]),
         "low_price": to_number(df["最低價"]),
         "close_price": to_number(df["收盤價"]),
+        "price_change": signed_change(df["漲跌(+/-)"], df["漲跌價差"]),
         "volume_shares": to_number(df["成交股數"]).astype("Int64"),
     })
     return prices[prices["close_price"].notna()].reset_index(drop=True)

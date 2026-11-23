@@ -83,8 +83,10 @@ def overview_html(data: dict, dates: list[datetime.date], requested: datetime.da
         return view_query({**current, **changes})
 
     back_query = view_query({"tab": page["tab"], "only": page["only"], "q": page["search"]})
+    filters = views.filter_labels(day)   # 「11/20 注意股」：前面加資料的日期
     return render("overview.html", day=day, notice=notice_text(requested, day), back_query=back_query,
-                  dates=sorted(set(dates) | {day}, reverse=True), tabs=views.TABS, filters=views.FILTERS,
+                  dates=sorted(set(dates) | {day}, reverse=True), tabs=views.TABS, filters=filters,
+                  only_label=dict(filters).get(page["only"], ""),
                   empty_text=views.EMPTY_TEXT, tab_notes=views.TAB_NOTES, url_with=url_with, **page)
 
 

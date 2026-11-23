@@ -15,7 +15,9 @@ import pandas as pd
 import pytest
 import sqlalchemy
 
+from ai import task as ai_task
 from analyze import task as analyze_task
+from api import queries
 from common import repository, runner
 from common.config import DB_NAME, MAX_RETRIES
 from common.hash_utils import key_md5, url_md5
@@ -313,12 +315,16 @@ def test_announcement_label_inserted_twice_keeps_first(db):
 
 
 def test_news_summary_listed_once_and_shown_in_view(db):
-    """有網頁、全文夠長的新聞才列出來摘要；摘要過就不再列；通過檢查的摘要出現在 app_stock_news。"""
+    """被關注的股票、有網頁、全文夠長的新聞才列出來摘要；摘要過就不再列；通過檢查的摘要出現在 app_stock_news。"""
     put_raw("stock_news", "2330_20261120", stock_news_raw("2330"), "2026-11-21T09:00:00+08:00")
     put_raw("news_detail", url_md5(NEWS_LINK), {"final_url": NEWS_LINK, "head": "", "text_chars": 500}, "2026-11-21T09:05:00+08:00")
     transform_task.transform_stock_news("2330", "20261120")
     transform_task.transform_news_detail(url_md5(NEWS_LINK))
     day = datetime.date(2026, 11, 20)
+    assert repository.list_unsummarized_news(day, day, "v1", 200) == []   # 2330 這段期間沒被關注
+    with db.begin() as conn:
+        conn.execute(sqlalchemy.text(
+            "INSERT INTO stage_notice (trade_date, stock_id, stock_name, reason_text) VALUES (:d, '2330', '台積電', 'r')"), {"d": day})
     assert repository.list_unsummarized_news(day, day, "v1", 200) == [url_md5(NEWS_LINK)]
     assert repository.list_unsummarized_news(day, day, "v1", 1000) == []   # 全文太短
 
@@ -364,3 +370,63 @@ def test_app_announcement_labels_come_from_ai_with_keyword_fallback(db):
         assert tuple(conn.execute(query).one()) == (False, True, "澄清／回應媒體", "澄清媒體報導")   # 用公告分類的判斷
     with db.connect() as conn:   # 壞消息另外一欄
         assert conn.execute(sqlalchemy.text("SELECT is_negative FROM app_announcement")).scalar() is True
+
+
+def test_news_rag_ranks_by_cosine_and_card_summary_shows_in_app_card(db):
+    """pgvector：向量寫得進去（重寫是換掉，不重複）、照 cosine 距離排；卡片 AI 摘要通過檢查的才出現在 app_card。"""
+    put_raw("stock_news", "2330_20261120", stock_news_raw("2330"), "2026-11-21T09:00:00+08:00")
+    transform_task.transform_stock_news("2330", "20261120")
+    vector = "[" + ",".join(["1.0"] + ["0.0"] * 1023) + "]"
+    day = datetime.date(2026, 11, 20)
+    [todo] = repository.list_news_to_embed(day, day, "m")
+    assert todo["news_id"] == url_md5(NEWS_LINK) and todo["input_hash"] is None
+    for text_hash in ("a" * 32, "b" * 32):
+        repository.save_news_embeddings([{"news_id": url_md5(NEWS_LINK), "model": "m", "embedding": vector, "input_hash": text_hash}])
+    assert repository.list_news_to_embed(day, day, "m")[0]["input_hash"] == "b" * 32 and count(db, "ai_news_embedding") == 1
+    [news] = repository.stock_news_candidates("2330", day, day, "m", vector)
+    assert news["news_id"] == url_md5(NEWS_LINK) and abs(news["similarity"] - 1.0) < 1e-6
+
+    with db.begin() as conn:   # app_card 要有一列（app_progress）
+        conn.execute(sqlalchemy.text(
+            "INSERT INTO app_progress (trade_date, stock_id, count_start, streak3, streak5, in10, in30, has_full_history, process_date) "
+            "VALUES (:d, '2330', :d, 1, 1, 1, 1, TRUE, :d)"), {"d": day})
+    row = {"card_id": key_md5("2330", "20261120"), "prompt_version": "v1", "stock_id": "2330", "card_date": day,
+           "summary": "因累積漲幅太大被列注意。", "news_ids": [url_md5(NEWS_LINK)], "input_hash": "0" * 32,
+           "summary_ok": True, "reused": False, "model": "m"}
+    repository.insert_card_summary(row)
+    with db.connect() as conn:
+        card = conn.execute(sqlalchemy.text("SELECT ai_summary, ai_summary_news_ids FROM app_card")).one()
+    assert card.ai_summary == "因累積漲幅太大被列注意。" and card.ai_summary_news_ids == [url_md5(NEWS_LINK)]
+    assert repository.previous_card_summary("2330", datetime.date(2026, 11, 21), "v1")["summary"] == row["summary"]
+
+
+def test_same_story_grouped_and_listed_once(db):
+    """三家報同一件事（向量很像）、一則別的事：同一件事歸到最早那則；API 的新聞列表只列一則，寫其他媒體。"""
+    same = "[" + ",".join(["1.0"] + ["0.0"] * 1023) + "]"
+    other = "[" + ",".join(["0.0", "1.0"] + ["0.0"] * 1022) + "]"
+    news = [("https://a.com/1", "09:00", "UDN", "健策接獲大單", same), ("https://b.com/1", "10:00", "自由時報", "健策拿下訂單", same),
+            ("https://c.com/1", "11:00", "鉅亨網", "健策接獲大單", same), ("https://d.com/1", "12:00", "UDN", "健策除息", other),
+            ("https://g.com/1", "12:30", "CMoney", "3653 健策 - 明天會漲嗎- 股市爆料同學會",
+             "[" + ",".join(["0.0"] * 4 + ["1.0"] + ["0.0"] * 1019) + "]"),   # 論壇貼文：新聞列表不列
+            ("https://e.com/1", "13:00", "CMoney", "【下週觀察】健策跌近一成仍留3清單",
+             "[" + ",".join(["0.0"] * 3 + ["1.0"] + ["0.0"] * 1020) + "]"),
+            ("https://f.com/1", "14:00", "CMoney投資網誌", "【下週觀察】健策跌近一成仍留3清單-起漲K線",
+             "[" + ",".join(["0.0", "0.0", "1.0"] + ["0.0"] * 1021) + "]")]   # 向量不像，但標題是同一篇
+    with db.begin() as conn:
+        for link, time, publisher, title, vector in news:
+            conn.execute(sqlalchemy.text(
+                "INSERT INTO stage_news (news_id, link, news_time, news_date, publisher, title) "
+                "VALUES (md5(:link), :link, :t, :d, :p, :title)"),
+                {"link": link, "t": datetime.datetime.fromisoformat(f"2026-11-20T{time}"), "d": datetime.date(2026, 11, 20),
+                 "p": publisher, "title": title})
+            conn.execute(sqlalchemy.text("INSERT INTO stage_stock_news (stock_id, news_id) VALUES ('3653', md5(:link))"), {"link": link})
+            conn.execute(sqlalchemy.text(
+                "INSERT INTO ai_news_embedding (news_id, model, embedding, input_hash) VALUES (md5(:link), :m, CAST(:v AS vector), :h)"),
+                {"link": link, "m": ai_task.EMBED_MODEL, "v": vector, "h": "0" * 32})
+    for _ in range(2):   # 重跑：換成一樣的結果，不重複
+        assert "3 則和別則是同一件事" in ai_task.group_news_stories("20261120", "20261120")
+    assert count(db, "ai_news_story") == 7
+    day = datetime.date(2026, 11, 20)
+    with db.connect() as conn:
+        listed = queries.stock_news(conn, "3653", day, day)
+    assert [(n["title"], n["also_reported_by"]) for n in listed] == [("【下週觀察】健策跌近一成仍留3清單", ["CMoney投資網誌"]), ("健策除息", []), ("健策接獲大單", ["自由時報", "鉅亨網"])]

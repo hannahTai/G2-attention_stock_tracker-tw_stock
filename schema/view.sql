@@ -36,6 +36,10 @@ SELECT
     -- 當天收盤行情；還沒抓到就用注意股公告上的；那天沒成交為 NULL
     COALESCE(sp.close_price, n.close_price) AS close_price,
 
+    -- 漲跌和漲跌幅（%，和參考價比）：只有收盤行情有；還沒抓到、不比價的為 NULL
+    sp.price_change,
+    ROUND(sp.price_change / NULLIF(sp.close_price - sp.price_change, 0) * 100, 2) AS change_pct,
+
     -- 今天被列的原因全文
     n.reason_text,
 
@@ -68,9 +72,21 @@ SELECT
         WHERE a.company_id = p.stock_id
           AND a.announce_date <= p.trade_date
           AND a.announce_date >= w.window_start
-    ) AS announcement_count
+    ) AS announcement_count,
+
+    -- 卡片 AI 摘要（最新一版、通過檢查的；還沒寫、沒通過的為 NULL）和第三句用到的新聞
+    cs.summary AS ai_summary,
+    cs.news_ids AS ai_summary_news_ids
 
 FROM app_progress p
+
+LEFT JOIN LATERAL (
+    SELECT x.summary, x.news_ids
+    FROM ai_card_summary x
+    WHERE x.stock_id = p.stock_id AND x.card_date = p.trade_date AND x.summary_ok
+    ORDER BY x.summarized_at DESC
+    LIMIT 1
+) cs ON TRUE
 
 -- 每個交易日的「往前第 30 個營業日」（含當天）先算好一次再接回來；不夠 30 天就用第一個交易日。
 -- 不要改回每列各算一次：3 萬列 × 每列一個子查詢，整張排序要 40 秒
@@ -199,7 +215,8 @@ SELECT
     n.title,
     n.link,
     CASE WHEN shared.news_count >= 3 THEN NULL ELSE d.lead END AS lead,
-    summary.summary AS ai_summary
+    summary.summary AS ai_summary,
+    COALESCE(st.story_id, n.news_id) AS story_id   -- 同一件事（ai_news_story）；還沒歸類就是自己
 FROM stage_stock_news s
 JOIN stage_news n
     ON n.news_id = s.news_id
@@ -218,4 +235,6 @@ LEFT JOIN LATERAL (   -- 最新一版、通過檢查的 AI 摘要
     WHERE a.news_id = n.news_id AND a.summary_ok
     ORDER BY a.summarized_at DESC
     LIMIT 1
-) summary ON TRUE;
+) summary ON TRUE
+LEFT JOIN ai_news_story st   -- 每則新聞一列
+    ON st.news_id = n.news_id;

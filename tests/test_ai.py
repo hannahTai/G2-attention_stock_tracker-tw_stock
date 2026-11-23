@@ -8,7 +8,7 @@ import httpx2
 import pytest
 import requests
 
-from ai import classifier, client, summarizer
+from ai import card_summarizer, classifier, client, embedder, summarizer
 from ai import producer as pa
 from ai import task as ai_task
 from common import date_utils, repository, runner
@@ -223,7 +223,7 @@ def test_news_summary_row_checks_numbers_and_never_keeps_text():
 def test_news_summary_limit_scales_with_article():
     """上限是文章的三成：短文章摘要短、長文章最多 1200 字（欄位大小）；上限寫在給 LLM 的訊息最後。"""
     assert summarizer.summary_limit("字" * 600) == 180 and summarizer.summary_limit("字" * 9000) == summarizer.SUMMARY_MAX_CHARS
-    assert summarizer.build_user_message(NEWS, "字" * 600, 180).endswith("summary 最多 180 個字。")
+    assert summarizer.build_user_message(NEWS, "字" * 600, 180).endswith("summary 最多 153 個字。")   # 上限的八五成
 
 
 def test_news_summary_message_wraps_article_and_cuts_long_text():
@@ -330,3 +330,113 @@ def test_summary_jobs_look_back_like_crawler(monkeypatch):
     [(func, kwargs)] = pa.build_summary_jobs("20261120", "20261120")
     assert func is ai_task.summarize_news and kwargs == {"news_id": NEWS["news_id"]}
     assert asked == {"start": datetime.date(2026, 11, 13), "end": datetime.date(2026, 11, 20), "min_chars": summarizer.MIN_TEXT_CHARS}
+
+
+# ---------- 新聞 RAG：embed_news ----------
+def test_embed_news_turns_title_and_summary_into_vectors(monkeypatch):
+    """標題＋新聞摘要（沒有摘要用導言）→ 向量，一批寫進 ai_news_embedding；文字沒變的跳過，摘要後來才寫好的重轉。不載入真的模型。"""
+    rows = [{"news_id": "n1", "title": "健策營收創高", "ai_summary": "10月營收年增81％", "lead": "導言", "input_hash": None},
+            {"news_id": "n2", "title": "台積電法說", "ai_summary": None, "lead": None, "input_hash": key_md5("台積電法說")}]
+    monkeypatch.setattr(repository, "list_news_to_embed", lambda start, end, model: rows)
+    asked = []
+    monkeypatch.setattr(embedder, "embed", lambda texts: asked.extend(texts) or [[1.0, 0.0] for _ in texts])
+    written = []
+    monkeypatch.setattr(repository, "save_news_embeddings", written.extend)
+    assert ai_task.embed_news("20261120") == "ai_news_embedding/20261120：1 則"   # n2 的文字沒變
+    assert asked == ["健策營收創高\n10月營收年增81％"]
+    assert [(r["news_id"], r["embedding"], r["input_hash"]) for r in written] == [("n1", "[1.0,0.0]", key_md5(asked[0]))]
+    rows[0]["input_hash"] = key_md5(asked[0])
+    assert "沒有要轉的新聞" in ai_task.embed_news("20261120")
+
+
+def test_embed_jobs_look_back_like_crawler(monkeypatch):
+    monkeypatch.setattr(pa, "NEWS_LOOKBACK_DAYS", 2)
+    assert [kw["date_yyyymmdd"] for _, kw in pa.build_embed_jobs("20261120", "20261120")] == ["20261118", "20261119", "20261120"]
+
+
+# ---------- 卡片 AI 摘要：card_summarizer ----------
+CARD = {"trade_date": datetime.date(2026, 11, 20), "stock_id": "3653", "stock_name": "健策", "is_listed_today": True,
+        "clauses": "1", "reason_text": "最近六個營業日累積收盤價漲幅達32.5%", "close_price": 3705.0, "change_pct": 9.96}
+CARD_ANNOUNCEMENTS = [{"announce_date": datetime.date(2026, 11, 14), "subject": "公告10月營收", "category": "營收、自結損益",
+                       "has_news": True, "is_negative": False, "ai_summary": "10月營收30.73億元，年增81％"}]
+CARD_NEWS = [{"news_id": "n1", "news_date": datetime.date(2026, 11, 19), "publisher": "UDN", "title": "健策接獲AI伺服器散熱訂單"}]
+CARD_ANSWER = {"summary": "最近六個交易日漲了 32.5%。期間公司公告10月營收年增81％；新聞提到接獲AI伺服器散熱訂單（新聞 1）。",
+               "news_used": [1]}
+
+
+def test_card_message_has_plain_reason_and_no_progress():
+    """款次換成白話、帶今天的漲跌幅；不放離處置還差幾次（卡片上有），不放推算，也不放日期本身。"""
+    message = card_summarizer.build_user_message(CARD, CARD_ANNOUNCEMENTS, CARD_NEWS)
+    assert "今天被列注意，原因：最近一段期間股價累積漲（跌）幅太大" in message and "第 1 款" not in message
+    assert "今天收盤：3705.0 元，漲 9.96%" in message and "處置" not in message and "營業日" not in message
+    assert "營收、自結損益，有新消息：10月營收30.73億元" in message and "[1] 2026-11-19 UDN：健策接獲AI伺服器散熱訂單" in message
+    assert "next" not in message and "2026-11-20" not in message   # 輸入一樣的兩天，訊息也一樣，可以沿用
+
+
+def test_card_row_maps_news_numbers_to_ids_and_checks_numbers():
+    message = card_summarizer.build_user_message(CARD, CARD_ANNOUNCEMENTS, CARD_NEWS)
+    row = card_summarizer.to_card_row(CARD, "cid", CARD_ANSWER, CARD_NEWS, message, "claude-haiku-5-5")
+    assert row["summary_ok"] and row["news_ids"] == ["n1"] and row["input_hash"] == card_summarizer.input_hash(message)
+    assert "（新聞 1）" not in row["summary"]   # 編號拿掉，網頁另外列新聞
+    made_up = card_summarizer.to_card_row(CARD, "cid", {**CARD_ANSWER, "summary": "最近六個交易日漲了 39%"}, CARD_NEWS, message, "m")
+    assert not made_up["summary_ok"]   # 39 是編的
+
+
+# ---------- summarize_card 任務 ----------
+@pytest.fixture
+def cards(monkeypatch):
+    """假的 app_card、公告、新聞 RAG、ai_card_summary、ai_llm_call。"""
+    store = types.SimpleNamespace(rows=[], calls=[], asked=[], existing=set(), previous=None, news=list(CARD_NEWS))
+    monkeypatch.setattr(repository, "has_card_summary", lambda card_id, version: card_id in store.existing)
+    monkeypatch.setattr(repository, "read_card", lambda stock_id, day: CARD if stock_id == "3653" else None)
+    monkeypatch.setattr(repository, "recent_announcements", lambda stock_id, start, end: CARD_ANNOUNCEMENTS)
+    monkeypatch.setattr(repository, "previous_card_summary", lambda stock_id, before, version: store.previous)
+    monkeypatch.setattr(repository, "insert_card_summary", store.rows.append)
+    monkeypatch.setattr(repository, "save_llm_call", lambda row, problem=None: store.calls.append(row))
+    monkeypatch.setattr(ai_task, "card_news", lambda card, announcements: store.news)
+
+    def fake_fetch(messages):
+        store.asked.append(messages)
+        return fake_response(CARD_ANSWER)
+    monkeypatch.setattr(client, "fetch_card_summary", fake_fetch)
+    return store
+
+
+def test_summarize_card_writes_summary_with_news(cards):
+    assert ai_task.summarize_card("3653", "20261120").startswith("ai_card_summary/3653_20261120：")
+    [row] = cards.rows
+    assert row["card_id"] == key_md5("3653", "20261120") and row["summary_ok"] and row["news_ids"] == ["n1"]
+    assert cards.calls[0]["task"] == "summarize_card" and cards.calls[0]["ref_key"] == row["card_id"]
+
+
+def test_summarize_card_reuses_yesterday_when_input_is_the_same(cards):
+    """輸入的雜湊值和前一天一樣：沿用前一天的摘要，不呼叫 API。"""
+    message = card_summarizer.build_user_message(CARD, CARD_ANNOUNCEMENTS, CARD_NEWS)
+    cards.previous = {"card_id": "old", "prompt_version": card_summarizer.PROMPT_VERSION, "stock_id": "3653",
+                      "card_date": datetime.date(2026, 11, 19), "summary": "昨天的摘要", "news_ids": ["n1"],
+                      "input_hash": card_summarizer.input_hash(message), "summary_ok": True, "reused": False, "model": "m"}
+    assert "沿用" in ai_task.summarize_card("3653", "20261120")
+    [row] = cards.rows
+    assert cards.asked == [] and row["summary"] == "昨天的摘要" and row["reused"] and row["card_date"] == datetime.date(2026, 11, 20)
+
+
+def test_summarize_card_still_writes_when_news_fails(cards, monkeypatch):
+    """新聞是選擇性的輸入：新聞 RAG 出錯就不帶新聞，照樣寫。"""
+    def broken(card, announcements):
+        raise RuntimeError("模型載不起來")
+    monkeypatch.setattr(ai_task, "card_news", broken)
+    assert "沒有帶新聞" in ai_task.summarize_card("3653", "20261120")
+    assert "近幾天沒有相關的新聞" in cards.asked[0][0]["content"]
+
+
+def test_summarize_card_skips_done_and_missing(cards):
+    cards.existing.add(key_md5("3653", "20261120"))
+    assert "已經寫過" in ai_task.summarize_card("3653", "20261120")
+    assert "沒有卡片" in ai_task.summarize_card("9999", "20261120")
+    assert cards.asked == [] and cards.rows == []
+
+
+def test_card_jobs_use_yyyymmdd(monkeypatch):
+    monkeypatch.setattr(repository, "list_unsummarized_cards", lambda start, end, version: [("3653", datetime.date(2026, 11, 20))])
+    [(func, kwargs)] = pa.build_card_jobs("20261120", "20261120")
+    assert func is ai_task.summarize_card and kwargs == {"stock_id": "3653", "date_yyyymmdd": "20261120"}

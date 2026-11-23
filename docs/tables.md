@@ -310,9 +310,10 @@ erDiagram
 | high_price | DECIMAL(10,2) | 最高價 | 文字 → 數字 |
 | low_price | DECIMAL(10,2) | 最低價 | 文字 → 數字 |
 | close_price | DECIMAL(10,2) | 收盤價 | 文字 → 數字 |
+| price_change | DECIMAL(10,2) | 漲跌(+/-)、漲跌價差 | 符號（HTML，例如 `<p style= color:red>+</p>`）＋價差 → 帶正負號的數字；平盤 0，不比價（X）NULL。和參考價比，除權息日已經調整 |
 | volume_shares | BIGINT | 成交股數 | 文字 → 數字 |
 
-- 卡片上的收盤價從這裡拿（`app_card.close_price`）；注意股公告也有收盤價，但只有當天被列的才有。
+- 卡片上的收盤價、漲跌幅從這裡拿（`app_card.close_price`、`change_pct`）；注意股公告也有收盤價，但只有當天被列的才有。
 
 ### stage_holiday　開休市日期
 
@@ -474,7 +475,7 @@ erDiagram
 - 未來的營業日依開休市日期推算（週一～五、扣掉休市日）；臨時休市要隔天重算才會反映。
 - 第 13 款若在再列的那天才出現，會延長為 7 天，事前算不出來（回測 129 筆中 5 筆是這種）。
 - 總覽的分頁（分區，每檔只在一區，加起來＝全部；依序判斷）：即將處置＝`punished_by` 有值，或 `period_start` 有值且 `> trade_date`（處置已公布、還沒開始）；處置中＝`period_start ≤ trade_date ≤ period_end`，其中 `period_end = trade_date` 的放明日出關；聽牌＝`steps_left = 1`；其他＝剩下的。
-- 總覽的「只看」篩選（一檔可以同時符合好幾個）：今日注意股＝`app_card.is_listed_today`；今日出關＝`resume_date = trade_date`。
+- 總覽的「只看」篩選（一檔可以同時符合好幾個）：「11/20 注意股」（日期是資料的那天）＝`app_card.is_listed_today`；「11/20 出關」＝`resume_date = trade_date`。
 - 總覽只放 `app_card.is_company` 為 true 的（不放權證、ETF），也不放近 30 個營業日沒有會累計紀錄、今天沒被列、沒有處置的股票（四條路徑都是 0）。
 
 ### app_progress_date　計入的日期
@@ -521,11 +522,11 @@ VIEW 是存起來的查詢，不複製資料；網頁查的時候資料庫才去
 
 | VIEW | 給哪個畫面 | 內容 |
 |---|---|---|
-| `app_card` | 卡片牆、個股卡片上半部 | `app_progress` 每一列，加上 `stock_name`、`is_listed_today`、`is_company`（上市公司；卡片牆只放這些，不放權證、ETF）、`close_price`（`stage_stock_price` 當天的收盤；還沒抓到就用注意股公告上的）、`reason_text`、`clauses`（今天被列第幾款，例如 `1,2`）、`is_counted_today`、處置中那次的 `measure_type`／`trigger_condition`／`match_interval_minutes`（和 `app_punish_history` 同名）、`announcement_count`（近 30 個營業日公告則數） |
+| `app_card` | 卡片牆、個股卡片上半部 | `app_progress` 每一列，加上 `stock_name`、`is_listed_today`、`is_company`（上市公司；卡片牆只放這些，不放權證、ETF）、`close_price`（`stage_stock_price` 當天的收盤；還沒抓到就用注意股公告上的）、`price_change`、`change_pct`（漲跌、漲跌幅 %＝漲跌 ÷（收盤－漲跌）× 100，只有收盤行情有）、`reason_text`、`clauses`（今天被列第幾款，例如 `1,2`）、`is_counted_today`、處置中那次的 `measure_type`／`trigger_condition`／`match_interval_minutes`（和 `app_punish_history` 同名）、`announcement_count`（近 30 個營業日公告則數）、`ai_summary`、`ai_summary_news_ids`（卡片 AI 摘要最新一版、通過檢查的，和用到的新聞） |
 | `app_trading_day` | 注意紀錄格子、公告和處置紀錄的起日 | `stage_trading_day` 裡有交易的日子（`trade_date`） |
 | `app_notice_history` | 注意紀錄格子 | 每檔每個被列注意的交易日：`clauses`、`is_counted`（true＝累計）、`reason_text`（那天被列的原因全文）。沒被列的日子沒有列；早於 `count_start` 的是「已計入前次處置」 |
 | `app_punish_history` | 處置紀錄 | `stage_punish` 的欄位 |
-| `app_stock_news` | 新聞資訊（之後新聞 RAG、卡片 AI 摘要也讀這裡） | `stage_stock_news` 每一列，用 `news_id` JOIN `stage_news` 帶出標題、媒體（`publisher`）、時間、連結，LEFT JOIN `stage_news_detail` 帶出 `lead`（導言）；3 則以上新聞共用的同一句導言（網站介紹、個股概覽頁）當成沒有，為 NULL。`ai_summary`：`ai_news_summary` 最新一版、通過檢查的摘要 |
+| `app_stock_news` | 新聞資訊（網站的新聞列表；新聞 RAG 轉向量的文字也從這裡讀） | `stage_stock_news` 每一列，用 `news_id` JOIN `stage_news` 帶出標題、媒體（`publisher`）、時間、連結，LEFT JOIN `stage_news_detail` 帶出 `lead`（導言）；3 則以上新聞共用的同一句導言（網站介紹、個股概覽頁）當成沒有，為 NULL。`ai_summary`：`ai_news_summary` 最新一版、通過檢查的摘要。`story_id`：同一件事（`ai_news_story`；還沒歸類就是自己的 `news_id`），API 的新聞列表一件事只列最早的那則；標題有「股市爆料同學會」的論壇貼文不列 |
 | `app_announcement` | 公開資訊 | `stage_announcement`（含 `announcement_id`），加上 `is_during_session`（14:30 前＝交易時段內）、`is_correction`（更正）、`is_explanation`（說明、澄清：類型是澄清／回應媒體）——用公告分類（`ai_announcement_label` 最新一版）的判斷，還沒分類的先用主旨關鍵字；`category`、`has_news`、`is_negative`、`ai_summary`（公告分類的類型、有新消息、壞消息、白話摘要，`summary_ok` 才顯示）；用 `announcement_id` LEFT JOIN `stage_announcement_detail` 帶出 `announce_clause`、`fact_date`、`content`（還沒抓到全文的為 NULL），再 JOIN `stage_announcement_clause` 帶出 `clause_name`（例如 財務報告） |
 
 ## ai 層
@@ -561,10 +562,60 @@ AI 項目的結果（由 `ai/task.py` 寫入）。和 `app_*` 分開：`app_*` �
 |---|---|---|
 | news_id | CHAR(32) | 主鍵之一；`stage_news.news_id` |
 | prompt_version | VARCHAR(20) | 主鍵之一，例如 `v2` |
-| summary | VARCHAR(1200) | 摘要；上限依文章長度：文章的三成，最少 80、最多 1200 字（`summarizer.summary_limit`），超過就請 LLM 縮短，只重問一次；不是新聞內容（登入頁、網站介紹）的為空字串 |
+| summary | VARCHAR(1200) | 摘要；上限依文章長度：文章的三成，最少 80、最多 1200 字（`summarizer.summary_limit`）；跟 LLM 說的是上限的八五成（LLM 常常多寫一點），超過上限就請 LLM 縮短，只重問一次；不是新聞內容（登入頁、網站介紹）的為空字串 |
 | summary_ok | BOOLEAN | 摘要通過程式檢查：不是空的、不超過這篇的上限、數字都出現在原文裡；否的話不顯示（`app_stock_news.ai_summary` 為 NULL） |
 | model | VARCHAR(50) | 模型 |
 | summarized_at | TIMESTAMP(0) | 摘要時間（台灣時間） |
+
+### ai_news_embedding　新聞 RAG 的向量
+
+- 由 `embed_news` 寫入：每天一個任務，把新聞的「標題＋新聞摘要」（沒有摘要用導言，都沒有就只有標題）用本機的 embedding 模型（`.env` 的 `EMBED_MODEL`，預設 `BAAI/bge-m3`）轉成向量。不呼叫 API、不花錢。
+- 排在新聞摘要後面；文字的雜湊值（`input_hash`）和上次不一樣（例如摘要後來才寫好）就重轉，換成新的向量。
+- 向量放在同一個 PostgreSQL 的 pgvector（`CREATE EXTENSION vector`，寫在 `schema/ai.sql`）：先用 WHERE 篩股票、日期，再在同一句 SQL 用 `<=>`（cosine 距離）排序，不另外架向量資料庫。
+- 換模型：新模型的向量另外存一份（主鍵含 `model`），比較完再換；不同模型的向量不能互相比。資料量小，先不建向量索引（全部比一遍就很快）。
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| news_id | CHAR(32) | 主鍵之一；`stage_news.news_id` |
+| model | VARCHAR(80) | 主鍵之一；embedding 模型，例如 `BAAI/bge-m3` |
+| embedding | vector(1024) | 標題＋新聞摘要的向量；長度 1，所以 cosine 相似度＝內積，`1 - (a <=> b)` 就是相似度 |
+| input_hash | CHAR(32) | 轉成向量的文字的 md5；文字變了就重轉 |
+| embedded_at | TIMESTAMP(0) | 轉成向量的時間（台灣時間） |
+
+### ai_news_story　同一件事
+
+- 由 `group_news_stories` 寫入：好幾家媒體報同一件事，歸成一個 story。一則新聞和 3 天內、同一檔股票、比它早的新聞，是同一篇（標題一樣，或一則是另一則的開頭：轉貼時後面加了欄目名稱，例如「…-起漲K線」）或向量相似度 ≥ 0.84（`ai/retriever.py`），就歸到那則的 story；`story_id` 是這件事最早的那則新聞。不呼叫 API。
+- 排在 `embed_news` 後面；天和天有先後（後面的歸到前面的），所以整段區間一個任務。重跑會把區間內的新聞重新歸類（每天的資料線會重算最近 8 天）。
+- 每則新聞只留一列（主鍵 `news_id`）：換 embedding 模型後重跑就換成新模型的歸類，不會兩個模型混在一起。
+- 網站的新聞列表一件事只列最早的那則，後面寫「也有 X、Y 報導」；卡片 AI 摘要挑新聞時，同一件事也只留一則。
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| news_id | CHAR(32) | 主鍵；`stage_news.news_id` |
+| model | VARCHAR(80) | 用哪個 embedding 模型的向量判斷 |
+| story_id | CHAR(32) | 這件事最早的那則新聞的 `news_id`；自己就是最早的（或沒有別家報）等於自己的 `news_id` |
+| grouped_at | TIMESTAMP(0) | 歸類的時間（台灣時間） |
+
+### ai_card_summary　卡片 AI 摘要
+
+- 由 `summarize_card` 寫入：每天的注意股（今天被列）、聽牌股（還差 1 次），上市公司，一檔一天一列、每個 prompt 版本一列。模型 `claude-haiku-5-5`（`.env` 的 `AI_CARD_MODEL`）。
+- 輸入：`app_card` 那天的被列原因、今天的漲跌幅（不含離處置還差幾次、`next_*` 推算）、近 30 天公告和公告分類、新聞 RAG 挑出的新聞（最多 5 則，標題＋新聞摘要）。
+- 輸入的雜湊值和前一天一樣就沿用前一天的摘要（`reused`＝是），不呼叫 API。
+- 網站讀 `app_card.ai_summary`（最新一版、`summary_ok` 的），用到的新聞照 `news_ids` 從 `app_stock_news` 查標題、連結。
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| card_id | CHAR(32) | 主鍵之一；卡片代號：md5(`證券代號_日期`)，例如 md5(`2330_20261120`)（`common/hash_utils.py` 的 `key_md5`）；`ai_llm_call.ref_key` 記這個 |
+| prompt_version | VARCHAR(20) | 主鍵之一，例如 `v1` |
+| stock_id | VARCHAR(10) | 證券代號 |
+| card_date | DATE | 卡片的日期（交易日）；和 `stock_id` 一起建索引，`app_card` 用它接 |
+| summary | VARCHAR(300) | 2～3 句白話；程式限制 150 字，超過就請 LLM 縮短，只重問一次 |
+| news_ids | TEXT[] | 摘要用到的新聞（`stage_news.news_id`）；沒用到新聞是空的 |
+| input_hash | CHAR(32) | 輸入的雜湊值（prompt 版本＋整理好的輸入，不含日期本身） |
+| summary_ok | BOOLEAN | 摘要通過程式檢查：不超過 150 字、數字都出現在輸入裡、引用的新聞編號是這次給的；否的話不顯示 |
+| reused | BOOLEAN | 沿用前一天的摘要（輸入一樣，沒有呼叫 API） |
+| model | VARCHAR(50) | 模型 |
+| summarized_at | TIMESTAMP(0) | 寫入時間（台灣時間） |
 
 ### ai_llm_call　LLM 呼叫紀錄
 
@@ -574,8 +625,8 @@ AI 項目的結果（由 `ai/task.py` 寫入）。和 `app_*` 分開：`app_*` �
 | 欄位 | 型別 | 說明 |
 |---|---|---|
 | call_id | BIGINT | 流水號（主鍵） |
-| task | VARCHAR(80) | 哪個任務，例如 `classify_announcement`、`summarize_news` |
-| ref_key | VARCHAR(80) | 處理哪一筆：結果表的代號（公告分類記 `announcement_id`、新聞摘要記 `news_id`），JOIN 結果表一律是 `ref_key ＝ 代號` |
+| task | VARCHAR(80) | 哪個任務，例如 `classify_announcement`、`summarize_news`、`summarize_card` |
+| ref_key | VARCHAR(80) | 處理哪一筆：結果表的代號（公告分類記 `announcement_id`、新聞摘要記 `news_id`、卡片 AI 摘要記 `card_id`），JOIN 結果表一律是 `ref_key ＝ 代號` |
 | model、prompt_version | VARCHAR | 模型、prompt 版本 |
 | status | VARCHAR(10) | `success`／`failure`（拒答、被截斷、格式不對） |
 | stop_reason | VARCHAR(20) | 例如 `end_turn`、`max_tokens`、`refusal` |
