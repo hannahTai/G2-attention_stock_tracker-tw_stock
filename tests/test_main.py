@@ -190,3 +190,12 @@ def test_schema_objects_lists_tables_indexes_and_views():
     names = main.repository.schema_objects()
     assert {"stage_announcement", "idx_stage_punish_stock", "app_card"} <= set(names)
     assert len(names) == len(set(names))
+
+
+def test_watched_window_is_defined_once():
+    """關注的股票往前看幾個交易日：schema/view.sql 的 LAG(trade_date, 29) 要和 WATCH_WINDOW_DAYS（30）一樣
+    （crawler、規則引擎用這個常數）。"""
+    view = (main.PROJECT_ROOT / "schema" / "view.sql").read_text(encoding="utf-8")
+    watched = view[view.index("CREATE VIEW stage_watched_stock"):]
+    from common import rules
+    assert f"LAG(trade_date, {rules.WATCH_WINDOW_DAYS - 1})" in watched

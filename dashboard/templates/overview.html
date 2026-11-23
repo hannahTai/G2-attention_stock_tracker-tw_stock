@@ -2,6 +2,8 @@
 
 {# 網址參數：date（交易日）、tab（分頁）、only（只看）、q（搜尋）。url_with() 會把目前的參數帶上，只換指定的那個。 #}
 {% block header_right %}
+{# 交易日選單只在開發時顯示（SHOW_DATE_PICKER）；上線的網站只看最新一天，標題下面寫「資料截至 …」 #}
+{% if show_date_picker %}
 <details class="datepick">
   <summary>交易日 <span class="mono">{{ roc(day) }}</span></summary>
   <nav class="datepick-list" aria-label="交易日">
@@ -10,6 +12,7 @@
     {% endfor %}
   </nav>
 </details>
+{% endif %}
 {# 搜尋框是一般的 <form method="get">：按 Enter 會換成 ?q=輸入的字，只留代號或名稱符合的卡片（分頁、只看照舊）。個股頁沒有搜尋框 #}
 <form class="search" method="get" role="search">
   <input type="search" name="q" value="{{ search or '' }}" placeholder="搜尋代號或名稱" aria-label="搜尋代號或名稱" autocomplete="off">

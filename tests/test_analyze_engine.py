@@ -14,6 +14,13 @@ def clauses(*rows):
     return pd.DataFrame([(s, DAYS[i], c) for s, i, cs in rows for c in cs], columns=["stock_id", "trade_date", "clause"])
 
 
+def compute(trading_days, clause_df, punish_df, day, **kwargs):
+    """compute_progress，要算的股票＝往前 30 個營業日被列過注意的（正式由 stage_watched_stock 給，這裡照同一個規則算）。"""
+    recent = set(sorted(trading_days)[-30:])
+    stocks = sorted(set(clause_df.loc[clause_df["trade_date"].isin(recent), "stock_id"]))
+    return engine.compute_progress(trading_days, clause_df, punish_df, day, stocks, **kwargs)
+
+
 def punishes(*rows):
     """punishes(("2424", 2), ...)：股票、第幾個營業日公布處置（隔天起處置 5 個營業日）。"""
     return pd.DataFrame([(s, DAYS[i], DAYS[i + 1], DAYS[i + 5]) for s, i in rows],
@@ -23,7 +30,7 @@ def punishes(*rows):
 def progress(clause_df, punish_df, day_index, stock="2424"):
     """算某一天某一檔的進度，回傳 (那一列, 計入日期表)。"""
     day = DAYS[day_index]
-    rows, dates = engine.compute_progress(DAYS[:day_index + 1], clause_df, punish_df, day)
+    rows, dates = compute(DAYS[:day_index + 1], clause_df, punish_df, day)
     row = rows[rows["stock_id"] == stock].iloc[0]
     return row, dates[dates["stock_id"] == stock]
 
@@ -115,7 +122,7 @@ def test_punished_today_means_no_left():
 
 def test_only_stocks_noticed_in_last_30_days_get_a_row():
     c = clauses(("1111", 0, [1]), ("2424", 35, [1]))
-    rows, _ = engine.compute_progress(DAYS[:36], c, punishes(), DAYS[35])
+    rows, _ = compute(DAYS[:36], c, punishes(), DAYS[35])
     assert rows["stock_id"].tolist() == ["2424"]   # 1111 是 35 個營業日前，已經超過 30 天
 
 
@@ -162,7 +169,7 @@ def test_next_punishment_extended_by_clause_13():
 
 def test_future_trading_days_skip_holidays():
     """資料只到 10/02：之後的營業日用週一～五推算，跳過休市日 10/09。"""
-    rows, _ = engine.compute_progress(DAYS[:2], clauses(("2424", 0, [1]), ("2424", 1, [1])), punishes(),
+    rows, _ = compute(DAYS[:2], clauses(("2424", 0, [1]), ("2424", 1, [1])), punishes(),
                                       DAYS[1], holidays={datetime.date(2026, 10, 9)})
     row = rows.iloc[0]
     assert row["next_listed_date"] == datetime.date(2026, 10, 5)
@@ -174,7 +181,7 @@ def test_future_trading_days_skip_holidays():
 def test_old_rule_before_aug_10_is_10_days():
     old = [d.date() for d in pd.bdate_range("2026-07-01", periods=20)]
     c = pd.DataFrame([("2424", old[0], 1), ("2424", old[1], 1)], columns=["stock_id", "trade_date", "clause"])
-    rows, _ = engine.compute_progress(old[:2], c, punishes(), old[1])
+    rows, _ = compute(old[:2], c, punishes(), old[1])
     row = rows.iloc[0]
     assert (row["next_period_start"], row["next_period_end"], row["next_resume_date"]) == (old[3], old[12], old[13])
 
@@ -183,7 +190,7 @@ def test_rule_follows_period_start_date():
     """8/07（五）再列 → 8/10 起處置，用新制 5 天。"""
     days = [d.date() for d in pd.bdate_range("2026-08-05", periods=20)]   # 8/05（三）起
     c = pd.DataFrame([("2424", days[0], 1), ("2424", days[1], 1)], columns=["stock_id", "trade_date", "clause"])
-    rows, _ = engine.compute_progress(days[:2], c, punishes(), days[1])
+    rows, _ = compute(days[:2], c, punishes(), days[1])
     row = rows.iloc[0]
     assert row["next_listed_date"] == datetime.date(2026, 8, 7)
     assert (row["next_period_start"], row["next_period_end"]) == (datetime.date(2026, 8, 10), datetime.date(2026, 8, 14))

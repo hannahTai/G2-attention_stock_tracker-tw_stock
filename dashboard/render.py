@@ -13,6 +13,7 @@ import urllib.parse
 
 import jinja2
 
+from common.config import SHOW_DATE_PICKER
 from dashboard import views
 
 HERE = pathlib.Path(__file__).parent
@@ -35,7 +36,7 @@ def ymd(day: datetime.date) -> str:
 
 # css_version：style.css 的修改時間，接在 CSS 網址後面（style.css?v=…），改了 CSS 瀏覽器才會重抓。
 # 啟動時算一次就好：改 CSS 時 uvicorn --reload 會重啟（--reload-include *.css），雲端只有換 image 才會變
-ENV.globals.update(md=views.md, roc=views.roc, ymd=ymd, fonts=FONTS,
+ENV.globals.update(md=views.md, roc=views.roc, ymd=ymd, fonts=FONTS, show_date_picker=SHOW_DATE_PICKER,
                    css_version=int((HERE / "static" / "style.css").stat().st_mtime))
 
 

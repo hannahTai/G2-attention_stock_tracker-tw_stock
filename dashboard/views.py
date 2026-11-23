@@ -44,10 +44,10 @@ CLAUSE_NAMES = {
 # 總覽的分區：(代號, 標題, 說明＝分頁 ⓘ 裡這一區是什麼)。每檔只會在一區（section_of() 決定），所以各區加起來＝全部
 # 順序照一檔股票會經過的階段：聽牌 → 即將處置 → 處置中 → 明日出關；「其他」（差 2 次以上）檔數多，放最後
 SECTIONS = [
-    ("one", "聽牌", "下一個營業日再被列注意就處置"),
+    ("one", "聽牌", "下一個交易日再被列注意就處置"),
     ("soon", "即將處置", "已達處置標準，處置還沒開始"),
     ("punish", "處置中", "正在處置期間：撮合變慢、大額委託要先預收"),
-    ("leave_tomorrow", "明日出關", "今天是處置的最後一天，下一個營業日恢復正常交易"),
+    ("leave_tomorrow", "明日出關", "今天是處置的最後一天，下一個交易日恢復正常交易"),
     ("rest", "其他", "離處置還差 2 次以上"),
 ]
 
@@ -167,11 +167,28 @@ def news_item(news: dict) -> dict:
             "also": "、".join(news.get("also_reported_by") or [])}
 
 
-def ai_summary_box(ai_summary: dict | None) -> dict | None:
+def ai_summary_box(ai_summary: dict | None, day: datetime.date | None = None) -> dict | None:
     """API 的卡片 AI 摘要 → 網頁的框：摘要全文、第三句用到的新聞（標題連結、媒體、日期）。沒有摘要就是 None。"""
     if not ai_summary:
         return None
-    return {"summary": ai_summary["summary"], "sources": [news_item(s) for s in ai_summary.get("sources") or []]}
+    return {"summary": ai_summary["summary"], "time": summary_time(ai_summary.get("summarized_at"), day),
+            "sources": [news_item(s) for s in ai_summary.get("sources") or []]}
+
+
+def summary_time(value: str | None, day: datetime.date | None = None) -> str | None:
+    """摘要寫的時間（API 給的 ISO 字串）→ 「11/23 19:05」；沒有為 None。
+    比卡片那天早（輸入一樣，沿用前幾天寫的）前面加「沿用」，看得出不是那天寫的。
+
+    >>> summary_time("2026-11-23T19:05:00", datetime.date(2026, 11, 23)), summary_time(None)
+    ('11/23 19:05', None)
+    >>> summary_time("2026-11-10T19:05:00", datetime.date(2026, 11, 20))
+    '沿用 11/10 19:05'
+    """
+    if not value:
+        return None
+    moment = datetime.datetime.fromisoformat(value)
+    text = f"{moment.month}/{moment.day} {moment:%H:%M}"
+    return f"沿用 {text}" if day and moment.date() < day else text
 
 
 def change(pct: decimal.Decimal | float | None) -> dict | None:
@@ -719,14 +736,14 @@ def cell_legend(cells: list[Cell]) -> list[dict]:
     >>> [x["text"] for x in cell_legend([Cell(d, "counted", "1", True, "")])]
     ['計入本次累計', '處置期間']
     >>> cell_legend([Cell(d, "none", "", False, "")])
-    [{'cls': '', 'text': '近 30 個營業日沒有計入累計的注意'}]
+    [{'cls': '', 'text': '近 30 個交易日沒有計入累計的注意'}]
     """
     kinds = {c.kind for c in cells}
     legend = [{"cls": CELL_SHADE[kind], "text": CELL_NOTE[kind]} for kind in ("counted", "reset") if kind in kinds]
     if any(c.in_punish for c in cells):
         legend.append({"cls": "punish", "text": "處置期間"})
     if not kinds & {"counted", "reset"}:
-        legend.append({"cls": "", "text": "近 30 個營業日沒有計入累計的注意"})
+        legend.append({"cls": "", "text": "近 30 個交易日沒有計入累計的注意"})
     return legend
 
 
@@ -864,7 +881,7 @@ def stock_page(detail: dict) -> dict:
         "card": row,
         "wall": wall_card(row),
         "recent_days": RECENT_DAYS,
-        "ai_summary": ai_summary_box(detail.get("ai_summary")),   # 卡片 AI 摘要；還沒寫、沒通過檢查的是 None（網頁顯示說明）
+        "ai_summary": ai_summary_box(detail.get("ai_summary"), day),   # 卡片 AI 摘要；還沒寫、沒通過檢查的是 None（網頁顯示說明）
         # 新聞資訊：當天的先列，前幾天的收起來
         "news_total": len(detail.get("news") or []),
         "news_today": [news_item(n) for n in detail.get("news") or [] if n.get("news_date") == day],

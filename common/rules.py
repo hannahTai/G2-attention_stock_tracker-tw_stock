@@ -8,6 +8,9 @@ import datetime
 # 四條路徑的門檻：連 3 日列第 1 款、連 5 日被列注意、10 日內被列 6 日、30 日內被列 12 日
 THRESHOLDS = {"streak3": 3, "streak5": 5, "in10": 6, "in30": 12}
 COUNTED_CLAUSES = {1, 2, 3, 4, 5, 6, 7, 8}   # 第 1～8 款計入（連 3 日只看第 1 款）；第 9～14 款不計入
+# 往前看幾個營業日（含當天）：30 日內 12 次的窗口。規則引擎算這段期間被列過注意的股票；crawler 查重大訊息、新聞，
+# AI 寫摘要也是這批（schema/view.sql 的 stage_watched_stock 用 LAG(trade_date, 29)，改這裡要一起改，tests/test_main.py 會檢查）
+WATCH_WINDOW_DAYS = 30
 
 # 處置期間（幾個營業日）、撮合間隔（分鐘），見 docs/rules.md「處置期間與措施」
 NEW_RULE_DATE = datetime.date(2026, 8, 10)    # 這天起新制（期間縮短、撮合改 2 分鐘）

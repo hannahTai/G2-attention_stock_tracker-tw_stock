@@ -31,25 +31,52 @@ def test_this_and_prev_month_for_listed_companies_only(raw_store):
 
 
 def test_range_dedupes_and_skips_finished_months(raw_store):
-    """區間內重複的（公司, 月）只查一次；那個月過完以後抓過的不再抓，加 refetch 就重抓。"""
+    """區間內重複的（公司, 月）只查一次；那個月過完以後抓過的不再抓，加 refetch 就重抓。
+    2317 10/20 被列注意、11/13 還在 30 個交易日內：11 月的公告也要查。"""
     setup_day(raw_store)
     raw_store.put("notice", "20261020", {"data": [["1", "2317"], ["2", "030039"]]})   # 10/20：2317、權證
-    raw_store.put("punish", "20261027", {"data": [["1", "x", "2330"]]})               # 10/27：2330 處置中
+    raw_store.put("notice", "20261027", {"data": [["1", "2330"]]})                     # 10/27：2330 被列注意
     raw_store.put("announcement", "2330_202610", {}, fetched_at="2026-11-13T21:00:00+08:00")   # 10 月過完才抓：完整
     raw_store.put("announcement", "2317_202610", {}, fetched_at="2026-10-20T21:00:00+08:00")   # 10 月還沒過完：要重抓
     raw_store.put("announcement", "2330_202611", {}, fetched_at="2026-11-13T21:00:00+08:00")   # 當月：照樣抓
     assert keys(pc.build_mops_jobs("20261020", "20261113")) == [
-        ("2317", 2026, 9), ("2317", 2026, 10),
+        ("2317", 2026, 9), ("2317", 2026, 10), ("2317", 2026, 11),
         ("2330", 2026, 9), ("2330", 2026, 11),
     ]
     assert ("2330", 2026, 10) in keys(pc.build_mops_jobs("20261020", "20261113", refetch=True))
+
+
+def test_watched_includes_stocks_flagged_in_the_last_30_trading_days(raw_store, monkeypatch):
+    """關注名單＝往前 30 個交易日（含當天）被列注意過，全部從 raw 算：今天沒被列、前幾天被列的也要查重大訊息、新聞。
+    （這裡把 30 換成 3：當天＋往前 2 個有人被列的交易日）"""
+    monkeypatch.setattr(pc.rules, "WATCH_WINDOW_DAYS", 3)
+    setup_day(raw_store)
+    raw_store.put("notice", "20261001", {"data": [["1", "1101"]]})   # 超過窗口：不算
+    raw_store.put("notice", "20261110", {"data": [["1", "2317"]]})
+    raw_store.put("notice", "20261111", {"data": []})                 # 沒人被列：不算一個交易日
+    raw_store.put("notice", "20261112", {"data": [["1", "2454"]]})
+    # 0050：那天處置中（保險，raw 缺天也不漏）
+    assert pc.watched_by_day("20261113", "20261113")["20261113"] == {"2330", "2317", "2454", "0050"}
+    # 週六休市：用之前的交易日的完整名單（和 11/13 一樣），新聞照樣查，連假後不會漏
+    assert pc.watched_by_day("20261114", "20261114")["20261114"] == {"2317", "2454", "2330"}
+
+
+def test_watched_window_survives_a_long_holiday(raw_store, monkeypatch):
+    """中間很多天沒人被列（連假、休市都有一份空的注意股）：照日期往前讀，窗口裡最早被列的股票也不會漏。
+    （這裡把 30 換成 3：當天＋往前 2 個有人被列的日子；舊寫法只讀固定幾筆，會讀不到 9/20）"""
+    monkeypatch.setattr(pc.rules, "WATCH_WINDOW_DAYS", 3)
+    setup_day(raw_store)
+    raw_store.put("notice", "20260920", {"data": [["1", "1101"]]})
+    for day in pc.dates_between("20260921", "20261112"):   # 50 多天，每天一份空的
+        raw_store.put("notice", day, {"data": []})
+    assert "1101" in pc.watched_by_day("20261113", "20261113")["20261113"]
 
 
 def test_failed_raw_is_ignored(raw_store):
     """注意股那天的回應失敗（被擋）：不算進關注名單。"""
     setup_day(raw_store)
     raw_store.put("notice", "20261112", "<html>blocked</html>", ok=False)
-    assert pc.watched_stocks("20261112") == set()
+    assert pc.watched_by_day("20261112", "20261112")["20261112"] == set()
 
 
 def test_holiday_is_fetched_only_once_per_year(raw_store):

@@ -14,15 +14,17 @@ def too_long(summary: str, limit: int) -> bool:
 
 
 def shorten_messages(user_message: str, answer: dict, limit: int, request: str) -> list[dict]:
-    """摘要太長時重問的對話：原本的資料、LLM 上次的回答、說明超過幾個字，再接 request（各項目自己的縮短說法）。
+    """摘要太長時重問的對話：原本的資料、LLM 上次的回答、說明超過幾個字，再接 request（各項目自己的縮短說法）；
+    最後提醒數字照資料抄（縮短時不要把數字換算掉，不然會被 numbers_ok 擋下）。
 
     >>> shorten_messages("公告", {"summary": "一" * 70}, 60, "請縮短。")[-1]["content"]
-    'summary 有 70 個字，超過 60 個字。請縮短。'
+    'summary 有 70 個字，超過 60 個字。請縮短。數字照資料裡的寫法抄，不要換算。'
     """
     return [
         {"role": "user", "content": user_message},
         {"role": "assistant", "content": json.dumps(answer, ensure_ascii=False)},
-        {"role": "user", "content": f"summary 有 {len(answer['summary'].strip())} 個字，超過 {limit} 個字。{request}"},
+        {"role": "user", "content": f"summary 有 {len(answer['summary'].strip())} 個字，超過 {limit} 個字。{request}"
+                                    "數字照資料裡的寫法抄，不要換算。"},
     ]
 
 
@@ -38,6 +40,31 @@ def numbers_in(text: str) -> set[str]:
     return {n.rstrip("0").rstrip(".") if "." in n else n for n in numbers}
 
 
+def missing_numbers(summary: str, source: str) -> list[str]:
+    """摘要裡、原文沒有的數字（LLM 自己換算、編出來的）。
+
+    >>> missing_numbers("淨利約 3.74 億元", "歸屬母公司淨利374,246仟元"), missing_numbers("淨利 374,246仟元", "淨利374,246仟元")
+    (['3.74'], [])
+    """
+    return sorted(numbers_in(summary) - numbers_in(source))
+
+
+def fix_numbers_messages(user_message: str, answer: dict, missing: list[str]) -> list[dict]:
+    """摘要裡有原文沒有的數字時重問的對話：原本的資料、LLM 上次的回答，再說哪幾個數字找不到、要照原文寫法抄。
+
+    >>> messages = fix_numbers_messages("資料", {"summary": "淨利約 3.74 億元"}, ["3.74"])
+    >>> messages[-1]["content"].startswith("summary 裡的 3.74 在資料裡找不到。")
+    True
+    """
+    return [
+        {"role": "user", "content": user_message},
+        {"role": "assistant", "content": json.dumps(answer, ensure_ascii=False)},
+        {"role": "user", "content": f"summary 裡的 {'、'.join(missing)} 在資料裡找不到。數字只能照資料裡的寫法抄"
+                                    "（例如資料寫 374,246仟元，就寫 374,246仟元），不要自己換算、四捨五入或推算；"
+                                    "不好抄的金額可以不寫金額、只講事情。其他照原本的規則，重新回答。"},
+    ]
+
+
 def numbers_ok(summary: str, source: str) -> bool:
     """摘要裡的每個數字都出現在原文裡 → True。LLM 自己換算、編出來的數字會被抓到。
 
@@ -46,4 +73,4 @@ def numbers_ok(summary: str, source: str) -> bool:
     >>> numbers_ok("10月營收0.15億元", "本公司10月營收為1,520萬元")
     False
     """
-    return numbers_in(summary) <= numbers_in(source)
+    return not missing_numbers(summary, source)

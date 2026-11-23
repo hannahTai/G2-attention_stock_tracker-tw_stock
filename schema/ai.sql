@@ -136,7 +136,7 @@ CREATE TABLE IF NOT EXISTS ai_card_summary (
     PRIMARY KEY (card_id, prompt_version)
 );
 CREATE INDEX IF NOT EXISTS idx_ai_card_summary_stock ON ai_card_summary (stock_id, card_date);   -- app_card 用它接
-COMMENT ON TABLE ai_card_summary IS '卡片 AI 摘要：每檔注意股、聽牌股每天 2～3 句白話（為什麼被注意、走到哪、相關新聞）';
+COMMENT ON TABLE ai_card_summary IS '卡片 AI 摘要：卡片牆上的每一張（stage_watched_stock）每天 2～3 句白話（最近為什麼漲跌、公告和新聞裡的原因）';
 COMMENT ON COLUMN ai_card_summary.card_id IS '卡片代號：md5(證券代號_日期)，例如 md5(''2330_20261120'')；ai_llm_call.ref_key 記這個';
 COMMENT ON COLUMN ai_card_summary.prompt_version IS 'prompt 版本（ai/card_summarizer.py 的 PROMPT_VERSION）';
 COMMENT ON COLUMN ai_card_summary.stock_id IS '證券代號';
@@ -147,4 +147,4 @@ COMMENT ON COLUMN ai_card_summary.input_hash IS '輸入的雜湊值（prompt 版
 COMMENT ON COLUMN ai_card_summary.summary_ok IS '摘要通過程式檢查：不超過 150 字、數字都出現在輸入裡、引用的新聞編號是這次給的；否的話不顯示';
 COMMENT ON COLUMN ai_card_summary.reused IS '沿用前一天的摘要（輸入一樣，沒有呼叫 API）';
 COMMENT ON COLUMN ai_card_summary.model IS '模型';
-COMMENT ON COLUMN ai_card_summary.summarized_at IS '寫入時間（台灣時間）';
+COMMENT ON COLUMN ai_card_summary.summarized_at IS '寫摘要的時間（台灣時間；沿用前一天的摘要，是原本寫的時間）';

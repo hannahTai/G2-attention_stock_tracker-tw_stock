@@ -298,7 +298,7 @@ stage 表之間用哪個欄位對起來（關聯是邏輯上的，資料庫沒�
 ### stage_news　新聞
 
 - 來源：`raw_stock_news`（FinMind `GET /api/v4/data?dataset=TaiwanStockNews&data_id=<代號>&start_date=<日期>`，一檔一天）
-- 只抓當天被關注的上市公司（注意股、處置股，和重大訊息同一批），每檔那天和往前 7 天，由 `crawler/producer.py` 抓。
+- 只抓被關注的上市公司（往前 30 個交易日被列注意過的上市公司（和卡片牆同一批），和重大訊息同一批），每檔那天和往前 7 天，由 `crawler/producer.py` 抓。
 - 一則新聞一列：FinMind 一檔一檔查，好幾檔都有的新聞，時間、標題以最新一次抓到的為準。只有標題、連結、媒體、時間，不存內文（著作權）。
 
 | 欄位 | 型別 | API 欄位 | 轉換／說明 |
@@ -404,6 +404,18 @@ VIEW 是存起來的查詢，不複製資料；網頁查的時候資料庫才去
 | `app_stock_news` | 新聞資訊（網站的新聞列表） | `stage_stock_news` 每一列，用 `news_id` JOIN `stage_news` 帶出標題、媒體（`publisher`）、時間、連結，LEFT JOIN `stage_news_detail` 帶出 `lead`（導言）；3 則以上新聞共用的同一句導言（網站介紹、個股概覽頁）當成沒有，為 NULL。`ai_summary`：`ai_news_summary` 最新一版、通過檢查的摘要。`story_id`：同一件事（`ai_news_story`；還沒歸類就是自己的 `news_id`），API 的新聞列表一件事只列最早的那則；標題有「股市爆料同學會」的論壇貼文不列 |
 | `app_announcement` | 公開資訊 | `stage_announcement`（含 `announcement_id`），加上 `is_during_session`（14:30 前＝交易時段內）、`is_correction`（更正）、`is_explanation`（說明、澄清：類型是澄清／回應媒體）——用公告分類（`ai_announcement_label` 最新一版）的判斷，還沒分類的先用主旨關鍵字；`category`、`has_news`、`is_negative`、`ai_summary`（公告分類的類型、有新消息、壞消息、白話摘要，`summary_ok` 才顯示）；用 `announcement_id` LEFT JOIN `stage_announcement_detail` 帶出 `announce_clause`、`fact_date`、`content`（還沒抓到全文的為 NULL），再 JOIN `stage_announcement_clause` 帶出 `clause_name`（例如 財務報告） |
 
+### stage_watched_stock　關注的股票（VIEW）
+
+- 每個交易日關注哪些股票：往前 30 個交易日（含當天）被列注意過的（看 `stage_notice_clause`，和規則引擎一樣）。處置中、在注意累計名單上的一定是最近被列注意過的，不用另外加。
+- 規則只寫在這裡：規則引擎（analyze，寫 `app_progress`＝卡片牆）、新聞摘要、卡片 AI 摘要都用它決定要算、要寫哪些。crawler 抓重大訊息、新聞也是同一個範圍（當天的注意股還沒整理成 stage，從 raw 讀）。
+- 寫在 `schema/view.sql`。
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| day | DATE | 交易日 |
+| stock_id | VARCHAR | 證券代號 |
+| is_company | BOOLEAN | 上市公司（權證、ETF 為否：規則引擎照樣算，但沒有重大訊息、不查新聞、不寫 AI 摘要） |
+
 ## ai 層
 
 AI 項目的結果（由 `ai/task.py` 寫入）。和 `app_*` 分開：`app_*` 隨時可以從 stage 免費重算；AI 結果重跑要花錢、同樣的輸入每次答案可能不同，所以拿到就留著。重算 stage、app（`run_rebuild.bat`）不碰 `ai_*` 表。
@@ -473,8 +485,8 @@ AI 項目的結果（由 `ai/task.py` 寫入）。和 `app_*` 分開：`app_*` �
 
 ### ai_card_summary　卡片 AI 摘要
 
-- 由 `summarize_card` 寫入：每天被列注意（`stage_notice`）或在注意累計名單上（`stage_punish_watchlist`）的上市公司；不讀規則引擎的 `steps_left`。注意累計名單證交所只公布最新一份，11/09 起每天抓才有，之前的日子只寫被列注意的；一檔一天一列、每個 prompt 版本一列。模型 `claude-haiku-5-5`（`.env` 的 `AI_CARD_MODEL`）。
-- 輸入只讀 stage 和其他 AI 結果（不讀 app）：被列注意的原因（款次換成白話、官方寫的情況）、處置中的期間和撮合間隔、今天的漲跌幅、近 30 天公告和公告分類、新聞 RAG 挑出的新聞（最多 5 則，標題＋新聞摘要）。不給第幾款、離處置還差幾次、收盤價本身。
+- 由 `summarize_card` 寫入：卡片牆上的每一張（`stage_watched_stock`：往前 30 個交易日被列注意過的上市公司）；不讀規則引擎的結果。一檔一天一列、每個 prompt 版本一列。模型 `claude-haiku-5-5`（`.env` 的 `AI_CARD_MODEL`）。
+- 輸入只讀 stage 和其他 AI 結果（不讀 app）：被列注意的原因（款次換成白話、官方寫的情況；今天沒被列注意的，帶最近一次被列注意的日期和那天的情況）、處置中的期間和撮合間隔、今天的漲跌幅（今天被列注意的才給：每天變，前一天的摘要才能沿用）、近 30 天公告和公告分類、新聞 RAG 挑出的新聞（最多 5 則，標題＋新聞摘要）。不給第幾款、離處置還差幾次、收盤價本身。
 - 輸入的雜湊值和前一天一樣就沿用前一天的摘要（`reused`＝是），不呼叫 API。
 - 網站讀 `app_card.ai_summary`（最新一版、`summary_ok` 的），用到的新聞照 `news_ids` 從 `app_stock_news` 查標題、連結。
 
@@ -490,7 +502,7 @@ AI 項目的結果（由 `ai/task.py` 寫入）。和 `app_*` 分開：`app_*` �
 | summary_ok | BOOLEAN | 摘要通過程式檢查：不超過 150 字、數字都出現在輸入裡、引用的新聞編號是這次給的；否的話不顯示 |
 | reused | BOOLEAN | 沿用前一天的摘要（輸入一樣，沒有呼叫 API） |
 | model | VARCHAR(50) | 模型 |
-| summarized_at | TIMESTAMP(0) | 寫入時間（台灣時間） |
+| summarized_at | TIMESTAMP(0) | 寫摘要的時間（台灣時間；沿用前一天的摘要，是原本寫的時間）。網頁在「AI 摘要」標題旁的灰字後面顯示（例如「僅供參考，不構成投資建議・11/23 19:05」） |
 
 ### ai_llm_call　LLM 呼叫紀錄
 

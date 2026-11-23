@@ -18,7 +18,7 @@
 例外：summarize_news 要新聞全文，全文不存進資料庫（著作權），只能當場再抓一次網頁（用 crawler/client.py 的函式，不另寫爬蟲）。
 每個函式都用 @app.task 註冊成 Celery 任務（見 common/worker.py）；要用本機 embedding 模型的（embed_news、summarize_card）
 在 embed 佇列上跑，其他在 ai 佇列；
-shorten_once、asker、card_news 是任務用的小函式，不是任務。
+shorten_once、fix_numbers_once、fix_answer、asker、card_news 是任務用的小函式，不是任務。
 """
 import requests
 
@@ -43,6 +43,34 @@ def shorten_once(ask, key: str, user_message: str, answer: dict, model: str, lim
         return (*ask(key, shorten_messages(user_message, answer, limit)), "")
     except Exception as e:
         return answer, model, f"；縮短失敗，用第一次的回答（{type(e).__name__}）"
+
+
+def fix_numbers_once(ask, key: str, user_message: str, answer: dict, model: str, source: str,
+                     clean=lambda summary: summary) -> tuple[dict, str, str]:
+    """摘要裡有原文沒有的數字（LLM 自己換算，例如 374,246仟元 寫成 3.74 億元）：帶著上次的回答、
+    說哪幾個數字找不到，請 LLM 照原文的寫法改，只重問一次。還是不對就照存（summary_ok＝否，網站不顯示）。
+    source：和 summary_ok 檢查同一份原文；clean：summary_ok 檢查前先怎麼整理摘要（卡片摘要拿掉（新聞 N）編號）。
+    只重問「LLM 看到的訊息裡也沒有」的數字（真的編出來的）：日期、條款這些訊息裡有的，不叫 LLM 拿掉（不然會刪掉對的資訊）。
+    在 shorten_once 之前做（改完數字再檢查長度）。
+    回傳 (回答, 模型, 附註)。重問失敗（拒答、API 錯誤）就用手上的回答（已經付過錢）。
+    """
+    seen = verifier.numbers_in(user_message)
+    missing = [n for n in verifier.missing_numbers(clean(answer["summary"]), source) if n not in seen]
+    if not missing:
+        return answer, model, ""
+    try:
+        return (*ask(key, verifier.fix_numbers_messages(user_message, answer, missing)), f"；{'、'.join(missing)} 不在資料裡，重問一次")
+    except Exception as e:
+        return answer, model, f"；數字重問失敗，用第一次的回答（{type(e).__name__}）"
+
+
+def fix_answer(ask, key: str, user_message: str, answer: dict, model: str, source: str, limit: int, shorten_messages,
+               clean=lambda summary: summary) -> tuple[dict, str, str]:
+    """LLM 回答後的檢查和重問，三個 AI 項目共用：先改數字（fix_numbers_once），再檢查長度（shorten_once）。
+    回傳 (回答, 模型, 附註)。"""
+    answer, model, numbers_note = fix_numbers_once(ask, key, user_message, answer, model, source, clean)
+    answer, model, shorten_note = shorten_once(ask, key, user_message, answer, model, limit, shorten_messages)
+    return answer, model, numbers_note + shorten_note
 
 
 def asker(task_name: str, fetch, prompt_version: str):
@@ -72,8 +100,8 @@ def classify_announcement(company_id: str, enter_yyyymmdd: str, serial_number: i
     user_message = classifier.build_user_message(row)
     ask = asker("classify_announcement", client.fetch_announcement_label, classifier.PROMPT_VERSION)
     answer, model = ask(announcement_id, [{"role": "user", "content": user_message}])
-    answer, model, note = shorten_once(ask, announcement_id, user_message, answer, model,
-                                       classifier.SUMMARY_MAX_CHARS, classifier.shorten_messages)
+    answer, model, note = fix_answer(ask, announcement_id, user_message, answer, model, classifier.source_text(row),
+                                     classifier.SUMMARY_MAX_CHARS, classifier.shorten_messages)
     label = classifier.to_label_row(row, answer, model)
     repository.insert_announcement_label(label)
     flags = "、".join(name for name, on in (("更正", label["is_correction"]), ("有新消息", label["has_news"])) if on)
@@ -112,8 +140,9 @@ def summarize_news(news_id: str) -> str:
     user_message = summarizer.build_user_message(news, text, limit)
     ask = asker("summarize_news", client.fetch_news_summary, summarizer.PROMPT_VERSION)
     answer, model = ask(news_id, [{"role": "user", "content": user_message}])
-    answer, model, note = shorten_once(ask, news_id, user_message, answer, model, limit, summarizer.shorten_messages)
-    row = summarizer.to_summary_row(news_id, answer, f"{news['title']}\n{text}", limit, model)
+    source = f"{news['title']}\n{text}"   # 檢查摘要數字用的原文（數字重問、summary_ok 同一份）
+    answer, model, note = fix_answer(ask, news_id, user_message, answer, model, source, limit, summarizer.shorten_messages)
+    row = summarizer.to_summary_row(news_id, answer, source, limit, model)
     repository.insert_news_summary(row)
     return f"ai_news_summary/{news_id}：{row['summary'][:30]}{'' if row['summary_ok'] else '（summary_ok＝否）'}{note}"
 
@@ -179,7 +208,7 @@ def summarize_card(stock_id: str, date_yyyymmdd: str) -> str:
     day = parse_yyyymmdd(date_yyyymmdd)
     card = repository.card_facts(stock_id, day)
     if card is None:
-        return f"{key} 那天沒被列注意、也不在注意累計名單上，跳過"
+        return f"{key} 那天不在卡片牆上（stage_watched_stock），跳過"
     announcements = repository.recent_announcements(stock_id, parse_yyyymmdd(days_before(date_yyyymmdd, 30)), day)
     note = ""
     try:
@@ -195,8 +224,9 @@ def summarize_card(stock_id: str, date_yyyymmdd: str) -> str:
 
     ask = asker("summarize_card", client.fetch_card_summary, card_summarizer.PROMPT_VERSION)
     answer, model = ask(card_id, [{"role": "user", "content": user_message}])
-    answer, model, shorten_note = shorten_once(ask, card_id, user_message, answer, model,
-                                               card_summarizer.SUMMARY_MAX_CHARS, card_summarizer.shorten_messages)
+    answer, model, fix_note = fix_answer(ask, card_id, user_message, answer, model, user_message,
+                                         card_summarizer.SUMMARY_MAX_CHARS, card_summarizer.shorten_messages,
+                                         card_summarizer.without_news_numbers)
     row = card_summarizer.to_card_row(card, card_id, answer, news, user_message, model)
     repository.insert_card_summary(row)
-    return f"ai_card_summary/{key}：{row['summary'][:30]}{'' if row['summary_ok'] else '（summary_ok＝否）'}{note}{shorten_note}"
+    return f"ai_card_summary/{key}：{row['summary'][:30]}{'' if row['summary_ok'] else '（summary_ok＝否）'}{note}{fix_note}"

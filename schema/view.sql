@@ -1,10 +1,12 @@
--- app 層的 VIEW（表名開頭 app_）：網頁只讀 app_*，需要的 stage（和 ai）欄位從這裡拿
+-- VIEW：app 層的（表名開頭 app_）給網頁讀，網頁只讀 app_*，需要的 stage（和 ai）欄位從這裡拿；
+-- 最後面的 stage_watched_stock 是 stage 層的（關注的股票），規則引擎、AI、crawler 都靠它決定要做哪些股票
 -- VIEW 是存起來的查詢，不複製資料，查的時候資料庫才去讀 stage（和 ai）表，所以永遠是最新的
 -- 檔名排在 stage.sql 後面：create_tables() 依檔名順序執行，建 VIEW 時 stage 表已經在了
 -- 先 DROP 再 CREATE：重跑會用最新的定義蓋掉舊的，不影響資料
 -- （PostgreSQL 的 CREATE OR REPLACE VIEW 不能拿掉欄位、改欄位順序或型別，所以整個重建）
 
-DROP VIEW IF EXISTS app_card, app_trading_day, app_notice_history, app_punish_history, app_announcement, app_stock_news;
+DROP VIEW IF EXISTS app_card, app_trading_day, app_notice_history, app_punish_history, app_announcement, app_stock_news,
+    stage_watched_stock;
 
 
 -- ---------- 卡片牆、個股頁最上面 ----------
@@ -76,15 +78,16 @@ SELECT
 
     -- 卡片 AI 摘要（最新一版、通過檢查的；還沒寫、沒通過的為 NULL）和第三句用到的新聞
     cs.summary AS ai_summary,
-    cs.news_ids AS ai_summary_news_ids
+    cs.news_ids AS ai_summary_news_ids,
+    cs.summarized_at AS ai_summary_at   -- 寫摘要的時間（沿用前一天的，是原本寫的時間）
 
 FROM app_progress p
 
 LEFT JOIN LATERAL (
-    SELECT x.summary, x.news_ids
+    SELECT x.summary, x.news_ids, x.summarized_at
     FROM ai_card_summary x
     WHERE x.stock_id = p.stock_id AND x.card_date = p.trade_date AND x.summary_ok
-    ORDER BY x.summarized_at DESC
+    ORDER BY NULLIF(regexp_replace(x.prompt_version, '\D', '', 'g'), '')::INT DESC NULLS LAST, x.summarized_at DESC   -- v8 比 v7 新（沿用的摘要時間是原本寫的）
     LIMIT 1
 ) cs ON TRUE
 
@@ -238,3 +241,31 @@ LEFT JOIN LATERAL (   -- 最新一版、通過檢查的 AI 摘要
 ) summary ON TRUE
 LEFT JOIN ai_news_story st   -- 每則新聞一列
     ON st.news_id = n.news_id;
+
+-- ---------- 關注的股票（stage 層）----------
+-- 每個交易日關注哪些股票：往前 30 個交易日（含當天）被列注意過的（要點的「30 個營業日內」）。
+-- 只讀 stage。規則引擎（analyze，寫 app_progress＝卡片牆）、新聞摘要、卡片 AI 摘要都用這個決定要算、要寫哪些，規則只寫在這裡；
+-- crawler 抓重大訊息、新聞也是同一個範圍（當天的注意股還沒整理成 stage，從 raw 算，見 crawler/producer.py 的 watched_by_day）。
+-- 處置中、在注意累計名單上的股票一定是最近被列注意過的，所以不用另外加。
+-- is_company：上市公司（權證、ETF 為否：規則引擎照樣算，但沒有重大訊息、不查新聞、不寫 AI 摘要）
+-- 29＝30 個交易日（含當天）－1：和 common/rules.py 的 WATCH_WINDOW_DAYS 要一樣（tests/test_main.py 會檢查）。
+-- 資料最前面的 29 個交易日不夠 30 天，從第一個交易日算起（和 app_card 一樣）
+CREATE VIEW stage_watched_stock AS
+WITH trading AS (   -- 交易日：照 stage_trading_day（和規則引擎一樣）；那天在 stage_trading_day 整個沒有列（市場成交那個月還沒抓到）、
+                    -- 但有人被列注意，也算交易日，不然當天的卡片 AI 摘要會被跳過
+    SELECT trade_date FROM stage_trading_day WHERE is_trading
+    UNION
+    SELECT DISTINCT c.trade_date FROM stage_notice_clause c
+    WHERE NOT EXISTS (SELECT 1 FROM stage_trading_day t WHERE t.trade_date = c.trade_date)
+), days AS (
+    SELECT
+        trade_date AS day,
+        COALESCE(LAG(trade_date, 29) OVER (ORDER BY trade_date), MIN(trade_date) OVER ()) AS window_start
+    FROM trading
+)
+SELECT DISTINCT
+    d.day,
+    n.stock_id,
+    EXISTS (SELECT 1 FROM stage_company c WHERE c.company_id = n.stock_id) AS is_company
+FROM days d
+JOIN stage_notice_clause n ON n.trade_date BETWEEN d.window_start AND d.day;   -- 和規則引擎一樣看款次表

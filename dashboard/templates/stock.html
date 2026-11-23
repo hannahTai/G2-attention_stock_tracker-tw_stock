@@ -26,7 +26,7 @@
 {# 卡片 AI 摘要（ai_card_summary，經 app_card、API）：沒有摘要（還沒寫、沒通過檢查）就寫一行說明。
    有摘要時顯示全文和第三句用到的新聞（標題連結、媒體、日期） #}
 <section class="block">
-  <h3>AI 摘要 <span class="muted">僅供參考，不構成投資建議</span></h3>
+  <h3>AI 摘要 <span class="muted">僅供參考，不構成投資建議{% if ai_summary and ai_summary.time %}・<span class="mono">{{ ai_summary.time }}</span>{% endif %}</span></h3>
   <div class="box">
     {% if ai_summary %}
     <p class="ai-text">{{ ai_summary.summary }}</p>
@@ -38,16 +38,16 @@
     </ul>
     {% endif %}
     {% else %}
-    <p class="muted small">今天的 AI 摘要還沒產生（每天收盤後更新）。</p>
+    <p class="muted small">今天沒有 AI 摘要。</p>
     {% endif %}
   </div>
 </section>
 
 <section class="block" id="announcements">
-  <h3>公開資訊 <span class="muted">近 30 個營業日</span></h3>
+  <h3>公開資訊 <span class="muted">近 30 個交易日</span></h3>
   <div class="box day-list">
     {% for g in announcements_recent %}{% include "_announcement_day.html" %}{% else %}
-    <p class="muted small day-none">{{ '近 %d 天沒有公告' % recent_days if announcement_total else '近 30 個營業日沒有重大訊息' }}</p>
+    <p class="muted small day-none">{{ '近 %d 天沒有公告' % recent_days if announcement_total else '近 30 個交易日沒有重大訊息' }}</p>
     {% endfor %}
     {% if announcements_older %}
     {% call ui.fold("顯示更早的 %d 則" % announcements_older_count) %}
@@ -87,7 +87,7 @@
 <section class="block">
   <h3>處置進度</h3>
   <div class="box">
-    <p class="note side-note">「日」都是營業日；格子上的日期是計入的那天。</p>
+    <p class="note side-note">「日」都是交易日；格子上的日期是計入的那天。</p>
     <div class="paths">
       {% for p in paths %}
       <div class="path path-{{ p.key }}">
@@ -101,9 +101,9 @@
       {% endfor %}
     </div>
     {% for p in paths if p.expiring %}<p class="note">{{ p.label }}：最早計入的 {{ p.expiring }} 次在達標前會超出期間，所以還差 {{ p.left }} 次。</p>{% endfor %}
-    {% if not card.has_full_history %}<p class="note">前面的資料不滿 30 個營業日，30 日內的次數可能偏少。</p>{% endif %}
+    {% if not card.has_full_history %}<p class="note">前面的資料不滿 30 個交易日，30 日內的次數可能偏少。</p>{% endif %}
 
-    <p class="small muted strip-title">注意及處置紀錄・近 30 個營業日</p>
+    <p class="small muted strip-title">注意及處置紀錄・近 30 個交易日</p>
     <div class="strip">
       {% for cell in cells %}
       {# title 只有滑鼠移上去看得到：同樣的字另外放一份給讀螢幕軟體（sr-only），格子上的月份、幾號就不用唸 #}
@@ -135,10 +135,10 @@
 {% endcall %}
 {% endmacro %}
 <section class="block">
-  <h3>注意紀錄 <span class="muted">近 30 個營業日 {{ notice_total }} 次</span></h3>
+  <h3>注意紀錄 <span class="muted">近 30 個交易日 {{ notice_total }} 次</span></h3>
   <div class="box day-list">
     {% for n in notices_recent %}{{ notice_row(n) }}{% else %}
-    <p class="muted small day-none">{{ '近 %d 天沒有被列注意' % recent_days if notices_older else '近 30 個營業日沒有被列注意。' }}</p>
+    <p class="muted small day-none">{{ '近 %d 天沒有被列注意' % recent_days if notices_older else '近 30 個交易日沒有被列注意。' }}</p>
     {% endfor %}
     {% if notices_older %}
     {% call ui.fold("顯示更早的 %d 次" % notices_older|length) %}

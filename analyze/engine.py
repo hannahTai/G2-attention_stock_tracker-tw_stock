@@ -200,9 +200,11 @@ def one_stock_one_day(stock: str, stock_days: dict, punishments: list[tuple],
 
 # ---------- 主程式 ----------
 def compute_progress(trading_days: list[datetime.date], clauses: pd.DataFrame, punishes: pd.DataFrame,
-                     day: datetime.date, holidays: set[datetime.date] = frozenset()) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """算 day 那天、每檔最近 30 個營業日被列過注意的股票。不是營業日就回傳空的表。
+                     day: datetime.date, stocks: list[str],
+                     holidays: set[datetime.date] = frozenset()) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """算 day 那天、stocks 裡每一檔。不是營業日就回傳空的表。
 
+    stocks：要算哪些股票（task 從 stage_watched_stock 拿：往前 30 個營業日被列過注意的）
     trading_days：到 day 為止的營業日（要包含之前的，才看得到前面的注意）
     clauses：stage_notice_clause；punishes：stage_punish；holidays：stage_holiday（推算未來的營業日用）
     回傳 (app_progress, app_progress_date) 兩張表。
@@ -215,11 +217,9 @@ def compute_progress(trading_days: list[datetime.date], clauses: pd.DataFrame, p
         listed = listed_days_by_stock(clauses)
         punished = punishments_by_stock(punishes)
 
-        # 最近 30 個營業日被列過注意的股票
-        recent = set(days[max(0, i - 29):i + 1])
-        stocks = sorted(stock for stock, stock_days in listed.items() if recent & stock_days.keys())
-
-        for stock in stocks:
+        # stocks（stage_watched_stock）照理就是這些；保險：再和引擎自己的 30 日窗口交集（資料有缺時，view 的日子可能和這裡不一樣）
+        recent = set(days[max(0, i - (rules.WATCH_WINDOW_DAYS - 1)):i + 1])
+        for stock in sorted(s for s in stocks if s in listed and recent & listed[s].keys()):
             row, counted = one_stock_one_day(stock, listed[stock], punished.get(stock, []), days, future, i)
             progress_rows.append(row)
             for path, dates in counted.items():

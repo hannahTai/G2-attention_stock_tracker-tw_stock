@@ -52,6 +52,9 @@ DB_NAME = os.environ.get("DB_NAME", "tw_stock")
 # 網頁（dashboard/）呼叫的資料 API（api/，FastAPI）
 # 寫 127.0.0.1 不寫 localhost：Windows 會先試 IPv6（::1），uvicorn 只開在 IPv4，每次要多等約 2 秒
 API_URL = os.environ.get("API_URL", "http://127.0.0.1:8001")
+# 網頁右上角的交易日選單（看以前某一天）：1＝顯示（開發用，docker-compose.local.yml、scripts/run_web.bat 會設）；
+# 預設不顯示（上線的網站只看最新一天；網址帶 ?date= 照樣可以看別天）
+SHOW_DATE_PICKER = os.environ.get("SHOW_DATE_PICKER", "0") == "1"
 
 # Celery 任務佇列：1（預設）＝producer 把任務送進 RabbitMQ，由 worker 執行（common/worker.py，要先 docker compose up）；
 # 0＝在這台電腦依序執行，不需要 RabbitMQ（沒開 Docker 時臨時用）

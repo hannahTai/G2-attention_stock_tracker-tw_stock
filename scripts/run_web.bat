@@ -24,6 +24,9 @@ netstat -ano | findstr /r /c:":8502 .*LISTENING" >nul && (
 rem Make Python write UTF-8
 set PYTHONUTF8=1
 
+rem Show the trading-day picker on the web page (development only; the deployed site hides it)
+set SHOW_DATE_PICKER=1
+
 rem Project is on D: and the uv cache on C:, so hardlinks fail; copy quietly instead
 set UV_LINK_MODE=copy
 

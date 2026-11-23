@@ -1,12 +1,12 @@
 {# 一則公告（_announcement_day.html 用 include 引入，變數 a 是 views.announcement_item 的結果）。
-   兩行：第一行主旨（用整欄的寬度）→ 盤中／更正／說明 → 箭頭；第二行：類別標籤（分 5 種顏色，見 views.CLAUSE_GROUPS）＋時間（淺灰）。
+   兩行：第一行主旨（用整欄的寬度）→ 盤中／更正／澄清 → 箭頭；第二行：類別標籤（分 5 種顏色，見 views.CLAUSE_GROUPS）＋時間（淺灰）。
    有全文的話整塊可以點，箭頭朝右＝收著、朝下＝展開；沒有全文就沒有箭頭。
-   盤中＝交易日 09:00～14:30 發的。 #}
+   盤中＝交易日 09:00～14:30 發的；澄清＝公告分類是「澄清／回應媒體」（app_announcement.is_explanation）。 #}
 {% macro head(a, chev=False) -%}
   <span class="ann-title"><span class="ann-subject">{{ a.subject }}</span>
   {%- if a.during_session %}<span class="flag acc">盤中</span>{% endif %}
   {%- if a.is_correction %}<span class="flag amber">更正</span>{% endif %}
-  {%- if a.is_explanation %}<span class="flag mut">說明</span>{% endif %}
+  {%- if a.is_explanation %}<span class="flag mut">澄清</span>{% endif %}
   {%- if chev %}<span class="chev" aria-hidden="true"></span>{% endif %}</span>
   <span class="ann-meta">{% if a.clause_name %}<span class="ann-cat {{ a.clause_group }}">{{ a.clause_name }}</span>{% endif %}<span class="mono">{{ a.time }}</span></span>
 {%- endmacro %}

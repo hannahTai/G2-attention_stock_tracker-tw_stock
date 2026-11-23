@@ -1,7 +1,9 @@
 """卡片 AI 摘要：prompt、回答的格式（JSON schema）、整理輸入、檢查和整理結果。不呼叫 API（呼叫在 ai/client.py，流程在 ai/task.py）。
 
-每張卡片（今天被列注意、在注意累計名單上的上市公司，一檔一天）寫 2～3 句白話，重點是「這檔最近為什麼漲（跌）這麼多」：
-  第一句：股價最近怎麼了（漲或跌、幅度，數字從官方寫的情況或今天的漲跌幅照抄）
+卡片牆上的每一張（stage_watched_stock：往前 30 個交易日被列注意過的上市公司，一檔一天）寫 2～3 句白話，
+重點是「這檔最近為什麼漲（跌）這麼多」：
+  第一句：股價最近怎麼了（漲或跌、幅度，數字從官方寫的情況照抄；今天被列注意的也可以用今天的漲跌幅）
+  今天沒被列注意的：輸入帶最近一次被列注意的日期和那天官方寫的情況，不放今天的漲跌（每天變，前一天的摘要才能沿用）
   接著：可能的原因，只用公告（公告分類的摘要）和新聞 RAG 挑出的新聞（標題＋新聞摘要）；看不出原因就直說
   被列注意的原因用白話（款次換成 CLAUSES 的說法），處置中的可以帶一句背景（期間撮合變慢）；
   第幾款、規定、離處置還差幾次都不寫（讀者在意的是為什麼漲跌）
@@ -16,7 +18,8 @@ import re
 from ai import verifier
 from common.hash_utils import key_md5
 
-PROMPT_VERSION = "v7"   # v6：重點改成為什麼漲跌；v7：加處置中的期間、撮合間隔，不給收盤價本身，輸入全部來自 stage
+PROMPT_VERSION = "v8"   # v6：重點改成為什麼漲跌；v7：加處置中的期間、撮合間隔，不給收盤價本身，輸入全部來自 stage；
+                        # v8：卡片牆每一張都寫，今天沒被列注意的帶最近一次被列注意的日期和情況
 
 # 注意款次的白話說法（要點第四條第一項，整理自 docs/rules.md）：LLM 照這張表解釋，不自己讀法條，也不寫第幾款
 CLAUSES = {
@@ -59,6 +62,7 @@ SYSTEM_PROMPT = f"""你替台股注意股的卡片寫一段摘要，給一般投
    官方寫的情況不是漲跌幅（例如當沖比例、週轉率太高）的，就白話講成交哪裡不尋常。
    「今天漲跌」的數字只能用來講今天；官方寫的情況裡沒有一段期間的漲跌幅，就不要寫「最近幾個交易日跌了…%」。
    處置中的，可以順帶一句背景，例如「目前處置中，每 5 分鐘才撮合一次」；不要解釋處置的規定。
+   今天沒被列注意的，<stock> 會寫最近一次被列注意是哪天、那天官方寫的情況：要講清楚是那天，例如「11/18 被列注意時，最近六個交易日漲了 32.10%」，不要說成今天。
 2. 接著：可能的原因。只挑 1～2 件最能解釋漲跌的事，來自 <announcements> 或 <news>：公司公告了什麼、新聞在討論什麼。
    例行公告（董事會通過財報、自結營收、背書保證、取得資產、注意股例行說明）不要寫，除非內容本身就是原因（例如轉虧、子公司破產）。
    用「公司公告…」「新聞提到…」交代來源；不要說成確定的因果（用「期間」「市場在討論」這類說法）。
@@ -78,6 +82,25 @@ SYSTEM_PROMPT = f"""你替台股注意股的卡片寫一段摘要，給一般投
 """
 
 
+def clause_reasons(clauses: str | None) -> str:
+    """款次（"1,13"）→ 白話的原因（CLAUSES），不寫第幾款。
+
+    >>> clause_reasons("1,13"), clause_reasons(None), clause_reasons("1,99")   # 不認得的款次跳過
+    ('最近一段期間股價累積漲（跌）幅太大；當日沖銷的比例明顯太高', '（沒有）', '最近一段期間股價累積漲（跌）幅太大')
+    """
+    reasons = [CLAUSES[int(no)] for no in (clauses or "").split(",") if no and int(no) in CLAUSES]
+    return "；".join(reasons) or "（沒有）"
+
+
+def official_text(reason_text: str | None) -> str:
+    """官方寫的情況：「營業日」換成「交易日」（LLM 照抄也是日常的說法）。
+
+    >>> official_text("最近六個營業日累積收盤價跌幅達37.82%"), official_text(None)
+    ('最近六個交易日累積收盤價跌幅達37.82%', '（沒有）')
+    """
+    return (reason_text or "（沒有）").replace("營業日", "交易日")
+
+
 def card_lines(card: dict) -> list[str]:
     """repository.card_facts 的結果 → <stock> 裡的幾行，先寫成白話：被列注意的原因、官方寫的情況、處置中的背景、今天的漲跌幅。
     款次換成白話（CLAUSES），不寫第幾款；不放離處置還差幾次（規定，卡片上也有），也不放收盤價本身（漲跌幅就夠）。
@@ -94,12 +117,20 @@ def card_lines(card: dict) -> list[str]:
     今天漲跌：跌 9.8%
     >>> card_lines({"is_listed_today": False, "change_pct": None, "punish": None})
     ['今天沒有被列為注意股']
+    >>> last = {"trade_date": datetime.date(2026, 11, 18), "clauses": "1", "reason_text": "最近六個營業日累積收盤價漲幅達32.10%"}
+    >>> print("\\n".join(card_lines({"is_listed_today": False, "change_pct": 1.5, "punish": None, "last_notice": last})))
+    今天沒有被列為注意股；最近一次被列注意是 11/18，原因：最近一段期間股價累積漲（跌）幅太大
+    那天官方寫的情況：最近六個交易日累積收盤價漲幅達32.10%
     """
     lines = []
     if card.get("is_listed_today"):
-        reasons = "；".join(CLAUSES.get(int(no), "") for no in (card.get("clauses") or "").split(",") if no)
-        lines.append(f"今天被列為注意股，原因：{reasons or '（沒有）'}")
-        lines.append(f"官方寫的情況：{(card.get('reason_text') or '（沒有）').replace('營業日', '交易日')}")
+        lines.append(f"今天被列為注意股，原因：{clause_reasons(card.get('clauses'))}")
+        lines.append(f"官方寫的情況：{official_text(card.get('reason_text'))}")
+    elif card.get("last_notice"):   # 寫日期不寫「幾天前」：每天輸入一樣才能沿用前一天的摘要
+        last = card["last_notice"]
+        day = last["trade_date"]
+        lines.append(f"今天沒有被列為注意股；最近一次被列注意是 {day.month}/{day.day}，原因：{clause_reasons(last.get('clauses'))}")
+        lines.append(f"那天官方寫的情況：{official_text(last.get('reason_text'))}")
     else:
         lines.append("今天沒有被列為注意股")
     punish = card.get("punish")
@@ -108,7 +139,7 @@ def card_lines(card: dict) -> list[str]:
         minutes = punish.get("match_interval_minutes")
         how = f"，期間每 {minutes} 分鐘才撮合一次，成交會變慢" if minutes else ""
         lines.append(f"處置中：{start.month}/{start.day}～{end.month}/{end.day}{how}")
-    pct = card.get("change_pct")
+    pct = card.get("change_pct") if card.get("is_listed_today") else None   # 今天沒被列注意的不放：每天變，前一天的摘要就沿用不了
     if pct is not None:
         move = f"漲 {pct}%" if pct > 0 else f"跌 {abs(pct)}%" if pct < 0 else "平盤"
         lines.append(f"今天漲跌：{move}")

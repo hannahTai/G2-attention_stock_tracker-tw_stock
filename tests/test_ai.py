@@ -283,6 +283,29 @@ def test_summarize_news_reads_page_now_and_stores_only_summary(summaries):
     assert summaries.calls[0]["task"] == "summarize_news" and summaries.calls[0]["ref_key"] == NEWS["news_id"]
 
 
+def test_summarize_news_asks_once_more_when_a_number_is_not_in_the_article(summaries):
+    """摘要裡有原文沒有的數字（自己換算）：說哪個數字找不到，請它照原文寫法改，只重問一次。"""
+    summaries.answers = [{"summary": "健策10月營收約 0.3 千億元，年增81％"}, SHORT_ANSWER]
+    result = ai_task.summarize_news(NEWS["news_id"])
+    assert len(summaries.asked) == 2 and "summary 裡的 0.3 在資料裡找不到" in summaries.asked[1][-1]["content"]
+    assert summaries.rows[0]["summary"] == SHORT_ANSWER["summary"] and summaries.rows[0]["summary_ok"]
+    assert "0.3 不在資料裡，重問一次" in result
+
+
+def test_summarize_news_does_not_re_ask_for_numbers_the_llm_saw(summaries):
+    """LLM 看到的訊息裡有的數字（例如日期那一行的 11/20）不重問：不叫 LLM 刪掉對的資訊，也不多花一次錢。"""
+    summaries.answers = [{"summary": "健策11月20日公告10月營收30.73億元"}]
+    ai_task.summarize_news(NEWS["news_id"])
+    assert len(summaries.asked) == 1
+
+
+def test_summarize_news_keeps_answer_when_number_still_wrong(summaries):
+    """重問還是有原文沒有的數字：只問一次，照存（summary_ok＝否，網站不顯示），不一直問。"""
+    summaries.answers = [{"summary": "健策營收約 0.3 千億元"}, {"summary": "健策營收約 0.31 千億元"}]
+    ai_task.summarize_news(NEWS["news_id"])
+    assert len(summaries.asked) == 2 and not summaries.rows[0]["summary_ok"]
+
+
 def test_summarize_news_asks_once_more_when_too_long(summaries):
     """摘要太長：帶著上次的回答請它縮短，只重問一次。"""
     summaries.answers = [LONG_ANSWER, SHORT_ANSWER]
@@ -360,7 +383,7 @@ def test_embed_jobs_look_back_like_crawler(monkeypatch):
 
 # ---------- 卡片 AI 摘要：card_summarizer ----------
 CARD = {"trade_date": datetime.date(2026, 11, 20), "stock_id": "3653", "stock_name": "健策", "is_listed_today": True,
-        "on_watchlist": False, "clauses": "1", "reason_text": "最近六個營業日累積收盤價漲幅達32.5%", "change_pct": 9.96,
+        "clauses": "1", "reason_text": "最近六個營業日累積收盤價漲幅達32.5%", "change_pct": 9.96,
         "punish": {"period_start": datetime.date(2026, 11, 17), "period_end": datetime.date(2026, 11, 23),
                    "match_interval_minutes": 5}}
 CARD_ANNOUNCEMENTS = [{"announce_date": datetime.date(2026, 11, 14), "subject": "公告10月營收", "category": "營收、自結損益",
@@ -441,7 +464,7 @@ def test_summarize_card_still_writes_when_news_fails(cards, monkeypatch):
 def test_summarize_card_skips_done_and_missing(cards):
     cards.existing.add(key_md5("3653", "20261120"))
     assert "已經寫過" in ai_task.summarize_card("3653", "20261120")
-    assert "不在注意累計名單上，跳過" in ai_task.summarize_card("9999", "20261120")
+    assert "不在卡片牆上（stage_watched_stock），跳過" in ai_task.summarize_card("9999", "20261120")
     assert cards.asked == [] and cards.rows == []
 
 

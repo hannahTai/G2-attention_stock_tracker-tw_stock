@@ -131,6 +131,12 @@ def shorten_messages(user_message: str, answer: dict, limit: int = SUMMARY_MAX_C
                                      f"請把 summary 縮短到 {limit} 個字以內，其他欄位照原本的判斷，重新回答一次。")
 
 
+def source_text(row: dict) -> str:
+    """檢查摘要數字用的原文：主旨＋說明全文（summary_ok、ai/task.py 的數字重問用同一份）。
+    不放發言日期、事實發生日：日期拆出來的數字（2026、11、20）會讓編出來的數字也過關。"""
+    return f"{row['subject']}\n{row['content']}"
+
+
 def summary_ok(summary: str, source: str) -> bool:
     """摘要可以顯示：不超過 SUMMARY_MAX_CHARS 字，而且數字都出現在公告裡。
 
@@ -154,6 +160,6 @@ def to_label_row(row: dict, answer: dict, model: str) -> dict:
         "is_negative": answer["is_negative"],
         "summary": summary[:100],   # 欄位上限 100 字（防呆）；超過 SUMMARY_MAX_CHARS 的 summary_ok 已經是否，網站不顯示
         "reason": answer["reason"].strip(),
-        "summary_ok": summary_ok(summary, f"{row['subject']}\n{row['content']}"),
+        "summary_ok": summary_ok(summary, source_text(row)),
         "model": model,
     }

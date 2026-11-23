@@ -64,7 +64,10 @@ def raw_store(monkeypatch):
     fake = FakeRaw()
     for name in ("insert_raw_row", "read_raws", "list_raw_keys", "latest_raw_key", "raw_fetched_times"):
         monkeypatch.setattr(repository, name, getattr(fake, name))
-    return fake
+    from crawler import producer   # 這裡才 import：關注名單有快取（一輪算一次），每個測試的 raw 都不一樣，要清掉
+    producer.watched_by_day.cache_clear()
+    yield fake
+    producer.watched_by_day.cache_clear()
 
 
 @pytest.fixture(autouse=True)

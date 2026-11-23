@@ -12,12 +12,11 @@ import pandas as pd
 import sqlalchemy
 
 from analyze import engine
-from common import date_utils, repository
+from common import date_utils, repository, rules
 from common.date_utils import parse_yyyymmdd
 from common.worker import Job, app
 
 APP_TABLES = ["app_progress", "app_progress_date"]   # analyze_progress 寫入的表
-WINDOW_TRADING_DAYS = 30                             # 往前看幾個營業日（30 日 12 次）
 
 
 def query(sql: str, end: datetime.date, date_columns: list[str]) -> pd.DataFrame:
@@ -44,7 +43,7 @@ def missing_inputs(day: datetime.date) -> list[str]:
         if first_day is None or day < first_day:   # 資料還沒開始
             return [f"stage_notice_day/{day:%Y%m%d}"]
         window = dates("SELECT trade_date FROM stage_trading_day WHERE is_trading AND trade_date <= :day "
-                       "ORDER BY trade_date DESC LIMIT :n", n=WINDOW_TRADING_DAYS)
+                       "ORDER BY trade_date DESC LIMIT :n", n=rules.WATCH_WINDOW_DAYS)   # 往前看幾個營業日（30 日 12 次）
         start = max([first_day, *window[-1:]])   # 第 30 個營業日，但不早於資料開始那天
         rows = conn.execute(sqlalchemy.text(
             "SELECT trade_date, is_trading FROM stage_trading_day WHERE trade_date BETWEEN :start AND :day"),
@@ -107,6 +106,7 @@ def analyze_progress(date_yyyymmdd: str) -> str:
     if missing:
         raise RuntimeError(f"缺少必要的資料，不算：{', '.join(missing[:5])}{' …' if len(missing) > 5 else ''}")
     trading_days, clauses, punishes, holidays = read_stage(day)                                   # 2. 讀 stage
-    progress, dates = engine.compute_progress(trading_days, clauses, punishes, day, holidays)       # 3. 算
+    stocks = query("SELECT stock_id FROM tw_stock.stage_watched_stock WHERE day = :end", day, [])["stock_id"].tolist()   # 要算哪些
+    progress, dates = engine.compute_progress(trading_days, clauses, punishes, day, stocks, holidays)  # 3. 算
     replace_app(progress, dates, day)                                                              # 4. 寫 app
     return f"app {date_yyyymmdd}：{len(progress)} 檔"

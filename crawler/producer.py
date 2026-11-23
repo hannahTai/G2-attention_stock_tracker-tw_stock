@@ -14,11 +14,13 @@
 已經抓完整的不再抓（加 --refetch 就全部重抓）。「完整」＝在那份資料不會再變之後抓的，見 is_complete()。
 注意累計名單、上市公司清單只有當下一份，每次都抓。
 """
+import bisect
 import calendar
 import datetime
+import functools
 import urllib.parse
 
-from common import cli, repository, runner
+from common import cli, repository, rules, runner
 from common.config import (
     NEWS_LOOKBACK_DAYS, SLEEP_SECONDS, SLEEP_SECONDS_FINMIND, SLEEP_SECONDS_MOPS, SLEEP_SECONDS_NEWS_DETAIL,
 )
@@ -87,13 +89,38 @@ def build_twse_jobs(start: str, end: str, refetch: bool = False) -> list[tuple]:
 
 
 # ---------- 第二批：觀測站重大訊息（要先有第一批的注意股、處置股、公司清單）----------
-def watched_stocks(date_yyyymmdd: str) -> set[str]:
-    """某一天的關注名單：當天被列注意的股票＋處置中的股票（讀第一批剛存進 raw 表的回應）。"""
-    notice = repository.read_raw("notice", date_yyyymmdd)
-    punish = repository.read_raw("punish", date_yyyymmdd)   # 含當天起 14 天內處置中的公告
-    ids = client.notice_stock_ids(notice["body"]) if notice else set()
-    ids |= client.punish_stock_ids(punish["body"]) if punish else set()
-    return ids
+NOTICE_LOOKBACK_CALENDAR_DAYS = 120   # 關注名單往前讀幾個日曆天的注意股（要涵蓋 WATCH_WINDOW_DAYS 個交易日，連假也夠）
+
+
+@functools.cache   # 同一輪（一個 producer 程序）裡 raw 的注意股不會變，算一次給重大訊息、新聞共用
+def watched_by_day(start: str, end: str) -> dict[str, set[str]]:
+    """區間內每天的關注名單：往前 WATCH_WINDOW_DAYS 個交易日（含當天）被列注意過的股票，和 stage_watched_stock（卡片牆）同一個規則；
+    再加上那天處置中的（raw 處置股）當保險：處置中一定是最近被列注意過的，只有 raw 缺了某幾天時才會多出來，多查幾家不會漏。
+    全部從 raw 算，不看 stage：同一輪剛抓的、還沒整理成 stage 的日子也算得到（多天一起補、全新的資料庫都一樣）。
+    交易日＝raw 注意股有人被列的日子：沒人被列的交易日很少，算漏只會讓窗口往前多看一天、多查幾家，不會漏掉。
+    休市的日子（週末、連假）用之前的交易日的名單：新聞照樣每天查，連假比 NEWS_LOOKBACK_DAYS 長也不會漏。
+    範圍內要用的注意股一次讀完，再一天一天往後滑。
+    和 stage_watched_stock 比，這裡故意只會多、不會少（多的只是多查幾家重大訊息、新聞）。"""
+    # 往前照日期讀：注意股每個日曆天都抓（休市也有一份空的），30 個交易日最多約 45 天（過年連假），讀 120 天很夠
+    read_from = days_before(start, NOTICE_LOOKBACK_CALENDAR_DAYS)
+    keys = [key for key in repository.list_raw_keys("notice") if read_from <= key <= end]
+    listed = {}   # 有人被列注意的日子 → 那天被列的股票
+    for raw in repository.read_raws("notice", keys):
+        ids = client.notice_stock_ids(raw["body"])
+        if ids:
+            listed[raw["meta"]["key"]] = ids
+    days = sorted(listed)
+    watched = {}
+    for date_yyyymmdd in dates_between(start, end):
+        before = bisect.bisect_left(days, date_yyyymmdd)   # days 裡比這天早的有幾個
+        if date_yyyymmdd in listed:   # 當天有人被列：當天＋往前 29 個
+            window = days[max(0, before - (rules.WATCH_WINDOW_DAYS - 1)):before] + [date_yyyymmdd]
+        else:                         # 休市、或還沒公布：之前的交易日的完整 30 個
+            window = days[max(0, before - rules.WATCH_WINDOW_DAYS):before]
+        punish = repository.read_raw("punish", date_yyyymmdd)   # 含當天起 14 天內處置中的公告
+        watched[date_yyyymmdd] = set().union(*(listed[day] for day in window),
+                                             client.punish_stock_ids(punish["body"]) if punish else set())
+    return watched
 
 
 def watched_companies(start: str, end: str) -> dict[str, set[str]]:
@@ -105,7 +132,7 @@ def watched_companies(start: str, end: str) -> dict[str, set[str]]:
     if not company_keys:
         return {}
     companies = client.company_ids(repository.read_raw("company", company_keys[-1])["body"])
-    return {date_yyyymmdd: watched_stocks(date_yyyymmdd) & companies for date_yyyymmdd in dates_between(start, end)}
+    return {date_yyyymmdd: stocks & companies for date_yyyymmdd, stocks in watched_by_day(start, end).items()}
 
 
 def announcement_targets(start: str, end: str) -> list[tuple[str, str]]:

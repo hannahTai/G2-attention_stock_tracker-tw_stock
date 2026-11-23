@@ -83,12 +83,14 @@ def test_stock_returns_everything_the_page_needs(client):
 def test_stock_ai_summary_comes_with_its_news_sources(client, monkeypatch):
     """卡片 AI 摘要第三句用到的新聞：標題、連結從資料庫查（照 news_ids 的順序），不用 LLM 打的字。"""
     monkeypatch.setattr(queries, "card", lambda conn, stock_id, day: {
-        **card_of(stock_id), "ai_summary": "因累積漲幅太大被列注意（新聞 1）", "ai_summary_news_ids": ["n1"]})
+        **card_of(stock_id), "ai_summary": "因累積漲幅太大被列注意（新聞 1）", "ai_summary_news_ids": ["n1"],
+        "ai_summary_at": datetime.datetime(2026, 11, 20, 19, 5)})
     monkeypatch.setattr(queries, "news_by_ids", lambda conn, news_ids: [
         {"news_id": n, "title": "健策營收創高", "link": "https://udn.com/1", "publisher": "UDN"} for n in news_ids])
     body = client.get("/stocks/2222").json()
     assert body["ai_summary"]["summary"].startswith("因累積漲幅太大")
     assert [s["title"] for s in body["ai_summary"]["sources"]] == ["健策營收創高"]
+    assert body["ai_summary"]["summarized_at"] == "2026-11-20T19:05:00"
 
 
 def test_unknown_stock_is_404(client):

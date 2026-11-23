@@ -34,7 +34,7 @@ def test_all_tab_has_no_section_titles_and_cards_follow_the_stages():
 
 def test_tab_notes_are_in_the_tabs():
     page = overview()
-    assert '<span class="tip">下一個營業日再被列注意就處置</span>' in page
+    assert '<span class="tip">下一個交易日再被列注意就處置</span>' in page
     tabs = page[page.index('<nav class="tabs"'):page.index("</nav>", page.index('<nav class="tabs"'))]
     assert tabs.count('class="info"') == 5   # 「全部」沒有
 
@@ -100,7 +100,11 @@ def test_non_trading_day_shows_a_notice():
     assert "11/21 不是交易日或還沒有資料，改顯示 11/20" in overview(requested=datetime.date(2026, 11, 21))
 
 
-def test_date_menu_links_use_yyyymmdd():
+def test_date_menu_only_in_development(monkeypatch):
+    """交易日選單：上線的網站不顯示（預設）；開發時（SHOW_DATE_PICKER）顯示，連結用 20261120 的寫法。"""
+    monkeypatch.setitem(render.ENV.globals, "show_date_picker", False)   # 不看 .env 的設定
+    assert 'class="datepick"' not in overview()
+    monkeypatch.setitem(render.ENV.globals, "show_date_picker", True)
     assert '<a href="?date=20261120" aria-current="date">' in overview()
 
 
@@ -210,7 +214,7 @@ def test_card_tags_are_the_same_on_every_tab():
 def test_notice_log_lists_each_listed_day():
     page = render.stock_html(stock_detail(card_of("2222")))   # 測試資料：11/20 被列第 1 款
     log = page.split("<h3>注意紀錄")[1].split("<h3>")[0]
-    assert "近 30 個營業日 1 次" in log and "11/20" in log and "第 1 款・累積漲跌幅異常" in log and "計入本次累計" in log
+    assert "近 30 個交易日 1 次" in log and "11/20" in log and "第 1 款・累積漲跌幅異常" in log and "計入本次累計" in log
 
 
 def test_notice_log_shows_recent_days_and_folds_older(monkeypatch):
@@ -221,7 +225,7 @@ def test_notice_log_shows_recent_days_and_folds_older(monkeypatch):
                                 for d in detail["trading_days"]]
     page = render.stock_html(detail)
     log = page[page.index("<h3>注意紀錄"):page.index("<h3>處置紀錄")]
-    assert "近 30 個營業日 3 次" in log
+    assert "近 30 個交易日 3 次" in log
     assert "顯示更早的 1 次" in log
     assert log.index("顯示更早的 1 次") > log.index("原因1119")      # 最近的在收起來的前面
     assert log.index("顯示更早的 1 次") < log.index("原因1118")
@@ -288,21 +292,25 @@ def test_recent_disposition_shows_without_folding():
 
 
 def test_ai_summary_block_above_notice_log():
-    """AI 摘要在注意紀錄上面；還沒產生就寫一行說明。"""
+    """AI 摘要在注意紀錄上面；沒有摘要（沒寫、沒通過檢查）就寫一行「今天沒有 AI 摘要」。"""
     page = render.stock_html(stock_detail(card_of("2222")))
     assert page.index("AI 摘要") < page.index("注意紀錄")
-    assert "今天的 AI 摘要還沒產生" in page
+    assert "今天沒有 AI 摘要。" in page
 
 
 def test_ai_summary_shows_text_and_sources():
     """有摘要時顯示全文和新聞來源連結（標題要跳脫）。"""
     detail = stock_detail(card_of("2222"))
-    detail["ai_summary"] = {"summary": "今天因第一款被列注意。",   # API 的格式：出處是 stage_news 的欄位
+    detail["ai_summary"] = {"summary": "今天因第一款被列注意。", "summarized_at": "2026-11-19T19:05:00",   # API 的格式
                             "sources": [{"title": "訂單<增加>", "link": "https://example.com/n1", "publisher": "經濟日報",
                                          "news_date": datetime.date(2026, 11, 19)}]}
     page = render.stock_html(detail)
-    assert "今天因第一款被列注意。" in page and "還沒產生" not in page
+    assert "今天因第一款被列注意。" in page and "今天沒有 AI 摘要" not in page
     assert 'href="https://example.com/n1"' in page and "訂單&lt;增加&gt;" in page
+    # 寫摘要的時間接在標題旁的灰字後面；比卡片那天（11/20）早＝沿用前幾天寫的
+    assert '不構成投資建議・<span class="mono">沿用 11/19 19:05</span>' in page
+    detail["ai_summary"]["summarized_at"] = "2026-11-20T19:05:00"
+    assert '不構成投資建議・<span class="mono">11/20 19:05</span>' in render.stock_html(detail)
 
 
 def test_news_block_below_announcements():

@@ -322,8 +322,12 @@ def test_news_summary_listed_once_and_shown_in_view(db):
     day = datetime.date(2026, 11, 20)
     assert repository.list_unsummarized_news(day, day, "v1", 200) == []   # 2330 這段期間沒被關注
     with db.begin() as conn:
+        conn.execute(sqlalchemy.text("INSERT INTO stage_trading_day (trade_date, is_trading) VALUES (:d, TRUE)"), {"d": day})
+        conn.execute(sqlalchemy.text("INSERT INTO stage_company (company_id, short_name, full_name, industry_code, snapshot_date) "
+                                     "VALUES ('2330', '台積電', '台積電', '24', :d)"), {"d": day})
         conn.execute(sqlalchemy.text(
             "INSERT INTO stage_notice (trade_date, stock_id, stock_name, reason_text) VALUES (:d, '2330', '台積電', 'r')"), {"d": day})
+        conn.execute(sqlalchemy.text("INSERT INTO stage_notice_clause (trade_date, stock_id, clause) VALUES (:d, '2330', 1)"), {"d": day})
     assert repository.list_unsummarized_news(day, day, "v1", 200) == [url_md5(NEWS_LINK)]
     assert repository.list_unsummarized_news(day, day, "v1", 1000) == []   # 全文太短
 
@@ -433,15 +437,25 @@ def test_same_story_grouped_and_listed_once(db):
 
 
 def test_card_summary_reads_only_stage_and_ai(db):
-    """卡片 AI 摘要只讀 stage 和公告分類：要寫哪幾張（今天被列注意或在注意累計名單上的上市公司）、事實、公告。"""
+    """卡片 AI 摘要只讀 stage 和公告分類：要寫哪幾張（和卡片牆同一批：往前 30 個交易日被列注意過的上市公司，
+    stage_watched_stock）、事實（今天沒被列注意的帶最近一次被列注意）、公告。"""
     day = datetime.date(2026, 11, 20)
     with db.begin() as conn:
 
         def run(sql, **params):
             return conn.execute(sqlalchemy.text(sql), params)
-        for company in ("2330", "2317", "1101"):
+        for company in ("2330", "2317", "1101", "9910"):
             run("INSERT INTO stage_company (company_id, short_name, full_name, industry_code, snapshot_date) "
                 "VALUES (:c, :c, :c, '24', :d)", c=company, d=day)
+        for trading in (datetime.date(2026, 11, 18), datetime.date(2026, 11, 19), day):
+            run("INSERT INTO stage_trading_day (trade_date, is_trading) VALUES (:d, TRUE)", d=trading)
+            run("INSERT INTO stage_notice_day (query_date, notice_count) VALUES (:d, 1)", d=trading)   # 那天的注意股整理好了
+        run("INSERT INTO stage_notice (trade_date, stock_id, stock_name, reason_text) "   # 1101：前兩天被列注意，今天沒有
+            "VALUES (:d, '1101', '台泥', '最近六個營業日累積收盤價漲幅達32.10%')", d=datetime.date(2026, 11, 18))
+        run("INSERT INTO stage_notice_clause (trade_date, stock_id, clause) VALUES (:d, '1101', 1)", d=datetime.date(2026, 11, 18))
+        run("INSERT INTO stage_notice (trade_date, stock_id, stock_name, reason_text) "   # 2317：昨天被列注意、今天在注意累計名單上
+            "VALUES (:d, '2317', '鴻海', '最近六個營業日累積收盤價漲幅達30.00%')", d=datetime.date(2026, 11, 19))
+        run("INSERT INTO stage_notice_clause (trade_date, stock_id, clause) VALUES (:d, '2317', 1)", d=datetime.date(2026, 11, 19))
         run("INSERT INTO stage_notice (trade_date, stock_id, stock_name, reason_text) "
             "VALUES (:d, '2330', '台積電', '最近六個營業日累積收盤價跌幅達37.82%')", d=day)
         for stock in ("2317", "084028"):   # 084028 是權證，不是上市公司
@@ -463,14 +477,17 @@ def test_card_summary_reads_only_stage_and_ai(db):
             "is_negative, summary, reason, summary_ok, model) "
             "VALUES (:a, 'v3', '其他', FALSE, TRUE, TRUE, '子公司破產', '…', TRUE, 'm')", a=announcement_id)
 
-    assert repository.list_unsummarized_cards(day, day, "v7") == [("2317", day), ("2330", day)]
+    assert repository.list_unsummarized_cards(day, day, "v8") == [("1101", day), ("2317", day), ("2330", day)]
     facts = repository.card_facts("2330", day)
     assert facts["is_listed_today"] and facts["reason_text"].startswith("最近六個") and facts["clauses"] == "1,13"
     assert float(facts["change_pct"]) == -10.0   # -100 ÷ (900 + 100)
     assert facts["punish"]["match_interval_minutes"] == 5 and facts["punish"]["period_end"] == datetime.date(2026, 11, 23)
     watch = repository.card_facts("2317", day)
     assert not watch["is_listed_today"] and watch["change_pct"] is None and watch["punish"] is None
-    assert repository.card_facts("1101", day) is None   # 沒被列注意、也不在名單上
+    earlier = repository.card_facts("1101", day)   # 今天沒被列注意：帶最近一次被列注意
+    assert not earlier["is_listed_today"] and earlier["stock_name"] == "台泥"
+    assert earlier["last_notice"]["trade_date"] == datetime.date(2026, 11, 18) and earlier["last_notice"]["clauses"] == "1"
+    assert repository.card_facts("9910", day) is None   # 沒被列注意過、沒處置、不在名單上：不是卡片牆上的股票
     [announcement] = repository.recent_announcements("2330", datetime.date(2026, 10, 21), day)
     assert (announcement["category"], announcement["is_negative"], announcement["ai_summary"]) == ("其他", True, "子公司破產")
 

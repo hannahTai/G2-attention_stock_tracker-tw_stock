@@ -33,6 +33,7 @@ services:
               "--reload-dir", "dashboard", "--reload-dir", "common", "--reload-include", "*.html", "--reload-include", "*.css"]
     environment:
       WATCHFILES_FORCE_POLLING: "true"   # uvicorn --reload 用輪詢看檔案有沒有變
+      SHOW_DATE_PICKER: "1"              # 開發時顯示交易日選單（上線的網站不顯示）
 
   celery-crawl-twse:
     volumes:
