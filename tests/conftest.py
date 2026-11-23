@@ -1,5 +1,6 @@
 """測試共用：用記憶體裡的假 raw 表代替資料庫，測試不會碰到真的資料庫。"""
 import datetime
+import ipaddress
 import json
 import types
 
@@ -64,6 +65,19 @@ def raw_store(monkeypatch):
     for name in ("insert_raw_row", "read_raws", "list_raw_keys", "latest_raw_key", "raw_fetched_times"):
         monkeypatch.setattr(repository, name, getattr(fake, name))
     return fake
+
+
+@pytest.fixture(autouse=True)
+def no_dns(monkeypatch):
+    """測試不查 DNS：IP 照原樣，網域一律當成公開網址（93.184.216.34）。要測內部網址的，自己用 IP 或換掉 resolve_host。"""
+    from crawler import client   # 這裡才 import，conftest 載入時不用先載 crawler
+
+    def fake_resolve(host):
+        try:
+            return {str(ipaddress.ip_address(host))}
+        except ValueError:
+            return {"93.184.216.34"}
+    monkeypatch.setattr(client, "resolve_host", fake_resolve)
 
 
 @pytest.fixture(autouse=True)

@@ -30,6 +30,10 @@ SLEEP_SECONDS_MOPS = float(os.environ.get("SLEEP_SECONDS_MOPS", "0.6"))
 # 每天的資料線和回補一起排隊，加起來也不會超過；不要另外在本機直接打（會和佇列的加在一起，超過就回 402）
 SLEEP_SECONDS_FINMIND = float(os.environ.get("SLEEP_SECONDS_FINMIND", "6.0"))
 SLEEP_SECONDS_NEWS_DETAIL = float(os.environ.get("SLEEP_SECONDS_NEWS_DETAIL", "0.5"))   # 新聞網頁：分散在十幾個網站
+# 打開一則新聞網頁：從開始到讀完最多幾秒（crawler/client.py；TIMEOUT 只管每次讀取的等待，慢慢送的網站可以一直拖）；
+# crawl_news_detail 最多做幾秒，超過被 Celery 停掉（最後一道保險）。summarize_news 不設：還要問 LLM，硬停會丟掉付過錢的回答
+NEWS_DEADLINE_SECONDS = 60
+NEWS_TASK_TIME_LIMIT_SECONDS = 3 * NEWS_DEADLINE_SECONDS
 
 # 暫時性的失敗（逾時、連線失敗、5xx、429）重試幾次、每次等幾秒
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))

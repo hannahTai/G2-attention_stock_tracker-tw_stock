@@ -248,9 +248,9 @@ def test_fetch_news_summary_uses_summary_schema(monkeypatch):
 
 # ---------- summarize_news 任務 ----------
 def page(status=200, content_type="text/html"):
-    """假的新聞網頁回應（像 crawler_client.fetch_news_detail 回來的）。"""
-    return types.SimpleNamespace(status_code=status, ok=status < 400, content=b"<html>", headers={"Content-Type": content_type},
-                                 raise_for_status=lambda: (_ for _ in ()).throw(requests.HTTPError(f"HTTP {status}")))
+    """假的新聞網頁（像 crawler_client.fetch_news_detail 回來的 NewsPage）。"""
+    problem = crawler_client.page_problem(status, content_type)
+    return crawler_client.NewsPage("https://example.com/n", status, content_type, b"" if problem else b"<html>", problem)
 
 
 @pytest.fixture

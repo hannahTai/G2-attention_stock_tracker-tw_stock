@@ -20,6 +20,8 @@
 在 embed 佇列上跑，其他在 ai 佇列；
 shorten_once、asker、card_news 是任務用的小函式，不是任務。
 """
+import requests
+
 from ai import card_summarizer, classifier, client, embedder, retriever, summarizer, verifier
 from common import date_utils, repository
 from common.config import EMBED_MODEL, NEWS_LOOKBACK_DAYS
@@ -94,13 +96,15 @@ def summarize_news(news_id: str) -> str:
     if news is None:
         return f"{news_id} 不在 stage_news，跳過"
 
-    resp = crawler_client.fetch_news_detail(news["link"])   # 逾時、連線失敗：requests 的錯誤直接丟出去（會重試）
-    problem = crawler_client.news_detail_problem(resp)
-    if problem:
-        if repository.is_temporary_status(resp.status_code):
-            resp.raise_for_status()   # 5xx、429：丟 requests 的 HTTPError，runner／Celery 會重試
-        return f"{news_id} 網頁打不開（{problem}），跳過"
-    text = crawler_client.news_detail_text(resp.content) or ""   # 全文只在記憶體裡
+    unreachable = crawler_client.unreachable_link_problem(news["link"])   # Google 轉址：不打
+    if unreachable:
+        return f"{news_id} {unreachable}，跳過"
+    page = crawler_client.fetch_news_detail(news["link"])   # 逾時、連線失敗：requests 的錯誤直接丟出去（會重試）
+    if page.problem:
+        if page.status_code and repository.is_temporary_status(page.status_code):
+            raise requests.HTTPError(page.problem)   # 5xx、429：丟 requests 的 HTTPError，runner／Celery 會重試
+        return f"{news_id} 網頁打不開（{page.problem}），跳過"
+    text = crawler_client.news_detail_text(page.content) or ""   # 全文只在記憶體裡
     if len(text) < summarizer.MIN_TEXT_CHARS:
         return f"{news_id} 全文太短（{len(text)} 字），跳過"
 

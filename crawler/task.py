@@ -151,17 +151,17 @@ def crawl_news_detail(link: str) -> str:
     if problem:
         return f"{repository.save_raw_record('news_detail', key, url=link, http_status=None, body={}, problem=problem)}：{problem}"
 
-    resp = client.fetch_news_detail(link)
-    body = {"final_url": resp.url, "content_type": resp.headers.get("Content-Type", "")}
-    problem = client.news_detail_problem(resp)
+    page = client.fetch_news_detail(link)
+    body = {"final_url": page.url, "content_type": page.content_type}
+    problem = page.problem
     if problem is None:
         try:
-            body["head"] = client.news_detail_head(resp.content)
-            text = client.news_detail_text(resp.content)   # 全文用完就丟
+            body["head"] = client.news_detail_head(page.content)
+            text = client.news_detail_text(page.content)   # 全文用完就丟
             body["text_chars"] = len(text) if text else None
         except Exception as e:   # 網頁太怪、解析器出錯：記下來，不要每一輪都重抓
             problem = f"解析失敗：{type(e).__name__}"
-    where = repository.save_raw_record("news_detail", key, url=link, http_status=resp.status_code, body=body, problem=problem)
-    if problem and repository.is_temporary_status(resp.status_code):
+    where = repository.save_raw_record("news_detail", key, url=link, http_status=page.status_code, body=body, problem=problem)
+    if problem and page.status_code and repository.is_temporary_status(page.status_code):
         raise repository.FetchError(f"news_detail {key} 抓取失敗（{problem}），回應已存到 {where}", retryable=True)
     return f"{where}：{problem}（不再抓）" if problem else f"{where}：全文 {body['text_chars'] or 0} 字"

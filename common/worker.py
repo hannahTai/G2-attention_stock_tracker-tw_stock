@@ -46,7 +46,7 @@ import celery.signals
 from common import date_utils, logs, runner
 from common.config import (
     LOG_DIR, LOG_KEEP_DAYS, MAX_RETRIES, RABBITMQ_HOST, RABBITMQ_PASSWORD, RABBITMQ_PORT, RABBITMQ_USER,
-    RETRY_DELAY_SECONDS, SLEEP_SECONDS, SLEEP_SECONDS_FINMIND, SLEEP_SECONDS_MOPS, SLEEP_SECONDS_NEWS_DETAIL,
+    RETRY_DELAY_SECONDS, SLEEP_SECONDS, SLEEP_SECONDS_FINMIND, SLEEP_SECONDS_MOPS, SLEEP_SECONDS_NEWS_DETAIL, NEWS_TASK_TIME_LIMIT_SECONDS,
 )
 
 app = celery.Celery(
@@ -130,5 +130,6 @@ class FinmindJob(Job):
 
 
 class NewsDetailJob(Job):
-    """打新聞網站的任務（crawl_news_detail）：每個做完等 SLEEP_SECONDS_NEWS_DETAIL 秒。"""
+    """打新聞網站的任務（crawl_news_detail）：每個做完等 SLEEP_SECONDS_NEWS_DETAIL 秒；最多做 NEWS_TASK_TIME_LIMIT_SECONDS 秒。"""
     sleep_after = SLEEP_SECONDS_NEWS_DETAIL
+    time_limit = NEWS_TASK_TIME_LIMIT_SECONDS

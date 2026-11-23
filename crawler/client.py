@@ -12,7 +12,11 @@
 """
 import calendar
 import datetime
+import ipaddress
 import re
+import socket
+import time
+import typing
 import urllib.parse
 
 import pandas as pd
@@ -21,7 +25,7 @@ import trafilatura
 import trafilatura.utils
 
 from common import date_utils
-from common.config import FINMIND_BASE, FINMIND_TOKEN, MOPS_BASE, TWSE_BASE, TWSE_OPENAPI_BASE
+from common.config import FINMIND_BASE, FINMIND_TOKEN, MOPS_BASE, NEWS_DEADLINE_SECONDS, TWSE_BASE, TWSE_OPENAPI_BASE
 from common.date_utils import DATE_FMT, roc_compact_to_yyyymmdd, roc_date_in, yyyymmdd_to_roc_compact
 
 # ---------- HTTP ----------
@@ -137,9 +141,99 @@ def fetch_stock_news(stock_id: str, date_yyyymmdd: str) -> requests.Response:
     }, headers)
 
 
-def fetch_news_detail(link: str) -> requests.Response:
-    """一則新聞的網頁（HTML）。"""
-    return http_get(link, {}, {"Accept": "text/html,application/xhtml+xml"})
+# 新聞網頁的連結來自 FinMind（別人家的網站），打開時要防：
+NEWS_MAX_BYTES = 5_000_000      # 最多讀幾個 byte：一般新聞 100 KB～1 MB，太大的不是新聞（影片、壓縮檔），讀完會吃光記憶體
+NEWS_MAX_REDIRECTS = 5          # 轉址最多跟幾次（自己跟，每一站都檢查不是內部網址）
+# 從開始到讀完最多 NEWS_DEADLINE_SECONDS 秒（common/config.py）
+
+
+class NewsPage(typing.NamedTuple):
+    """打開一則新聞網頁的結果。problem 有值＝不能用（內容是空的）；status_code 是 None＝沒打（網址不能打、轉址太多次）。"""
+    url: str              # 轉址後的網址
+    status_code: int | None
+    content_type: str
+    content: bytes        # 網頁原始內容（全文在裡面，只在記憶體裡用，不存資料庫）
+    problem: str | None
+
+
+def resolve_host(host: str) -> set[str]:
+    """主機名稱 → 它的 IP（DNS 查詢；IP 本身就直接回傳）。查不到丟 socket.gaierror。測試會換掉這個，不真的查 DNS。"""
+    return {info[4][0].split("%")[0] for info in socket.getaddrinfo(host, None)}
+
+
+def unsafe_url_problem(url: str) -> str | None:
+    """不能打的網址 → 回傳原因：不是 http(s)、或主機是內部網址（本機、私人網段、雲端主機的 metadata）。
+    不擋的話，別人在新聞連結（或轉址）放內部網址，worker 就會去打容器網路裡的服務，結果還可能存進資料庫、顯示在網頁上。
+
+    >>> unsafe_url_problem("http://127.0.0.1/admin"), unsafe_url_problem("http://169.254.169.254/latest/meta-data")
+    ('127.0.0.1 是內部網址（127.0.0.1），不抓', '169.254.169.254 是內部網址（169.254.169.254），不抓')
+    >>> unsafe_url_problem("file:///etc/passwd"), unsafe_url_problem("http://8.8.8.8/news") is None
+    ('不是 http(s) 連結（file）', True)
+    """
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        return f"不是 http(s) 連結（{parts.scheme or '沒有'}）"
+    host = parts.hostname
+    if not host:
+        return "連結沒有主機名稱"
+    try:
+        addresses = resolve_host(host)
+    except socket.gaierror:
+        return None   # 查不到這個網域：讓 requests 自己連線失敗（連線錯誤會重試）
+    except (UnicodeError, ValueError):   # 主機名稱寫錯（某一段超過 63 字、空的一段）：編碼不了
+        return f"主機名稱不正確（{host[:80]}）"
+    for address in sorted(addresses):
+        if not ipaddress.ip_address(address).is_global:
+            return f"{host} 是內部網址（{address}），不抓"
+    return None
+
+
+def fetch_news_detail(link: str) -> NewsPage:
+    """一則新聞的網頁（HTML）。網址、每一站轉址都先檢查 unsafe_url_problem（轉址自己跟，最多 NEWS_MAX_REDIRECTS 次）；
+    只讀網頁（HTML）、最多 NEWS_MAX_BYTES。不能用的，NewsPage.problem 寫原因。
+    超過 NEWS_DEADLINE_SECONDS 秒丟 requests.Timeout（和連線逾時一樣，task 會重試）。
+    已知的限制：檢查網址時查一次 DNS、連線時 requests 再查一次，DNS 被動手腳（兩次給不同的 IP）擋不到。"""
+    started = time.monotonic()
+    url = link
+    # 同一個 Session：轉址時網站設的 cookie 下一站會帶過去（有些網站先設 cookie 再轉回原網址）
+    with requests.Session() as session:
+        for _ in range(NEWS_MAX_REDIRECTS + 1):
+            problem = unsafe_url_problem(url)
+            if problem:
+                # url 記原本的連結：內部網址不要存進資料庫（final_url）
+                return NewsPage(link, None, "", b"", problem if url == link else f"轉址到不能打的網址：{problem}")
+            check_deadline(started)
+            with session.get(url, headers={**HEADERS, "Accept": "text/html,application/xhtml+xml"}, timeout=TIMEOUT,
+                             stream=True, allow_redirects=False) as resp:   # with：不管怎麼離開都會關掉連線
+                if not resp.is_redirect:
+                    return read_page(resp, started)
+                # get_redirect_target：requests 自己跟轉址時用的，會把中文網址的編碼轉對（直接讀 Location 會變亂碼）
+                url = urllib.parse.urljoin(url, session.get_redirect_target(resp) or "")
+    return NewsPage(link, None, "", b"", f"轉址超過 {NEWS_MAX_REDIRECTS} 次")
+
+
+def check_deadline(started: float) -> None:
+    """從開始超過 NEWS_DEADLINE_SECONDS 秒 → 丟 requests 的逾時錯誤：跟一般逾時一樣算暫時性的，task 會重試（網站可能只是這時候慢）。"""
+    if time.monotonic() - started > NEWS_DEADLINE_SECONDS:
+        raise requests.Timeout(f"網頁太慢（超過 {NEWS_DEADLINE_SECONDS} 秒還沒讀完）")
+
+
+def read_page(resp: requests.Response, started: float) -> NewsPage:
+    """讀網頁內容。HTTP 錯誤、不是網頁的不讀（page_problem）；超過 NEWS_MAX_BYTES 就停（永久的問題）。
+    用 read1：網路上到了多少就先拿多少（最多 8 KB），每拿一次就看一次時間；
+    iter_content 會等湊滿 8 KB 才回來，一點一點慢慢送的網站一塊可以拖好幾個小時。"""
+    content_type = resp.headers.get("Content-Type", "")
+    problem = page_problem(resp.status_code, content_type)
+    if problem:
+        return NewsPage(resp.url, resp.status_code, content_type, b"", problem)
+    chunks, size = [], 0
+    while chunk := resp.raw.read1(8 * 1024, decode_content=True):   # 讀完回傳空的
+        size += len(chunk)
+        if size > NEWS_MAX_BYTES:
+            return NewsPage(resp.url, resp.status_code, content_type, b"", f"網頁太大（超過 {NEWS_MAX_BYTES:,} bytes）")
+        check_deadline(started)
+        chunks.append(chunk)
+    return NewsPage(resp.url, resp.status_code, content_type, b"".join(chunks), None)
 
 
 # ---------- 從回應取值：producer、task 要用的值 ----------
@@ -439,11 +533,14 @@ def stock_news_problem(body) -> str | None:
     return None
 
 
-def news_detail_problem(resp: requests.Response) -> str | None:
-    """新聞網頁打開了但不能用（HTTP 錯誤、不是網頁，例如 PDF、影片）→ 回傳原因。5xx、429 由 task 存完再重試。"""
-    if not resp.ok:
-        return f"HTTP {resp.status_code}"
-    content_type = resp.headers.get("Content-Type", "")
+def page_problem(status_code: int, content_type: str) -> str | None:
+    """新聞網頁打開了但不能用（HTTP 錯誤、不是網頁，例如 PDF、影片）→ 回傳原因。5xx、429 由 task 存完再重試；其他都是永久的。
+
+    >>> page_problem(403, "text/html"), page_problem(200, "application/pdf"), page_problem(200, "text/html; charset=big5")
+    ('HTTP 403', '不是網頁（application/pdf）', None)
+    """
+    if status_code >= 400:
+        return f"HTTP {status_code}"
     if "html" not in content_type:
         return f"不是網頁（{content_type or '沒有 Content-Type'}）"
     return None
@@ -454,7 +551,7 @@ UNREACHABLE_HOSTS = ("news.google.com",)
 
 
 def unreachable_link_problem(link: str) -> str | None:
-    """連過去也拿不到原文的連結 → 回傳原因（不打）。
+    """連過去也拿不到原文的連結 → 回傳原因（不打）。不能打的網址（內部網址）由 fetch_news_detail 自己擋。
 
     >>> unreachable_link_problem("https://news.google.com/rss/articles/abc")
     'news.google.com 的轉址連結，抓不到原文'

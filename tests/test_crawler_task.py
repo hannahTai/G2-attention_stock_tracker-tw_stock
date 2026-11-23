@@ -1,7 +1,6 @@
 """crawler/task.py：抓完存進 raw 表前的檢查（用假的回應和記憶體裡的假 raw 表）。"""
 import datetime
 import json
-import types
 
 import pytest
 import requests
@@ -158,8 +157,9 @@ def test_news_detail_head_and_text_handle_big5():
 
 
 def page_response(status=200, content=ARTICLE, content_type="text/html; charset=big5"):
-    return types.SimpleNamespace(url=LINK, status_code=status, ok=status < 400,
-                                 content=content, headers={"Content-Type": content_type})
+    """假的 fetch_news_detail 結果（problem 照 client.page_problem 的規則算）。"""
+    problem = client.page_problem(status, content_type)
+    return client.NewsPage(LINK, status, content_type, b"" if problem else content, problem)
 
 
 def test_crawl_news_detail_saves_head_not_text(raw_store, monkeypatch):
@@ -346,3 +346,104 @@ def test_bad_holiday_rows_are_skipped():
     """開休市日期有壞掉的列（太短、空值）：跳過，不會讓整年的證交所任務都失敗。"""
     body = {"fields": ["日期", "名稱", "說明"], "data": [["2027-02-15", None, ""], ["2027-02-16"], ["2027-01-01", "開國紀念日", ""]]}
     assert client.calendar_days(body) == ({"20270101"}, set())
+
+
+
+# ---------- 打開新聞網頁：大小、時間、轉址的限制 ----------
+class FakeStream:
+    """假的 requests 回應（stream=True）：body 分段給，記下讀了幾段、有沒有關。"""
+    def __init__(self, url, status=200, content_type="text/html", body=b"", location=None):
+        self.url, self.status_code = url, status
+        self.is_redirect = location is not None
+        self.headers = requests.structures.CaseInsensitiveDict(
+            {"Content-Type": content_type, **({"Location": location} if location else {})})
+        self.body, self.read, self.closed = body, 0, False
+
+        self.raw = self   # requests 的 resp.raw（urllib3 的回應）也用同一個
+
+    def read1(self, size, decode_content=True):
+        chunk, self.body = self.body[:size], self.body[size:]
+        self.read += bool(chunk)
+        return chunk
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.closed = True
+
+
+def serve(monkeypatch, pages):
+    """fetch_news_detail 打的網址改成回 pages 裡的假回應；回傳打過哪些網址。"""
+    asked = []
+
+    def get(session, url, **kwargs):
+        asked.append(url)
+        assert kwargs["stream"] is True and kwargs["allow_redirects"] is False
+        return pages[url]
+    monkeypatch.setattr(client.requests.Session, "get", get)
+    return asked
+
+
+def test_news_page_is_read_and_closed(monkeypatch):
+    page = FakeStream("https://udn.com/1", body=b"<html>ok</html>")
+    serve(monkeypatch, {"https://udn.com/1": page})
+    result = client.fetch_news_detail("https://udn.com/1")
+    assert result.content == b"<html>ok</html>" and result.problem is None and page.closed
+
+
+def test_news_page_too_big_is_cut_off(monkeypatch):
+    """超過 NEWS_MAX_BYTES 就停：不會把整個大檔讀進記憶體，記成永久的問題。"""
+    monkeypatch.setattr(client, "NEWS_MAX_BYTES", 100_000)
+    page = FakeStream("https://udn.com/big", body=b"x" * 1_000_000)
+    serve(monkeypatch, {"https://udn.com/big": page})
+    result = client.fetch_news_detail("https://udn.com/big")
+    assert result.problem.startswith("網頁太大") and result.content == b"" and page.read <= 13   # 8 KB 一塊，讀到 100 KB 就停
+
+
+def test_news_page_too_slow_is_a_timeout(monkeypatch):
+    """一點一點慢慢送的網站：從開始超過 NEWS_DEADLINE_SECONDS 秒就停，丟逾時（暫時性，task 會重試，不會記成永久失敗）。"""
+    clock = iter(range(0, 10000, 30))   # 每看一次時間過 30 秒
+    monkeypatch.setattr(client.time, "monotonic", lambda: next(clock))
+    page = FakeStream("https://udn.com/slow", body=b"x" * 300_000)
+    serve(monkeypatch, {"https://udn.com/slow": page})
+    with pytest.raises(client.requests.Timeout):
+        client.fetch_news_detail("https://udn.com/slow")
+    assert page.closed
+
+
+def test_news_page_not_html_is_not_read(monkeypatch):
+    page = FakeStream("https://udn.com/a.pdf", content_type="application/pdf", body=b"%PDF" * 1000)
+    serve(monkeypatch, {"https://udn.com/a.pdf": page})
+    assert client.fetch_news_detail("https://udn.com/a.pdf").problem.startswith("不是網頁") and page.read == 0
+
+
+def test_news_redirect_is_followed_and_checked(monkeypatch):
+    """轉址自己跟：公開網址照跟；網址本身或轉到內部網址（容器網路、雲端 metadata）就停，不打。"""
+    asked = serve(monkeypatch, {
+        "https://udn.com/r": FakeStream("https://udn.com/r", status=301, location="/news/1"),
+        "https://udn.com/news/1": FakeStream("https://udn.com/news/1", body=b"<html>ok</html>"),
+        "https://evil.example/r": FakeStream("https://evil.example/r", status=302, location="http://169.254.169.254/latest"),
+    })
+    result = client.fetch_news_detail("https://udn.com/r")
+    assert result.url == "https://udn.com/news/1" and result.content == b"<html>ok</html>"
+    assert "內部網址" in client.fetch_news_detail("https://evil.example/r").problem
+    assert "內部網址" in client.fetch_news_detail("http://127.0.0.1:8001/api/cards").problem
+    assert "http://169.254.169.254/latest" not in asked and "http://127.0.0.1:8001/api/cards" not in asked
+
+
+def test_news_redirect_to_chinese_url(monkeypatch):
+    """轉址到中文網址：http.client 把 Location 當 latin-1 讀進來，要轉回 UTF-8 才是對的網址（不然會打到亂碼網址、404）。"""
+    garbled = "/news/健策營收".encode().decode("latin-1")
+    serve(monkeypatch, {
+        "https://udn.com/r": FakeStream("https://udn.com/r", status=302, location=garbled),
+        "https://udn.com/news/健策營收": FakeStream("https://udn.com/news/健策營收", body=b"<html>ok</html>"),
+    })
+    assert client.fetch_news_detail("https://udn.com/r").content == b"<html>ok</html>"
+
+
+def test_crawl_news_detail_records_internal_links(raw_store, monkeypatch):
+    """新聞連結是內部網址：不打，記成永久的問題（之後不再抓）。"""
+    serve(monkeypatch, {})
+    assert "內部網址" in task.crawl_news_detail("http://127.0.0.1:8001/api/cards")
+    assert raw_store.last("news_detail", url_md5("http://127.0.0.1:8001/api/cards")).http_status is None
