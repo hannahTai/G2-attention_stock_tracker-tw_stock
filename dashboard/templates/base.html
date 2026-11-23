@@ -3,7 +3,9 @@
    換頁都用網址參數（?date=、?tab=、?only=、?stock=），點連結會重新載入、Streamlit 讀網址決定畫哪一頁。
    st.html 不會執行 JavaScript，所以交易日選單用 <details> 做成下拉清單；
    右上角放各頁自己的東西（header_right）：總覽是交易日選單和搜尋框，個股頁沒有。 #}
-<div class="wrap">
+{# lang：讀螢幕軟體用中文唸；跳到主要內容：鍵盤使用者不用每頁都先跳過標題、交易日選單 #}
+<div class="wrap" lang="zh-Hant-TW">
+  <a class="skip" href="#main">跳到主要內容</a>
   <header class="top">
     <div>
       <h1><a href="?{% if day %}date={{ ymd(day) }}{% endif %}">注意股，還差幾步？</a></h1>
@@ -14,9 +16,11 @@
     </div>
   </header>
 
+  <main id="main">
   {% if notice %}<p class="banner">{{ notice }}</p>{% endif %}
 
   {% block content %}{% endblock %}
+  </main>
 
   <footer class="foot">
     <p>計算依據：臺灣證券交易所《公布或通知注意交易資訊暨處置作業要點》第四條及第六條。</p>

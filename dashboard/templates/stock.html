@@ -105,9 +105,11 @@
     <p class="small muted strip-title">注意及處置紀錄・近 30 個營業日</p>
     <div class="strip">
       {% for cell in cells %}
+      {# title 只有滑鼠移上去看得到：同樣的字另外放一份給讀螢幕軟體（sr-only），格子上的月份、幾號就不用唸 #}
       <div class="cell" title="{{ cell.title }}">
-        <span class="month">{{ cell.month_label }}</span>
-        <span class="sq {{ cell.shade }} {{ 'punish' if cell.in_punish }}">{{ cell.day.day }}</span>
+        <span class="month" aria-hidden="true">{{ cell.month_label }}</span>
+        <span class="sq {{ cell.shade }} {{ 'punish' if cell.in_punish }}" aria-hidden="true">{{ cell.day.day }}</span>
+        <span class="sr-only">{{ cell.title }}</span>
       </div>
       {% endfor %}
     </div>
@@ -122,7 +124,7 @@
 {% macro notice_row(n) %}
 {% call ui.day_row(n.date, n.weekday) %}
   <details class="log">
-    <summary aria-label="{{ n.date }} 被列注意的原因">
+    <summary>
       {% for c in n.clauses %}<span class="clause {{ 'counted' if c.counted }}">第 {{ c.no }} 款・{{ c.name }}</span>{% endfor %}
       <span class="small muted">{{ n.note }}</span>
       {% if n.reason %}<span class="chev" aria-hidden="true"></span>{% endif %}

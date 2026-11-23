@@ -34,7 +34,7 @@ def test_all_tab_has_no_section_titles_and_cards_follow_the_stages():
 
 def test_tab_notes_are_in_the_tabs():
     page = overview()
-    assert '<span class="tip" role="tooltip">下一個營業日再被列注意就處置</span>' in page
+    assert '<span class="tip">下一個營業日再被列注意就處置</span>' in page
     tabs = page[page.index('<nav class="tabs"'):page.index("</nav>", page.index('<nav class="tabs"'))]
     assert tabs.count('class="info"') == 5   # 「全部」沒有
 

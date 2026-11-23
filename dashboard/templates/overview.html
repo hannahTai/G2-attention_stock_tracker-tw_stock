@@ -21,12 +21,12 @@
 
 {% block content %}
 {# 分頁＝分區，每檔只在一區，數字加起來＝全部；下面的「只看」是可以開關的篩選。
-   分頁旁的 ⓘ：滑鼠移上去顯示這一區是什麼（「全部」沒有） #}
+   分頁旁的 ⓘ：滑鼠移上去、或用鍵盤移到分頁上，顯示這一區是什麼（「全部」沒有）；說明文字在連結裡，讀螢幕軟體會一起唸 #}
 <nav class="tabs" aria-label="分區">
   {% for key, label in tabs %}
   <a href="?{{ url_with(tab=key) }}" class="tab-{{ key }} {{ 'zero' if not counts[key] }}" {% if key == tab %}aria-current="page"{% endif %}>
     {{ label }} <span class="count">{{ counts[key] }}</span>
-    {% if tab_notes[key] %}<span class="info" aria-label="{{ tab_notes[key] }}">ⓘ<span class="tip" role="tooltip">{{ tab_notes[key] }}</span></span>{% endif %}
+    {% if tab_notes[key] %}<span class="info"><span aria-hidden="true">ⓘ</span><span class="tip">{{ tab_notes[key] }}</span></span>{% endif %}
   </a>
   {% endfor %}
 </nav>
@@ -36,11 +36,11 @@
   {# 0 檔的篩選照樣顯示（「今天沒人出關」也是資訊），但不能點，免得點進一頁空白 #}
   {% for key, label in filters %}
     {% if key == only %}
-    <a class="chip on" href="?{{ url_with(only='') }}" aria-pressed="true">{{ label }} <span class="count">{{ filter_counts[key] }}</span> ✕</a>
+    <a class="chip on" href="?{{ url_with(only='') }}" aria-current="true" title="取消篩選">{{ label }} <span class="count">{{ filter_counts[key] }}</span> <span aria-hidden="true">✕</span></a>
     {% elif not filter_counts[key] %}
     <span class="chip zero" aria-disabled="true">{{ label }} <span class="count">0</span></span>
     {% else %}
-    <a class="chip" href="?{{ url_with(only=key) }}" aria-pressed="false">{{ label }} <span class="count">{{ filter_counts[key] }}</span></a>
+    <a class="chip" href="?{{ url_with(only=key) }}">{{ label }} <span class="count">{{ filter_counts[key] }}</span></a>
     {% endif %}
   {% endfor %}
 </div>
