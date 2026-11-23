@@ -79,11 +79,13 @@ def read_stage(end: datetime.date) -> tuple[list[datetime.date], pd.DataFrame, p
         end, ["announce_date", "period_start", "period_end"])
 
     # 4. end 之後的休市日（推算「若再列注意」的處置日期）；「開始交易日」「最後交易日」有交易，不算休市
+    #    （date_utils.holiday_is_trading，和 crawler 判斷交易日同一個規則）
     holidays = query(
-        "SELECT holiday_date FROM stage_holiday WHERE holiday_date > :end AND holiday_name NOT LIKE '%交易日'",
-        end, ["holiday_date"])["holiday_date"]
+        "SELECT holiday_date, holiday_name FROM stage_holiday WHERE holiday_date > :end",
+        end, ["holiday_date"])
+    closed = {row.holiday_date for row in holidays.itertuples() if not date_utils.holiday_is_trading(row.holiday_name)}
 
-    return trading_days, clauses, punishes, set(holidays)
+    return trading_days, clauses, punishes, closed
 
 
 def replace_app(progress: pd.DataFrame, dates: pd.DataFrame, day: datetime.date) -> None:

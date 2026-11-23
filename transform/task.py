@@ -11,8 +11,9 @@ transform_xxx 都用 @app.task 註冊成 Celery 任務（見 common/worker.py）
 import pandas as pd
 
 from common import date_utils, repository
-from common.date_utils import parse_yyyymmdd
+from common.date_utils import parse_yyyymmdd, to_yyyymmdd
 from common.worker import Job, app
+from crawler import client as crawler_client
 from transform import transformer
 from transform.parsing import fetched_at
 from transform.transformer import STAGE_KEYS
@@ -110,11 +111,12 @@ def transform_punish_watchlist(date_yyyymmdd: str) -> str:
         "stage_punish_watchlist": transformer.clean_punish_watchlist(transformer.punish_watchlist_to_frame(raw))})
 
 
-def notice_days(month_yyyymm: str) -> set:
-    """這個月有人被列注意的日子（讀 raw_notice，不靠 stage，跟 transform_notice 誰先跑都沒關係）。"""
-    keys = [k for k in repository.list_raw_keys("notice") if k.startswith(month_yyyymm)]
-    return {parse_yyyymmdd(raw["meta"]["key"]) for raw in repository.read_raws("notice", keys)
-            if isinstance(raw["body"], dict) and raw["body"].get("data")}
+def price_published(day) -> bool:
+    """那天的收盤行情有個股資料（讀 raw_stock_price，不靠 stage，跟 transform_stock_price 誰先跑都沒關係）。
+    和 crawler 判斷交易日用同一個證據（client.is_published）。"""
+    key = to_yyyymmdd(day)
+    raw = repository.read_raw("stock_price", key)
+    return raw is not None and crawler_client.is_published("stock_price", raw["body"], key)
 
 
 @app.task(base=Job)
@@ -125,7 +127,7 @@ def transform_market_daily(month_yyyymm: str) -> str:
     if raw is None:
         return skipped("market_daily", key)
     through = transformer.covered_through(raw["meta"]["fetched_at"])   # 這份涵蓋到哪天（看抓取時間）
-    days = transformer.clean_trading_day(transformer.market_daily_to_frame(raw), key, through, notice_days(key))
+    days = transformer.clean_trading_day(transformer.market_daily_to_frame(raw), key, through, price_published)
     tables = {"stage_trading_day": days}
     return save(raw, tables)
 

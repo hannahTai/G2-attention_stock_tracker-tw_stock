@@ -185,7 +185,7 @@ def test_punish_watchlist_date_from_title_and_br_split():
 # ---------- 交易日、休市 ----------
 def test_trading_day_numbers():
     rows = [["115/11/02", "10,422,514,115", "799,687,507,911", "4,104,242", "44,920.14", "-291.69"]]
-    df = clean_trading_day(market_daily_to_frame(envelope(rows, MARKET_API_FIELDS)), "202611", datetime.date(2026, 11, 2), set())
+    df = clean_trading_day(market_daily_to_frame(envelope(rows, MARKET_API_FIELDS)), "202611", datetime.date(2026, 11, 2), lambda day: False)
     trading = df[df["is_trading"]]
     assert len(trading) == 1
     assert trading.iloc[0]["volume_shares"] == 10422514115 and trading.iloc[0]["taiex_change_points"] == -291.69
@@ -194,7 +194,7 @@ def test_trading_day_numbers():
 def test_trading_day_calendar_until_covered_day():
     """11/02（一）、11/03（二）有交易，抓到 11/04：11/01（日）、11/04（颱風假）沒交易；11/05 之後不寫（還不知道）。"""
     rows = [["115/11/02", "1", "1", "1", "1", "1"], ["115/11/03", "1", "1", "1", "1", "1"]]
-    df = clean_trading_day(market_daily_to_frame(envelope(rows, MARKET_API_FIELDS)), "202611", datetime.date(2026, 11, 4), set())
+    df = clean_trading_day(market_daily_to_frame(envelope(rows, MARKET_API_FIELDS)), "202611", datetime.date(2026, 11, 4), lambda day: False)
     assert df["trade_date"].tolist() == [datetime.date(2026, 11, d) for d in (1, 2, 3, 4)]
     assert df["is_trading"].tolist() == [False, True, True, False]
     assert df["volume_shares"].isna().tolist() == [True, False, False, True]
@@ -247,13 +247,16 @@ def test_announcement_no_data_is_empty():
     assert clean_announcement(announcement_to_frame(raw)).empty
 
 
-def test_trading_day_not_updated_if_notices_exist():
-    """11/04 市場成交裡沒有，但那天有人被列注意 → 其實有交易，是資料還沒更新：不寫這列（不是颱風假）。"""
+def test_trading_day_not_updated_if_prices_exist():
+    """11/04 市場成交裡沒有，但那天的收盤行情有個股資料 → 其實有交易，是資料還沒更新：不寫這列（不是颱風假）。
+    只問市場成交裡沒有的日子（11/02、11/03 有，不用問）。"""
     rows = [["115/11/02", "1", "1", "1", "1", "1"], ["115/11/03", "1", "1", "1", "1", "1"]]
+    asked = []
+    traded = lambda day: asked.append(day) or day == datetime.date(2026, 11, 4)
     with pytest.warns(UserWarning, match="還沒有"):
-        df = clean_trading_day(market_daily_to_frame(envelope(rows, MARKET_API_FIELDS)), "202611",
-                               datetime.date(2026, 11, 4), notice_days={datetime.date(2026, 11, 4)})
+        df = clean_trading_day(market_daily_to_frame(envelope(rows, MARKET_API_FIELDS)), "202611", datetime.date(2026, 11, 4), traded)
     assert df["trade_date"].tolist() == [datetime.date(2026, 11, d) for d in (1, 2, 3)]
+    assert asked == [datetime.date(2026, 11, 1), datetime.date(2026, 11, 4)]
 
 
 DETAIL_TITLES = [{"main": m, "sub": []} for m in

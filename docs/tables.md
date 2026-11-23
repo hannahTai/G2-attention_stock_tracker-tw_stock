@@ -294,6 +294,7 @@ erDiagram
 
 - 以實際成交為準，臨時休市也正確；「連續營業日」用 `is_trading` 為 true 的列。
 - 涵蓋到哪天看抓取時間：15:00（收盤資料公布）以後抓的含當天，之前抓的只到前一天。之後的日子沒有列＝還不知道，analyze 不會算。
+- 資料裡沒有、但那天的收盤行情有個股資料：其實有交易，是市場成交還沒更新，先不寫那天（和 crawler 判斷交易日用同一個證據）。
 - 沒交易的日子成交欄位都是 NULL。
 
 ### stage_stock_price　每日收盤行情
@@ -325,7 +326,7 @@ erDiagram
 | holiday_name | VARCHAR(100) | 名稱 | — |
 | description | TEXT | 說明 | — |
 
-- 也含「開始交易日」這類有交易的日子；不含臨時休市。
+- 也含「開始交易日」這類有交易的日子（名稱是「…交易日」的有交易，其他是休市；crawler 和 analyze 用同一個規則 `date_utils.holiday_is_trading`）；不含臨時休市。
 - 年份要用 `date` 指定，`queryYear` 會被忽略。
 
 ### stage_company　上市公司

@@ -12,8 +12,9 @@ import warnings
 import pandas as pd
 import trafilatura
 
-from common.date_utils import DATE_FMT, TAIPEI, roc_compact_to_dates, roc_date_in, roc_to_dates
+from common.date_utils import DATE_FMT, TAIPEI, roc_compact_to_dates, roc_to_dates
 from common.hash_utils import key_md5, url_md5
+from crawler import client   # 從回應取值（表、日期、連結）和 crawler 用同一份，兩邊才不會挑到不同的東西
 from transform.parsing import (
     chinese_number, mops_rows_to_frame, require_columns, strip_html, to_number, twse_rows_to_frame,
 )
@@ -111,8 +112,7 @@ PUNISH_WATCHLIST_FIELDS = ["證券代號", "證券名稱", WATCHLIST_PROGRESS]  
 
 def punish_watchlist_to_frame(raw: dict) -> pd.DataFrame:
     """資料日期在標題裡（例如「115年11月06日 公布…」），每列都記上。"""
-    return twse_rows_to_frame(raw, PUNISH_WATCHLIST_FIELDS, "注意累計名單").assign(
-        data_date=roc_date_in(raw["body"].get("title", "")))
+    return twse_rows_to_frame(raw, PUNISH_WATCHLIST_FIELDS, "注意累計名單").assign(data_date=client.watchlist_day(raw["body"]))
 
 
 def clean_punish_watchlist(df: pd.DataFrame) -> pd.DataFrame:
@@ -147,14 +147,13 @@ def covered_through(fetched_time: str) -> datetime.date:
     return fetched.date() - datetime.timedelta(days=1)
 
 
-def clean_trading_day(df: pd.DataFrame, month_yyyymm: str, through: datetime.date,
-                      notice_days: set[datetime.date]) -> pd.DataFrame:
+def clean_trading_day(df: pd.DataFrame, month_yyyymm: str, through: datetime.date, traded) -> pd.DataFrame:
     """→ stage_trading_day：這個月 1 號到 through（資料涵蓋到的那天）的每一天，一天一列。
 
     資料裡有的那天＝有交易（is_trading=1）；涵蓋範圍內但資料裡沒有＝沒交易（週末、休市、颱風假，is_trading=0）。
     through 之後的日子不寫：還不知道有沒有交易，analyze 看到沒有這列就不算那天。
-    notice_days：有人被列注意的日子。資料裡沒有、但那天有人被列注意 → 那天其實有交易，是市場成交還沒更新，
-    不寫這列（當作還不知道），免得把交易日當成沒交易。
+    traded(date)：那天的收盤行情有個股資料（和 crawler 判斷交易日同一個證據）。資料裡沒有、但那天有收盤行情
+    → 那天其實有交易，是市場成交還沒更新，不寫這列（當作還不知道），免得把交易日當成沒交易。只問資料裡沒有的日子。
     """
     trading = pd.DataFrame({
         "trade_date": roc_to_dates(df["日期"]),
@@ -170,9 +169,11 @@ def clean_trading_day(df: pd.DataFrame, month_yyyymm: str, through: datetime.dat
 
     out = calendar.merge(trading, on="trade_date", how="outer")   # outer：資料比 through 新的那天也留著
     out.insert(1, "is_trading", out["trade_date"].isin(set(trading["trade_date"])))
-    not_updated = ~out["is_trading"] & out["trade_date"].isin(notice_days)
+    not_updated = pd.Series(False, index=out.index)
+    missing = ~out["is_trading"]                                      # 只問資料裡沒有的日子（週末、休市的回應很小）
+    not_updated[missing] = [bool(traded(day)) for day in out.loc[missing, "trade_date"]]
     if not_updated.any():
-        warnings.warn(f"市場成交還沒有 {sorted(out.loc[not_updated, 'trade_date'])}，但那天有注意股：先不寫，等下次抓")
+        warnings.warn(f"市場成交還沒有 {sorted(out.loc[not_updated, 'trade_date'])}，但那天有收盤行情：先不寫，等下次抓")
     return out[~not_updated].sort_values("trade_date", kind="stable").reset_index(drop=True)
 
 
@@ -193,10 +194,8 @@ def signed_change(sign: pd.Series, amount: pd.Series) -> pd.Series:
 
 
 def stock_price_to_frame(raw: dict) -> pd.DataFrame:
-    """回應裡有好幾張表，取 fields 有「證券代號」「收盤價」的那張；沒開市的日子沒有，回傳空表。"""
-    tables = raw["body"].get("tables") or []
-    table = next((t for t in tables if {"證券代號", "收盤價"} <= set(t.get("fields") or [])), {})
-    return twse_rows_to_frame({"body": table}, STOCK_PRICE_FIELDS, "每日收盤行情")
+    """回應裡個股的那張表（client.stock_price_table，和 crawler 判斷公布了沒看同一張）；沒開市的日子沒有，回傳空表。"""
+    return twse_rows_to_frame({"body": client.stock_price_table(raw["body"]) or {}}, STOCK_PRICE_FIELDS, "每日收盤行情")
 
 
 def clean_stock_price(df: pd.DataFrame, day: datetime.date) -> pd.DataFrame:
@@ -338,8 +337,9 @@ def stock_news_to_frame(raw: dict) -> pd.DataFrame:
 
 
 def stock_news_ids(raw: dict) -> set[str]:
-    """一份個股新聞裡每則新聞的 news_id（transform 的 producer 用來找要整理哪些新聞網頁）。"""
-    return {url_md5(link) for link in stock_news_to_frame(raw)["link"]}
+    """一份個股新聞裡每則新聞的 news_id（transform 的 producer 用來找要整理哪些新聞網頁）。
+    連結和 crawler 打開網頁用的是同一份（client.stock_news_links，論壇貼文不算），news_id 才對得上。"""
+    return {url_md5(link) for link in client.stock_news_links(raw["body"])}
 
 
 def strip_publisher_suffix(title: str, publisher: str) -> str:

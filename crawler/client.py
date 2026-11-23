@@ -152,15 +152,36 @@ def punish_stock_ids(body) -> set[str]:
     return {row[2].strip() for row in body.get("data") or []}
 
 
-def watchlist_date(body) -> str | None:
-    """從注意累計名單的標題取出資料日期（YYYYMMDD），找不到就回傳 None。
+def watchlist_day(body) -> datetime.date | None:
+    """注意累計名單標題上的資料日期，找不到就回傳 None。crawler（raw_key）和 transform（data_date）都用這個。
 
     標題例如「115年11月12日 公布注意累計次數可能達處置標準之有價證券一覽表」
+
+    >>> watchlist_day({"title": "115年11月12日 公布注意累計次數可能達處置標準之有價證券一覽表"})
+    datetime.date(2026, 11, 12)
     """
     if not isinstance(body, dict):   # 被擋時回傳的是 HTML 文字，不是 dict
         return None
-    data_date = roc_date_in(body.get("title", ""))
-    return data_date.strftime(DATE_FMT) if data_date else None
+    return roc_date_in(body.get("title", ""))
+
+
+def watchlist_date(body) -> str | None:
+    """注意累計名單的資料日期（YYYYMMDD，當 raw_key），找不到就回傳 None。"""
+    day = watchlist_day(body)
+    return day.strftime(DATE_FMT) if day else None
+
+
+def stock_price_table(body) -> dict | None:
+    """每日收盤行情的回應有好幾張表（指數、個股…），取 fields 有「證券代號」「收盤價」的那張；沒有就回傳 None。
+    crawler（判斷公布了沒）和 transform（整理成 stage_stock_price）都用這個，才會看同一張表。
+
+    >>> stock_price_table({"tables": [{"fields": ["指數"]}, {"fields": ["證券代號", "收盤價"], "data": [["2330", "1,000"]]}]})["data"]
+    [['2330', '1,000']]
+    >>> stock_price_table({"stat": "很抱歉，沒有符合條件的資料!"}) is None
+    True
+    """
+    tables = (body.get("tables") or []) if isinstance(body, dict) else []
+    return next((t for t in tables if {"證券代號", "收盤價"} <= set(t.get("fields") or [])), None)
 
 
 def company_ids(body) -> set[str]:
@@ -174,11 +195,12 @@ FORUM_PATH = "cmoney.tw/forum/"
 
 def stock_news_links(body) -> list[str]:
     """個股新聞回應裡每則新聞的連結（查網頁要用）；CMoney 股市爆料同學會是論壇貼文，不是新聞，不算。
+    crawler（要打開哪些網頁）和 transform（要整理哪些網頁，transformer.stock_news_ids）都用這個，news_id 才對得上。
 
     >>> stock_news_links({"data": [{"link": " https://udn.com/1 "}, {"link": "https://www.cmoney.tw/forum/article/2"}]})
     ['https://udn.com/1']
     """
-    return [row["link"].strip() for row in body.get("data") or [] if FORUM_PATH not in row["link"]]   # 和 transform 一樣去空白，md5 才對得上
+    return [row["link"].strip() for row in body.get("data") or [] if FORUM_PATH not in row["link"]]
 
 
 def announcement_ids(body) -> list[tuple[str, str, int, str]]:
@@ -280,14 +302,13 @@ def is_published(source: str, body, date_yyyymmdd: str) -> bool:
         updated = update_date(body)
         return updated is not None and updated >= day
     if source == "stock_price":
-        return any("證券代號" in (table.get("fields") or []) and table.get("data") for table in body.get("tables") or [])
+        return bool((stock_price_table(body) or {}).get("data"))
     raise ValueError(f"不認識的來源：{source}")
 
 
 def calendar_days(body) -> tuple[set[str], set[str]]:
     """開休市日期的回應 → (休市的日子, 有交易的日子)，都是 YYYYMMDD。
-    名稱是「…交易日」的（開始交易日、最後交易日、補行交易日）那天有交易，其他都是休市；
-    和 analyze 讀 stage_holiday 的規則一樣（holiday_name NOT LIKE '%交易日'）。不含颱風假這類臨時休市。
+    那天有沒有交易看名稱（date_utils.holiday_is_trading，和 analyze 同一個規則）。不含颱風假這類臨時休市。
 
     >>> calendar_days({"fields": ["日期", "名稱", "說明"], "data": [
     ...     ["2027-01-01", "中華民國開國紀念日", ""], ["2027-01-04", "國曆新年開始交易日", ""]]})
@@ -297,7 +318,7 @@ def calendar_days(body) -> tuple[set[str], set[str]]:
     for date, name in column_rows(body, "日期", "名稱"):
         if not isinstance(date, str) or not isinstance(name, str):
             continue   # 壞掉的列（空值）跳過，不要讓整年的證交所任務都失敗
-        (open_ if name.strip().endswith("交易日") else closed).add(date.replace("-", ""))
+        (open_ if date_utils.holiday_is_trading(name) else closed).add(date.replace("-", ""))
     return closed, open_
 
 
@@ -344,7 +365,7 @@ def day_status(date_yyyymmdd: str, price_body, closed: set[str], open_: set[str]
     日曆上休市 → CLOSED；應該有交易、收盤行情有資料 → TRADING；
     應該有交易、收盤行情沒有：市場成交已經有之後的交易日卻沒有這天 → CLOSED（颱風假，事後確認），不然 → UNKNOWN。
 
-    >>> price = {"tables": [{"fields": ["證券代號"], "data": [["2330"]]}]}
+    >>> price = {"tables": [{"fields": ["證券代號", "收盤價"], "data": [["2330", "1,000"]]}]}
     >>> day_status("20261123", price, set(), set()), day_status("20261128", price, set(), {"20261128"})   # 平日、週六補行交易
     ('trading', 'trading')
     >>> day_status("20261225", None, {"20261225"}, set()), day_status("20261128", None, set(), set())   # 休市、週末

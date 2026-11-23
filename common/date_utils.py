@@ -64,6 +64,16 @@ def roc_to_date(text: str) -> datetime.date:
     return datetime.date(int(y) + 1911, int(m), int(d))
 
 
+def holiday_is_trading(name: str) -> bool:
+    """證交所開休市日期上的一列，那天有沒有交易：名稱是「…交易日」的（開始交易日、最後交易日、補行交易日）有，
+    其他（國定假日、「市場無交易，僅辦理結算交割作業」）沒有。crawler 判斷交易日、analyze 推算未來的營業日都用這個。
+
+    >>> holiday_is_trading("國曆新年開始交易日"), holiday_is_trading("中華民國開國紀念日")
+    (True, False)
+    """
+    return name.strip().endswith("交易日")
+
+
 def to_roc(day: datetime.date, sep: str) -> str:
     """date → 民國日期，月日補 0（證交所的寫法）。
 

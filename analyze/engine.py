@@ -14,15 +14,8 @@ import datetime
 
 import pandas as pd
 
-# 規則（要點第六條，見 docs/rules.md）
-THRESHOLDS = {"streak3": 3, "streak5": 5, "in10": 6, "in30": 12}   # 每一條的門檻
-COUNTED_CLAUSES = {1, 2, 3, 4, 5, 6, 7, 8}                          # 第 1～8 款計入（連 3 日只看第 1 款）
-
-# 處置期間（幾個營業日），見 docs/rules.md「處置期間與措施」
-NEW_RULE_DATE = datetime.date(2026, 8, 10)     # 這天起新制
-PUNISH_DAYS = {"new": 5, "old": 10}            # 一般
-PUNISH_DAYS_EXTENDED = {"new": 7, "old": 12}   # 連 3 日、連 5 日且計算期間內有第 13 款
-EXTEND_CLAUSE = 13                             # 當沖占比過高
+from common import rules
+from common.rules import COUNTED_CLAUSES, EXTEND_CLAUSE, PUNISH_DAYS, PUNISH_DAYS_EXTENDED, THRESHOLDS   # 規則的常數（網頁也用）
 
 LEFT_COLUMNS = [f"{path}_left" for path in THRESHOLDS]   # streak3_left、streak5_left、in10_left、in30_left
 NEXT_COLUMNS = ["next_listed_date", "next_punish_round", "next_period_start", "next_period_end", "next_resume_date"]
@@ -137,7 +130,7 @@ def next_punishment(closest_path: str, counted: dict, stock_days: dict[datetime.
     # 只看會被引用的那條（closest_path）；明天的款次還不知道，只看已計入的日子
     extended = closest_path in ("streak3", "streak5") and any(
         EXTEND_CLAUSE in stock_days.get(d, set()) for d in counted[closest_path])
-    rule = "new" if start >= NEW_RULE_DATE else "old"   # 依處置起日：8/07 公布、8/10 起的用新制
+    rule = rules.rule_era(start)   # 依處置起日：8/07 公布、8/10 起的用新制
     length = (PUNISH_DAYS_EXTENDED if extended else PUNISH_DAYS)[rule]
     end = future[i + 1 + length]
 

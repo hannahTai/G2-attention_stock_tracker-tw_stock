@@ -102,6 +102,7 @@ common/                     各資料夾共用（crawler、transform、analyze �
 ├─ config.py                  設定（會因環境改變的值，從 .env 讀）
 ├─ worker.py                  Celery app 和任務共用的行為（重試、間隔）；USE_CELERY=1 時任務送進 RabbitMQ（佇列 crawl_twse、crawl_mops、crawl_finmind、crawl_news、transform、analyze、ai、embed）
 ├─ date_utils.py              日期工具
+├─ rules.py                   處置規則的常數（門檻、計入的款次、新制、處置天數、撮合間隔）：規則引擎和網頁共用
 └─ hash_utils.py              雜湊工具：url_md5（新聞的 news_id＝連結的 md5）
 schema/                     建表 SQL：raw.sql、stage.sql、app.sql、view.sql（給網頁讀的 VIEW）、ai.sql（AI 結果）、log.sql（任務歷史）
 scripts/                    .bat：每日排程（daily）、回補（backfill）、從 raw 重算（rebuild）、備份（backup）、網站（web：API ＋ 網頁）

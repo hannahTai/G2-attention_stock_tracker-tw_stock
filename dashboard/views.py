@@ -21,16 +21,17 @@ import datetime
 import decimal
 import re
 
-from common import date_utils
+from common import date_utils, rules
 
 # ---------- 固定資料 ----------
-# 四條路徑：(畫面上的名稱, 門檻)
-PATHS = {
-    "streak3": ("連 3 日列第 1 款", 3),     # 連續 3 個營業日被列第 1 款
-    "streak5": ("連 5 日被列注意", 5),      # 連續 5 個營業日被列注意（第 1～8 款）
-    "in10": ("10 日內被列 6 日", 6),        # 最近 10 個營業日內有 6 日被列注意
-    "in30": ("30 日內被列 12 日", 12),      # 最近 30 個營業日內有 12 日被列注意
+# 四條路徑：(畫面上的名稱, 門檻)；門檻和規則引擎同一份（common/rules.py）
+PATH_NAMES = {
+    "streak3": "連 3 日列第 1 款",     # 連續 3 個營業日被列第 1 款
+    "streak5": "連 5 日被列注意",      # 連續 5 個營業日被列注意（第 1～8 款）
+    "in10": "10 日內被列 6 日",        # 最近 10 個營業日內有 6 日被列注意
+    "in30": "30 日內被列 12 日",       # 最近 30 個營業日內有 12 日被列注意
 }
+PATHS = {key: (name, rules.THRESHOLDS[key]) for key, name in PATH_NAMES.items()}
 
 # 注意股款次的簡短名稱（要點第四條）；第 1～8 款會算進處置次數
 CLAUSE_NAMES = {
@@ -100,7 +101,6 @@ TABLE_LINE = re.compile(r"\S {2,}\S")    # 字中間有 2 個以上空白：用�
 NEW_ITEM = re.compile(r"\s*(\d+[.、．]|[(（][一二三四五六七八九十\d]+[)）]|[一二三四五六七八九十]+、|[A-Za-z][.、)）])")
 LINE_END = ("。", "：", ":", "！", "？")
 
-NEW_RULE_START = datetime.date(2026, 8, 10)   # 處置新制開始的日子（期間縮短、撮合改 2 分鐘）
 MARKET_OPEN = datetime.time(9, 0)
 MARKET_CLOSE = datetime.time(14, 30)          # 含盤後定價交易
 
@@ -304,12 +304,11 @@ def rule_for(round_no: int, start: datetime.date | None, minutes: int | None = N
     >>> rule_for(2, datetime.date(2026, 7, 28))["minutes"], rule_for(2, datetime.date(2026, 7, 28), minutes=10)["minutes"]
     (20, 10)
     """
-    new_rule = start is None or start >= NEW_RULE_START
-    default_minutes = 2 if new_rule else (5 if round_no == 1 else 20)
+    era = rules.rule_era(start)   # 撮合間隔、延長天數和規則引擎同一份（common/rules.py）
     return {
-        "minutes": minutes or default_minutes,
+        "minutes": minutes or rules.MATCH_MINUTES[era][round_no],
         "preorder": "單筆 10 張或當日累積 30 張以上要預收" if round_no == 1 else "全部委託都要預收",
-        "extended_days": 7 if new_rule else 12,
+        "extended_days": rules.PUNISH_DAYS_EXTENDED[era],
     }
 
 
@@ -344,7 +343,7 @@ def clause_list(clauses: str | None) -> list[dict]:
     if not clauses:
         return []
     numbers = [int(x) for x in str(clauses).split(",") if x.strip()]
-    return [{"no": n, "name": CLAUSE_NAMES.get(n, f"第{n}款"), "counted": n <= 8} for n in numbers]
+    return [{"no": n, "name": CLAUSE_NAMES.get(n, f"第{n}款"), "counted": n in rules.COUNTED_CLAUSES} for n in numbers]
 
 
 def plain_reason(text: str | None) -> str:
