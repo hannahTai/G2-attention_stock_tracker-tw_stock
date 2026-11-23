@@ -194,7 +194,7 @@ def spread_by_site(links: list[str]) -> list[str]:
 # ---------- 執行 ----------
 def main() -> None:
     args = cli.parse_args()   # daily：今天；backfill：--start～--end，--refetch 全部重抓
-    repository.create_tables()   # 建表（已經有就跳過）；全新的資料庫第一步就是 crawler
+    repository.ensure_tables()   # 全新的資料庫才建表；建表、更新 VIEW 在 main.py 一輪開始時做
 
     span = (args.start, args.end, args.refetch)
     # queue：開 Celery 時，每個來源各自一個佇列、一個 worker（見 common/worker.py）

@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS stage_punish (
     source_fetched_at      TIMESTAMP(6),
     PRIMARY KEY (announce_date, stock_id)
 );
+CREATE INDEX IF NOT EXISTS idx_stage_punish_stock ON stage_punish (stock_id, period_end);   -- 用代號查某檔的處置（處置紀錄、卡片、處置中）；主鍵是日期在前
 COMMENT ON TABLE stage_punish IS '處置股公告';
 COMMENT ON COLUMN stage_punish.announce_date IS '公布日期';
 COMMENT ON COLUMN stage_punish.stock_id IS '證券代號';
@@ -203,6 +204,8 @@ CREATE TABLE IF NOT EXISTS stage_announcement (
     CONSTRAINT stage_announcement_id_is_md5
         CHECK (announcement_id = md5(company_id || '_' || to_char(enter_date, 'YYYYMMDD') || '_' || serial_number))
 );
+-- 用公司、發言日期查一段期間的公告（卡片的公告則數、近 30 天公告）；主鍵是輸入日期，用發言日期查不到
+CREATE INDEX IF NOT EXISTS idx_stage_announcement_company_date ON stage_announcement (company_id, announce_date);
 COMMENT ON TABLE stage_announcement IS '公司重大訊息';
 COMMENT ON COLUMN stage_announcement.announce_date IS '發言日期';
 COMMENT ON COLUMN stage_announcement.enter_date IS '輸入日期（序號依這天編，可能早於發言日期）';

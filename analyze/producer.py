@@ -19,7 +19,7 @@ def build_jobs(start: str, end: str) -> list[tuple]:
 
 def main() -> None:
     args = cli.parse_args()   # daily：今天；backfill：--start～--end
-    repository.create_tables()   # 建表（已經有就跳過）
+    repository.ensure_tables()   # 全新的資料庫才建表；建表、更新 VIEW 在 main.py 一輪開始時做
 
     failed = runner.run_jobs(build_jobs(args.start, args.end), queue="analyze")
     runner.finish(failed)

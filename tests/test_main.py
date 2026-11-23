@@ -148,6 +148,7 @@ def daily_run(monkeypatch, tmp_path):
     state = types.SimpleNamespace(runs=0, fail=False, mode="daily")
     monkeypatch.setattr(main, "LOCK_FILE", tmp_path / "pipeline.lock")
     monkeypatch.setattr(main, "DONE_DIR", tmp_path / "done")
+    monkeypatch.setattr(main.repository, "create_tables", lambda: None)
     monkeypatch.setattr(main.cli, "parse_args",
                         lambda: types.SimpleNamespace(mode=state.mode, start="20261123", end="20261123", refetch=False))
 
@@ -182,3 +183,10 @@ def test_backfill_ignores_the_mark(daily_run, tmp_path):
     main.main()
     main.main()
     assert daily_run.runs == 2 and not (tmp_path / "done").exists()
+
+
+def test_schema_objects_lists_tables_indexes_and_views():
+    """ensure_tables 檢查的名單：schema/*.sql 建的表、索引、VIEW 都在裡面，註解裡的不算。"""
+    names = main.repository.schema_objects()
+    assert {"stage_announcement", "idx_stage_punish_stock", "app_card"} <= set(names)
+    assert len(names) == len(set(names))

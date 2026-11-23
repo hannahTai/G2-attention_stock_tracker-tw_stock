@@ -150,7 +150,7 @@ def test_run_chains_locally_runs_one_chain_after_another(monkeypatch):
 def test_crawler_runs_twse_first_then_two_chains(monkeypatch):
     """crawler：證交所先做完，之後觀測站（清單 → 全文）、新聞（FinMind 清單 → 網頁）兩條鏈。"""
     calls = []
-    monkeypatch.setattr(crawler_producer.repository, "create_tables", lambda: None)
+    monkeypatch.setattr(crawler_producer.repository, "ensure_tables", lambda: None)
     monkeypatch.setattr(crawler_producer.cli, "parse_args",
                         lambda: types.SimpleNamespace(start="20261120", end="20261120", refetch=False))
     monkeypatch.setattr(crawler_producer.runner, "run_jobs", lambda jobs, sleep, queue: calls.append(queue) or [])
@@ -174,7 +174,7 @@ def test_transform_and_analyze_use_their_own_queues(monkeypatch):
     queues = []
     monkeypatch.setattr(runner, "run_jobs", lambda jobs, queue=None, **kw: queues.append(queue) or [])
     for producer, _name in ((transform_producer, "transform"), (analyze_producer, "analyze")):
-        monkeypatch.setattr(producer.repository, "create_tables", lambda: None)
+        monkeypatch.setattr(producer.repository, "ensure_tables", lambda: None)
         monkeypatch.setattr(producer, "build_jobs", lambda start, end: [])
         monkeypatch.setattr(producer.cli, "parse_args", lambda: types.SimpleNamespace(start="20261120", end="20261120"))
         monkeypatch.setattr(producer.runner, "finish", lambda failed: None)

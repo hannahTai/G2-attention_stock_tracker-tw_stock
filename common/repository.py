@@ -1,6 +1,6 @@
 """repository 層：只負責把資料存進 PostgreSQL、從 PostgreSQL 讀回來，不知道資料從哪個 API 來、被整理過什麼。
 
-  連線、建表   get_engine()、create_database()、drop_database()、create_tables()
+  連線、建表   get_engine()、create_database()、drop_database()、create_tables()（一輪一次）、ensure_tables()（producer 用）
   raw 表       寫：save_raw()、save_raw_record()（只新增、不修改）
                讀：read_raw()、read_raws()、list_raw_keys()、raw_fetched_times()（每個 raw_key 只看最新一份成功的）、
                    raw_keys_done()（成功或永久失敗的，不用再抓）
@@ -22,6 +22,7 @@
 import datetime
 import functools
 import json
+import re
 import urllib.parse
 
 import pandas as pd
@@ -53,7 +54,10 @@ def get_engine(database: str = DB_NAME) -> sqlalchemy.Engine:
     # pool_pre_ping：拿連線前先確認還活著，斷了就重連
     # timezone：連線用台灣時間，DEFAULT LOCALTIMESTAMP 才是台灣時間（雲端預設 UTC）
     # search_path：SQL 只寫表名時，到 SCHEMA 找
-    options = f"-c timezone=Asia/Taipei -c search_path={SCHEMA}"
+    # 逾時：卡住的不要一直佔著。等鎖最多 1 分鐘（等不到算暫時性的錯誤，會重試）、
+    # 交易開著不做事最多 5 分鐘（worker 當掉留下的交易會被收掉）。一句 SQL 的時間不限：回補、analyze 的大查詢可能跑很久
+    options = (f"-c timezone=Asia/Taipei -c search_path={SCHEMA} -c lock_timeout=1min "
+               "-c idle_in_transaction_session_timeout=5min")
     return sqlalchemy.create_engine(url, pool_pre_ping=True, connect_args={"options": options})
 
 
@@ -104,13 +108,41 @@ SCHEMA_LOCK_KEY = 20261123
 def create_tables(database: str = DB_NAME) -> None:
     """建資料庫，再執行 schema/*.sql 建表。已經存在的表跳過，不刪任何表（欄位改了要自己 ALTER）；VIEW 每次重建。
 
-    同一時間只讓一個執行：analyze 和 ai 的 producer 同時開始，都會先 create_tables，
-    兩邊同時 DROP、CREATE VIEW 會 deadlock。交易一開始先拿 advisory lock，別人拿著就等，交易結束自動放掉。
+    整個交易會鎖住很多表（建索引、COMMENT、DROP VIEW），所以只在一輪開始時跑一次（main.py、docker compose 的 setup），
+    producer 只用 ensure_tables 確認有表。同一時間只讓一個執行（兩個同時 DROP、CREATE VIEW 會 deadlock）：
+    交易一開始先拿 advisory lock，別人拿著就等，交易結束自動放掉。
     """
     create_database(database)
     with get_engine(database).begin() as conn:
+        # 等鎖最多 10 分鐘（連線預設 1 分鐘）：DROP VIEW 要等網頁上正在查的 SQL 做完，一輪只跑一次，等久一點沒關係
+        conn.execute(sqlalchemy.text("SET LOCAL lock_timeout = '10min'"))
         conn.execute(sqlalchemy.text("SELECT pg_advisory_xact_lock(:key)"), {"key": SCHEMA_LOCK_KEY})
         run_sql_files(conn)
+
+
+@functools.cache
+def schema_objects() -> list[str]:
+    """schema/*.sql 會建的表、索引、VIEW 的名稱（CREATE TABLE／INDEX／VIEW 後面的名字，註解裡的不算）。"""
+    names = []
+    for sql_file in SQL_FILES:
+        code = "\n".join(line.split("--")[0] for line in sql_file.read_text(encoding="utf-8").splitlines())
+        names += re.findall(r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:UNIQUE\s+)?(?:TABLE|INDEX|VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)",
+                            code, re.IGNORECASE)
+    return names
+
+
+def ensure_tables(database: str = DB_NAME) -> None:
+    """schema/*.sql 的表、索引、VIEW 有缺（全新的資料庫、加了新的）才 create_tables；都在就只查一句，不鎖任何表。
+    producer 開始時用。新加的欄位、改了 VIEW 的內容查不出來（名字都在）：要跑一次 main.py 或 docker compose 的 setup。"""
+    try:
+        with get_engine(database).connect() as conn:
+            missing = conn.execute(sqlalchemy.text(
+                "SELECT name FROM unnest(CAST(:names AS text[])) AS name WHERE to_regclass(:schema || '.' || name) IS NULL"),
+                {"names": schema_objects(), "schema": SCHEMA}).scalars().all()
+    except sqlalchemy.exc.OperationalError:   # 資料庫還沒建（create_tables 會建）
+        missing = ["（資料庫）"]
+    if missing:
+        create_tables(database)
 
 
 # ---------- raw 表：寫（只新增、不修改）----------

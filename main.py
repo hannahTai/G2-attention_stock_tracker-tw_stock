@@ -25,7 +25,7 @@ import subprocess
 import sys
 import time
 
-from common import cli
+from common import cli, repository
 from common.config import PIPELINE_LOCK_WAIT_SECONDS, PROJECT_ROOT
 
 LOCK_FILE = PROJECT_ROOT / "data" / "pipeline.lock"
@@ -137,6 +137,7 @@ def main() -> None:
             if done_mark and done_mark.exists():
                 print(f"{args.end} 已經全部跑完（{done_mark}），跳過")
                 return
+            repository.create_tables()   # 建表、更新 VIEW：一輪只做一次（會鎖很多表，producer 不做）
             run_pipeline(step_args)   # 有失敗會丟 SystemExit(1)，不會放記號，下一個小時再跑
             if done_mark:
                 done_mark.parent.mkdir(parents=True, exist_ok=True)

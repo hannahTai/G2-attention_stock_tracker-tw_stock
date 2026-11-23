@@ -476,7 +476,7 @@ def test_card_summary_reads_only_stage_and_ai(db):
 
 
 def test_create_tables_can_run_at_the_same_time(db):
-    """analyze 和 ai 同時開始，兩個 producer 都會先 create_tables（DROP、CREATE VIEW）：同時跑也不會出錯。"""
+    """create_tables 同時跑（例如 docker compose 的 setup 和 main.py 一起開始，都會 DROP、CREATE VIEW）：不會出錯。"""
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         for future in [pool.submit(repository.create_tables, TEST_DATABASE) for _ in range(4)]:
             future.result()   # 出錯會在這裡丟出來
