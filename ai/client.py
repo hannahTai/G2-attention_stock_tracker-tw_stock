@@ -3,7 +3,7 @@
   create_message()：送出一次請求，回傳原始回應（和 crawler/client.py 的 http_get 一樣，是共用的）
   fetch_xxx()：一個 AI 項目的請求：fetch_announcement_label()（公告分類）、fetch_news_summary()（新聞摘要）、
              fetch_card_summary()（卡片 AI 摘要），一則問一次
-  xxx_problem()：檢查回應，有問題回傳原因（task 存成失敗），沒問題回傳 None
+  json_answer_problem()：檢查回應，有問題回傳原因（task 存成失敗），沒問題回傳 None
   parse_answer()、call_record()：從回應取值（回答、要記進 ai_llm_call 的 token 和花費）
 
 - 結構化輸出（output_config.format）：API 保證回傳的文字是符合 schema 的 JSON，enum 以外的值不會出現。

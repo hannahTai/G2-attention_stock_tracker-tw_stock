@@ -306,7 +306,7 @@ def rule_for(round_no: int, start: datetime.date | None, minutes: int | None = N
     """
     era = rules.rule_era(start)   # 撮合間隔、延長天數和規則引擎同一份（common/rules.py）
     return {
-        "minutes": minutes or rules.MATCH_MINUTES[era][round_no],
+        "minutes": minutes or rules.MATCH_MINUTES[era][min(max(round_no, 1), 2)],   # 第 2 次以後都是第 2 次的間隔
         "preorder": "單筆 10 張或當日累積 30 張以上要預收" if round_no == 1 else "全部委託都要預收",
         "extended_days": rules.PUNISH_DAYS_EXTENDED[era],
     }

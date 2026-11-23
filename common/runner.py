@@ -189,6 +189,8 @@ def run_chains(chains: list[list[tuple]]) -> list[str]:
     def send_next(i: int) -> None:
         """第 i 條鏈送出下一批；空的批次（沒有要做的）跳過；整條做完、或產生清單出錯，就不再放進 running。"""
         for build, _sleep, queue in steps[i]:   # 間隔在 worker 上做，這裡用不到 sleep
+            if queue is None:
+                raise ValueError("USE_CELERY=1 要指定 queue（見 common/worker.py）")   # 程式寫錯：空的批次也要抓到
             jobs = build_jobs(i, build, queue)
             if jobs is None:
                 return

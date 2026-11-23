@@ -202,7 +202,7 @@ def test_crawl_news_detail_temporary_failures_raise_for_retry(raw_store, monkeyp
 
 OLD_LIST = "115年11月20日 公布注意累計次數可能達處置標準之有價證券一覽表"
 NEW_LIST = "115年11月23日 公布注意累計次數可能達處置標準之有價證券一覽表"
-PRICE_TODAY = {"tables": [{"fields": ["證券代號", "收盤價"], "data": [["2330", "1,000"]]}]}
+PRICE_TODAY = {"tables": [{"title": "115年11月23日 每日收盤行情", "fields": ["證券代號", "收盤價"], "data": [["2330", "1,000"]]}]}
 PRICE_HOLIDAY = {"stat": "很抱歉，沒有符合條件的資料!"}
 
 
@@ -255,7 +255,7 @@ def test_watchlist_from_before_today_saved_as_failure(raw_store, monkeypatch, no
     assert raw_store.last("punish_watchlist", saved_key).ok is saved_ok
 
 
-PRICE_1123 = {"tables": [{"fields": ["證券代號", "收盤價"], "data": [["2330", "1,000"]]}]}
+PRICE_1123 = {"tables": [{"title": "115年11月23日 每日收盤行情", "fields": ["證券代號", "收盤價"], "data": [["2330", "1,000"]]}]}
 
 
 @pytest.mark.parametrize("now", ["2026-11-23T18:00:00", "2026-11-23T21:00:00"])
@@ -280,7 +280,7 @@ def test_saturday_with_trading_is_a_trading_day(raw_store, monkeypatch):
     """週六補行交易（開休市日期上寫「…交易日」）、有收盤行情：當交易日，注意股看不到資料就存成失敗。"""
     monkeypatch.setattr(date_utils, "now", lambda: datetime.datetime(2026, 11, 28, 18, 0, tzinfo=date_utils.TAIPEI))
     raw_store.put("holiday", "2026", {"fields": ["日期", "名稱", "說明"], "data": [["2026-11-28", "補行交易日", ""]]})
-    raw_store.put("stock_price", "20261128", {"tables": [{"fields": ["證券代號", "收盤價"], "data": [["2330", "1,000"]]}]})
+    raw_store.put("stock_price", "20261128", {"tables": [{"title": "115年11月28日 每日收盤行情", "fields": ["證券代號", "收盤價"], "data": [["2330", "1,000"]]}]})
     monkeypatch.setattr(client, "fetch_notice", lambda day: fake_response({"stat": "OK", "data": []}))
     with pytest.raises(repository.FetchError, match="20261128 是交易日，還沒公布完整"):
         task.crawl_notice("20261128")
@@ -311,7 +311,7 @@ def test_empty_notice_accepted_when_punish_is_published(raw_store, monkeypatch):
 def test_punish_backfill_for_a_past_day(raw_store, monkeypatch):
     """回補過去的交易日：處置股的資訊更新日期是抓的那天（比查的那天晚），算公布了。"""
     monkeypatch.setattr(date_utils, "now", lambda: datetime.datetime(2026, 11, 16, 10, 0, tzinfo=date_utils.TAIPEI))
-    raw_store.put("stock_price", "20260701", {"tables": [{"fields": ["證券代號", "收盤價"], "data": [["2330", "1,000"]]}]})
+    raw_store.put("stock_price", "20260701", {"tables": [{"title": "115年07月01日 每日收盤行情", "fields": ["證券代號", "收盤價"], "data": [["2330", "1,000"]]}]})
     monkeypatch.setattr(client, "fetch_punish", lambda day: fake_response(
         {"stat": "OK", "title": "公布處置有價證券資訊 (115/07/01 至 115/07/15)\n資訊更新日期：115/11/16", "data": []}))
     task.crawl_punish("20260701")

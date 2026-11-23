@@ -288,8 +288,12 @@ def is_published(source: str, body, date_yyyymmdd: str) -> bool:
     True
     >>> is_published("punish", {"title": "(115/11/24 至 115/12/08)\\n資訊更新日期：115/11/23"}, "20261124")   # 今天的還沒更新
     False
-    >>> is_published("stock_price", {"tables": [{"fields": ["證券代號", "收盤價"], "data": [["2330", "1,000"]]}]}, "20261123")
+    >>> is_published("stock_price", {"tables": [{"title": "115年11月23日 每日收盤行情", "fields": ["證券代號", "收盤價"],
+    ...                                          "data": [["2330", "1,000"]]}]}, "20261123")
     True
+    >>> is_published("stock_price", {"tables": [{"title": "115年11月20日 每日收盤行情", "fields": ["證券代號", "收盤價"],
+    ...                                          "data": [["2330", "1,000"]]}]}, "20261123")   # 別天的資料
+    False
     >>> is_published("stock_price", {"stat": "很抱歉，沒有符合條件的資料!"}, "20261123")
     False
     """
@@ -302,7 +306,8 @@ def is_published(source: str, body, date_yyyymmdd: str) -> bool:
         updated = update_date(body)
         return updated is not None and updated >= day
     if source == "stock_price":
-        return bool((stock_price_table(body) or {}).get("data"))
+        table = stock_price_table(body) or {}
+        return bool(table.get("data")) and roc_date_in(table.get("title") or "") == day   # 標題「115年11月23日 每日收盤行情…」
     raise ValueError(f"不認識的來源：{source}")
 
 
@@ -365,8 +370,8 @@ def day_status(date_yyyymmdd: str, price_body, closed: set[str], open_: set[str]
     日曆上休市 → CLOSED；應該有交易、收盤行情有資料 → TRADING；
     應該有交易、收盤行情沒有：市場成交已經有之後的交易日卻沒有這天 → CLOSED（颱風假，事後確認），不然 → UNKNOWN。
 
-    >>> price = {"tables": [{"fields": ["證券代號", "收盤價"], "data": [["2330", "1,000"]]}]}
-    >>> day_status("20261123", price, set(), set()), day_status("20261128", price, set(), {"20261128"})   # 平日、週六補行交易
+    >>> price = lambda roc: {"tables": [{"title": f"{roc} 每日收盤行情", "fields": ["證券代號", "收盤價"], "data": [["2330", "1"]]}]}
+    >>> day_status("20261123", price("115年11月23日"), set(), set()), day_status("20261128", price("115年11月28日"), set(), {"20261128"})   # 平日、週六補行交易
     ('trading', 'trading')
     >>> day_status("20261225", None, {"20261225"}, set()), day_status("20261128", None, set(), set())   # 休市、週末
     ('closed', 'closed')

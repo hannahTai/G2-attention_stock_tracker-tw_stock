@@ -644,7 +644,7 @@ def insert_card_summary(row: dict) -> None:
 def save_llm_call(row: dict, problem: str | None = None) -> str:
     """一次 LLM 呼叫記進 ai_llm_call，回傳記到哪裡；有問題的也記，記完丟 FetchError（和 save_raw 一樣）。
 
-    row：ai/client.py 的 call_record()。problem：ai/client.py 的 xxx_problem() 找到的問題（拒答、被截斷、不是 JSON），重問也一樣，不重試。
+    row：ai/client.py 的 call_record()。problem：ai/client.py 的 json_answer_problem() 找到的問題（拒答、被截斷、不是 JSON），重問也一樣，不重試。
     """
     insert_one("ai_llm_call", {**row, "status": "failure" if problem else "success", "error": problem})
     where = f"ai_llm_call/{row['ref_key']}"
