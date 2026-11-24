@@ -14,6 +14,17 @@ class FakeRaw:
 
     def __init__(self):
         self.rows = []   # [(source, SimpleNamespace(欄位…))]，依寫入順序
+        self.watched = {}   # 關注名單 {YYYYMMDD: {公司}}，代替 stage_watched_stock（crawler 新聞線讀它）
+        self.notice_times = {}   # 注意股抓到的時間 {YYYYMMDD: datetime}，代替 stage_notice_day.source_fetched_at
+
+    def notice_fetched_at(self, day):
+        """和 repository.notice_fetched_at 一樣：那天的注意股抓到的時間（測試用 self.notice_times 放）。"""
+        return self.notice_times.get(date_utils.to_yyyymmdd(day))
+
+    def watched_companies(self, start, end):
+        """和 repository.watched_companies 一樣的格式：區間內每天 {date: {公司}}（測試只放要的那幾天）。"""
+        return {date_utils.parse_yyyymmdd(d): self.watched.get(d, set())
+                for d in date_utils.dates_between(date_utils.to_yyyymmdd(start), date_utils.to_yyyymmdd(end))}
 
     def insert_raw_row(self, source, raw_key, *, fetched_at, http_status, ok, problem, url, request_body, body):
         self.rows.append((source, types.SimpleNamespace(
@@ -62,12 +73,13 @@ class FakeRaw:
 def raw_store(monkeypatch):
     """把 repository 的 raw 表換成記憶體版；回傳 FakeRaw，測試可以用 put() 放資料、用 last()／history() 檢查結果。"""
     fake = FakeRaw()
-    for name in ("insert_raw_row", "read_raws", "list_raw_keys", "latest_raw_key", "raw_fetched_times"):
+    for name in ("insert_raw_row", "read_raws", "list_raw_keys", "latest_raw_key", "raw_fetched_times",
+                 "watched_companies", "notice_fetched_at"):
         monkeypatch.setattr(repository, name, getattr(fake, name))
-    from crawler import producer   # 這裡才 import：關注名單有快取（一輪算一次），每個測試的 raw 都不一樣，要清掉
-    producer.watched_by_day.cache_clear()
+    from crawler import producer   # 這裡才 import：關注名單有快取（一個 producer 查一次），每個測試的名單不一樣，要清掉
+    producer.watched_companies.cache_clear()
     yield fake
-    producer.watched_by_day.cache_clear()
+    producer.watched_companies.cache_clear()
 
 
 @pytest.fixture(autouse=True)

@@ -173,7 +173,8 @@ def news_line(no: int, news: dict) -> str:
 
 
 def build_user_message(card: dict, announcements: list[dict], news: list[dict]) -> str:
-    """一張卡片 → 給 LLM 的訊息。不放日期本身：輸入一樣的兩天（處置中、沒有新公告新聞）訊息也一樣，可以沿用前一天的摘要。"""
+    """一張卡片 → 給 LLM 的訊息。不放卡片那天的日期：輸入一樣的兩天（處置中、沒有新公告新聞）訊息也一樣，可以沿用前一天的摘要。
+    只放固定的過去日期（今天沒被列注意的，最近一次被列注意是哪天）：每天一樣，不影響沿用；不要放「3 天前」這種每天會變的寫法。"""
     announcement_lines = [announcement_line(row) for row in announcements] or ["近 30 天沒有公告"]
     news_lines = [news_line(no, row) for no, row in enumerate(news, 1)] or ["近幾天沒有相關的新聞"]
     return ("<stock>\n" + "\n".join(card_lines(card)) + "\n</stock>\n"

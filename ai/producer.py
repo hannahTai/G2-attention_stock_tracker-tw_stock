@@ -3,7 +3,9 @@
     uv run python -m ai.producer                            # 只處理今天（daily）
     uv run python -m ai.producer backfill --start 20261101  # 處理一段期間（可加 --end）
 
-只讀 stage 和前面的 AI 結果，不讀規則引擎的結果（app），所以 main.py 讓它和 analyze 同時跑（要在 transform 之後）。
+只讀 stage 和前面的 AI 結果，不讀規則引擎的結果（app）。main.py 的新聞線在 transform（重大訊息、新聞）之後跑它；
+卡片 AI 摘要只寫那天的注意股、處置股、收盤行情都整理好（股價線跑完）、這檔的公告和新聞清單也抓到了的，
+股價線成功的那一輪放完記號會接著跑一次新聞線，當天的卡片在那時候寫；往前多看幾天，沒寫成的之後補。
 
 任務清單的格式和其他 producer 一樣，交給 common/runner.py：
 - 公告分類：區間內發言、有全文、這個 prompt 版本還沒分類的公告 → ai_announcement_label（佇列 ai）
@@ -11,8 +13,8 @@
 - 新聞 RAG：區間內（往前多 NEWS_LOOKBACK_DAYS 天）每天一個任務，標題＋新聞摘要轉成向量 → ai_news_embedding
   （佇列 embed，不用 API key；要在新聞摘要之後）
 - 同一件事：整段區間（往前多 NEWS_LOOKBACK_DAYS 天）一個任務，好幾家報同一件事的新聞歸在一起 → ai_news_story（佇列 ai，不用 API key）
-- 卡片 AI 摘要：區間內每個交易日、卡片牆上的每一張（stage_watched_stock：往前 30 個交易日被列注意過的上市公司），
-  一檔一天一個任務 → ai_card_summary
+- 卡片 AI 摘要：區間內（往前多 NEWS_LOOKBACK_DAYS 天，補沒寫成的）每個交易日、卡片牆上的每一張
+  （stage_watched_stock：往前 30 個交易日被列注意過的上市公司），要的資料都到了才寫，一檔一天一個任務 → ai_card_summary
   （佇列 embed：查詢也要轉向量；要在公告分類、新聞 RAG 之後）
 順序：公告分類 → 新聞摘要 → 新聞 RAG → 同一件事 → 卡片 AI 摘要。
 沒設 ANTHROPIC_API_KEY 就跳過要呼叫 Claude 的項目（新聞 RAG 的向量照樣轉，只用標題和導言），不算失敗。
@@ -38,7 +40,9 @@ def build_summary_jobs(start: str, end: str) -> list[tuple]:
     和卡片牆同一批）、有抓到網頁、全文至少 summarizer.MIN_TEXT_CHARS 字、這一版還沒摘要的新聞各一個任務。"""
     news_ids = repository.list_unsummarized_news(parse_yyyymmdd(days_before(start, NEWS_LOOKBACK_DAYS)), parse_yyyymmdd(end),
                                                  summarizer.PROMPT_VERSION, summarizer.MIN_TEXT_CHARS)
-    return [(task.summarize_news, {"news_id": news_id}) for news_id in news_ids]
+    # 網頁打不開、全文太短跳過好幾次的不再排（新聞線一天跑好幾次，不會一直重抓同一個被擋的網頁）
+    skipped = repository.repeatedly_skipped("ai.task.summarize_news", task.PAGE_SKIPPED, "news_id")
+    return [(task.summarize_news, {"news_id": news_id}) for news_id in news_ids if news_id not in skipped]
 
 
 def build_embed_jobs(start: str, end: str) -> list[tuple]:
@@ -52,9 +56,12 @@ def build_story_jobs(start: str, end: str) -> list[tuple]:
 
 
 def build_card_jobs(start: str, end: str) -> list[tuple]:
-    """卡片 AI 摘要：區間內每個交易日、卡片牆上的每一張（stage_watched_stock），這一版還沒寫的各一個任務。
+    """卡片 AI 摘要：區間內（往前多 NEWS_LOOKBACK_DAYS 天）每個交易日、卡片牆上的每一張（stage_watched_stock），
+    這一版還沒寫、要的資料都到了的各一個任務（見 repository.list_unsummarized_cards）。
+    往前多看：股價線很晚才跑完、新聞抓失敗，沒寫成的卡片之後照樣補寫。
     照日期排：輸入和前一天一樣就沿用前一天的摘要，要前一天先寫好（embed worker 一次做一個，照送出的順序做）。"""
-    rows = repository.list_unsummarized_cards(parse_yyyymmdd(start), parse_yyyymmdd(end), card_summarizer.PROMPT_VERSION)
+    rows = repository.list_unsummarized_cards(parse_yyyymmdd(days_before(start, NEWS_LOOKBACK_DAYS)), parse_yyyymmdd(end),
+                                              card_summarizer.PROMPT_VERSION)
     return [(task.summarize_card, {"stock_id": stock_id, "date_yyyymmdd": to_yyyymmdd(day)}) for stock_id, day in rows]
 
 
@@ -79,7 +86,7 @@ def run_all(start: str, end: str) -> list[str]:
 
 def main() -> None:
     args = cli.parse_args()   # daily：今天；backfill：--start～--end
-    repository.ensure_tables()   # 全新的資料庫才建表；建表、更新 VIEW 在 main.py 一輪開始時做
+    repository.ensure_tables()   # 全新的資料庫才建表；建表、更新 VIEW 在 main.py 開始時做（schema/*.sql 改過才做）
     runner.finish(run_all(args.start, args.end))
 
 

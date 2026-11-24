@@ -27,7 +27,7 @@ Source → Ingest → Storage → Process → Serve → Observe
 ```
 📁 Source：證交所 API、觀測站 API、FinMind 新聞、新聞網站
   ↓
-📥 Ingest：Python requests，每日 18:00 起每小時排程
+📥 Ingest：Python requests；股價線週一～五 18:00～22:00 每小時、新聞線每天 08:00 起每 3 小時
   ↓
 💾 Storage：PostgreSQL（raw / stage / app）
   ↓
@@ -66,7 +66,7 @@ Source → Ingest → Storage → Process → Serve → Observe
 
 ```
 crawler/                    抓資料：API → raw（producer → task → client → repository）
-├─ producer.py                producer：決定今天要抓哪些任務；證交所先，觀測站、新聞兩條同時
+├─ producer.py                producer：決定今天要抓哪些任務；`--part twse` 證交所（股價線）、`--part news` 觀測站、新聞兩條同時（新聞線）
 ├─ task.py                    task：每個 crawl_xxx 任務抓一份、存進 raw（@app.task 註冊成 Celery 任務，見 common/worker.py）
 └─ client.py                  client：打證交所、觀測站、FinMind、新聞網頁（fetch_xxx，不存檔）、檢查回應內容
 transform/                  轉換：raw → stage（同樣的 producer → task 寫法）
@@ -103,17 +103,17 @@ dashboard/                  網頁（FastAPI＋Jinja2）：打資料 API，不�
 common/                     各資料夾共用（crawler、transform、analyze 彼此不互相 import，只用 common；ai 的新聞摘要例外，用 crawler/client.py）
 ├─ repository.py              repository：連線、建表、raw 表讀寫、stage／app 表讀寫
 ├─ runner.py                  四個 producer 共用的任務執行：依序執行、好幾條任務鏈同時進行、暫時性失敗重試、列出失敗
-├─ cli.py                     四個 producer 共用的指令參數（daily／backfill、--refetch）
+├─ cli.py                     四個 producer 共用的指令參數（daily／backfill、--refetch、--part；main.py 多一個 news）
 ├─ config.py                  設定（會因環境改變的值，從 .env 讀）
 ├─ worker.py                  Celery app 和任務共用的行為（重試、間隔）；USE_CELERY=1 時任務送進 RabbitMQ（佇列 crawl_twse、crawl_mops、crawl_finmind、crawl_news、transform、analyze、ai、embed）
 ├─ date_utils.py              日期工具
 ├─ rules.py                   處置規則的常數（門檻、計入的款次、新制、處置天數、撮合間隔）：規則引擎和網頁共用
 └─ hash_utils.py              雜湊工具：url_md5（新聞的 news_id＝連結的 md5）
 schema/                     建表 SQL：raw.sql、stage.sql、app.sql、view.sql（給網頁讀的 VIEW）、ai.sql（AI 結果）、log.sql（任務歷史）
-scripts/                    .bat：每日排程（daily）、回補（backfill）、從 raw 重算（rebuild）、備份（backup）、網站（web：API ＋ 網頁）
+scripts/                    .bat：排程（daily＝股價線、news＝新聞線）、回補（backfill）、從 raw 重算（rebuild）、備份（backup）、網站（web：API ＋ 網頁）
 tests/                      測試
 docs/                       流程說明（flow.md）、任務與佇列（queues.md）、資料表（tables.md）、處置規則（rules.md）、AI 項目（ai_plan.md）、提案
-main.py                     一次跑完：crawler → transform → analyze 和 ai 同時（同一時間只跑一輪）
+main.py                     兩條資料線：股價線（證交所 → transform → analyze）、新聞線（`main.py news`：觀測站、新聞 → transform → ai）
 ```
 
 ---
@@ -127,7 +127,8 @@ PostgreSQL、RabbitMQ、8 個 Celery worker、Flower、資料 API、網頁全部
 ```bash
 cp .env.example .env                                # 填入密碼（AI 項目要 ANTHROPIC_API_KEY，沒填就跳過）
 docker compose up -d --build                        # 啟動（第一次會建表）
-docker compose run --rm producer python main.py     # 跑一次資料線：任務送進 RabbitMQ，由 worker 執行
+docker compose run --rm producer python main.py       # 跑一次股價線：任務送進 RabbitMQ，由 worker 執行
+docker compose run --rm producer python main.py news  # 跑一次新聞線（要讀股價線整理好的注意股）
 ```
 
 開發時 `.env` 的 `COMPOSE_FILE` 把 `docker-compose.local.yml` 疊上來：程式碼直接掛進容器，api、web 存檔自動重載；改了任務的程式要重啟 worker：
@@ -144,7 +145,7 @@ docker compose restart celery-crawl-twse celery-crawl-mops celery-crawl-finmind 
 | RabbitMQ 管理介面 | http://localhost:15673 |
 
 8 個 worker 各聽一個佇列（`crawl_twse`、`crawl_mops`、`crawl_finmind`、`crawl_news`、`transform`、`analyze`、`ai`、`embed`），各自控制速度：打外部網站的一次做一個、做完等一下，只碰資料庫的同時做好幾個。
-log 在 `data/logs/`，每天一個檔、留 30 天：`daily-YYYY-MM-DD.log`（每天的資料線）、`crawl_twse-…`、`crawl_mops-…`、`crawl_finmind-…`、`crawl_news-…`、`transform-…`、`analyze-…`、`ai-…`、`embed-…`（八個 worker）。每個任務每跑一次另外記一列在 `tw_stock.job_run`（任務歷史，永久保留）。
+log 在 `data/logs/`，每天一個檔、留 30 天：`daily-YYYY-MM-DD.log`（股價線）、`news-YYYY-MM-DD.log`（新聞線）、`crawl_twse-…`、`crawl_mops-…`、`crawl_finmind-…`、`crawl_news-…`、`transform-…`、`analyze-…`、`ai-…`、`embed-…`（八個 worker）。每個任務每跑一次另外記一列在 `tw_stock.job_run`（任務歷史，永久保留）。
 
 ### 本機（不用 Docker 跑程式，資料庫還是要有）
 
@@ -155,10 +156,11 @@ git clone https://github.com/hannahTai/G2-attention_stock_tracker-tw_stock.git
 cd G2-attention_stock_tracker-tw_stock
 cp .env.example .env   # 填入 PostgreSQL 連線資訊
 uv sync                # 安裝套件（依 uv.lock）
-uv run python main.py  # 建表、更新 VIEW → 抓今天 → 整理 → 算還差幾次和 AI 項目（同時）
+uv run python main.py       # 股價線：建表、更新 VIEW（schema/*.sql 改過才做）→ 抓證交所 → 整理 → 算還差幾次
+uv run python main.py news  # 新聞線：抓重大訊息、新聞 → 整理 → AI 項目
 ```
 
-回補一段期間：`uv run python main.py backfill --start 20260701`（已經抓完整的跳過，加 `--refetch` 全部重抓）。
+回補一段期間：`uv run python main.py backfill --start 20260701`（兩條線都跑，先股價線；已經抓完整的跳過，加 `--refetch` 全部重抓）。
 
 網站分兩個程式，開兩個終端機各跑一個（或直接執行 `scripts\run_web.bat`，兩個一起開；Docker Compose 已經在跑就不用，埠號會撞）：
 

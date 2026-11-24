@@ -2,7 +2,8 @@
 
     <資料夾>/<名稱>-YYYY-MM-DD.log   例如 data/logs/twse-2026-11-21.log
 
-Celery worker 用（common/worker.py 在 worker 啟動時接上）；每天的資料線 log 由 scripts/run_daily.bat 用同樣的檔名、同樣的保留天數。
+Celery worker 用（common/worker.py 在 worker 啟動時接上）；
+兩條資料線的 log 由 scripts/run_daily.bat（股價線，daily-…）、run_news.bat（新聞線，news-…）用同樣的檔名格式、同樣的保留天數。
 永久的紀錄在任務歷史（tw_stock.job_run）；文字 log 只是看細節、即時看用的，所以只留 LOG_KEEP_DAYS 天。
 """
 import datetime

@@ -1,5 +1,5 @@
 @echo off
-rem Database backup: pg_dump of raw / stage / app into data\backup\, keeps the latest 14.
+rem Database backup: pg_dump of the whole database (raw / stage / app / ai) into data\backup\, keeps the latest 14.
 rem Called by Windows Task Scheduler (weekdays 23:30, after run_daily.bat); output is appended to data\backup.log
 rem (Comments are in English on purpose: cmd may misread UTF-8 Chinese in .bat files.)
 

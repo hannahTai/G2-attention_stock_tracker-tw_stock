@@ -53,15 +53,16 @@ def fix_numbers_messages(user_message: str, answer: dict, missing: list[str]) ->
     """摘要裡有原文沒有的數字時重問的對話：原本的資料、LLM 上次的回答，再說哪幾個數字找不到、要照原文寫法抄。
 
     >>> messages = fix_numbers_messages("資料", {"summary": "淨利約 3.74 億元"}, ["3.74"])
-    >>> messages[-1]["content"].startswith("summary 裡的 3.74 在資料裡找不到。")
+    >>> messages[-1]["content"].startswith("summary 裡的 3.74 在原文裡找不到。")
     True
     """
     return [
         {"role": "user", "content": user_message},
         {"role": "assistant", "content": json.dumps(answer, ensure_ascii=False)},
-        {"role": "user", "content": f"summary 裡的 {'、'.join(missing)} 在資料裡找不到。數字只能照資料裡的寫法抄"
-                                    "（例如資料寫 374,246仟元，就寫 374,246仟元），不要自己換算、四捨五入或推算；"
-                                    "不好抄的金額可以不寫金額、只講事情。其他照原本的規則，重新回答。"},
+        {"role": "user", "content": f"summary 裡的 {'、'.join(missing)} 在原文裡找不到。數字只能照原文的寫法抄"
+                                    "（例如原文寫 374,246仟元，就寫 374,246仟元），不要自己換算、四捨五入或推算；"
+                                    "只在日期這類標頭、原文沒有的數字不要寫；不好抄的金額可以不寫金額、只講事情。"
+                                    "其他照原本的規則，重新回答。"},
     ]
 
 

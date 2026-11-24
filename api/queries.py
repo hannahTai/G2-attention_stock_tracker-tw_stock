@@ -35,7 +35,8 @@ CARD_COLUMNS = """
     period_start, period_end, resume_date,
     next_listed_date, next_punish_round, next_period_start, next_period_end, next_resume_date,
     stock_name, is_listed_today, is_company, close_price, price_change, change_pct, reason_text, clauses, is_counted_today,
-    measure_type, trigger_condition, match_interval_minutes, announcement_count, ai_summary, ai_summary_news_ids, ai_summary_at
+    measure_type, trigger_condition, match_interval_minutes, announcement_count,
+    ai_summary, ai_summary_news_ids, ai_summary_at, ai_summary_reused
 """
 
 

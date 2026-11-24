@@ -284,7 +284,7 @@ stage 表之間用哪個欄位對起來（關聯是邏輯上的，資料庫沒�
 
 ### stage_announcement_clause　重大訊息條款對照表
 
-- 固定資料，不用爬：寫在 `schema/stage.sql`，每次建表（`main.py` 一輪開始時）一併寫入／更新。條文修正時改那裡。
+- 固定資料，不用爬：寫在 `schema/stage.sql`，建表時（`main.py` 在 `schema/*.sql` 改過時、回補時）一併寫入／更新。條文修正時改那裡。
 - 來源：證交所《對有價證券上市公司重大訊息之查證暨公開處理程序》第 4 條第 1 項（115.09.30 版），共 51 款（第 39 款已刪除）。
 - `short_name`、`description` 是整理後的摘要，不是條文原文。第 51 款是概括條款（其他重大事項），被列注意後公司被要求公布的財務業務資訊也是這款。
 
@@ -298,7 +298,7 @@ stage 表之間用哪個欄位對起來（關聯是邏輯上的，資料庫沒�
 ### stage_news　新聞
 
 - 來源：`raw_stock_news`（FinMind `GET /api/v4/data?dataset=TaiwanStockNews&data_id=<代號>&start_date=<日期>`，一檔一天）
-- 只抓被關注的上市公司（往前 30 個交易日被列注意過的上市公司（和卡片牆同一批），和重大訊息同一批），每檔那天和往前 7 天，由 `crawler/producer.py` 抓。
+- 只抓被關注的上市公司（`stage_watched_stock`：往前 30 個交易日被列注意過的上市公司，和卡片牆、重大訊息同一批），每檔那天和往前 7 天，由新聞線的 `crawler/producer.py` 抓。
 - 一則新聞一列：FinMind 一檔一檔查，好幾檔都有的新聞，時間、標題以最新一次抓到的為準。只有標題、連結、媒體、時間，不存內文（著作權）。
 
 | 欄位 | 型別 | API 欄位 | 轉換／說明 |
@@ -397,7 +397,7 @@ VIEW 是存起來的查詢，不複製資料；網頁查的時候資料庫才去
 
 | VIEW | 給哪個畫面 | 內容 |
 |---|---|---|
-| `app_card` | 卡片牆、個股卡片上半部 | `app_progress` 每一列，加上 `stock_name`、`is_listed_today`、`is_company`（上市公司；卡片牆只放這些，不放權證、ETF）、`close_price`（`stage_stock_price` 當天的收盤；還沒抓到就用注意股公告上的）、`price_change`、`change_pct`（漲跌、漲跌幅 %＝漲跌 ÷（收盤－漲跌）× 100，只有收盤行情有）、`reason_text`、`clauses`（今天被列第幾款，例如 `1,2`）、`is_counted_today`、處置中那次的 `measure_type`／`trigger_condition`／`match_interval_minutes`（和 `app_punish_history` 同名）、`announcement_count`（近 30 個營業日公告則數）、`ai_summary`、`ai_summary_news_ids`（卡片 AI 摘要最新一版、通過檢查的，和用到的新聞） |
+| `app_card` | 卡片牆、個股卡片上半部 | `app_progress` 每一列，加上 `stock_name`、`is_listed_today`、`is_company`（上市公司；卡片牆只放這些，不放權證、ETF）、`close_price`（`stage_stock_price` 當天的收盤；還沒抓到就用注意股公告上的）、`price_change`、`change_pct`（漲跌、漲跌幅 %＝漲跌 ÷（收盤－漲跌）× 100，只有收盤行情有）、`reason_text`、`clauses`（今天被列第幾款，例如 `1,2`）、`is_counted_today`、處置中那次的 `measure_type`／`trigger_condition`／`match_interval_minutes`（和 `app_punish_history` 同名）、`announcement_count`（近 30 個交易日公告則數）、`ai_summary`、`ai_summary_news_ids`、`ai_summary_at`、`ai_summary_reused`（卡片 AI 摘要最新一版、通過檢查的，用到的新聞、寫的時間、是不是沿用前一天的；網頁沿用的時間前面寫「沿用」） |
 | `app_trading_day` | 注意紀錄格子、公告和處置紀錄的起日 | `stage_trading_day` 裡有交易的日子（`trade_date`） |
 | `app_notice_history` | 注意紀錄格子 | 每檔每個被列注意的交易日：`clauses`、`is_counted`（true＝累計）、`reason_text`（那天被列的原因全文）。沒被列的日子沒有列；早於 `count_start` 的是「已計入前次處置」 |
 | `app_punish_history` | 處置紀錄 | `stage_punish` 的欄位 |
@@ -407,7 +407,7 @@ VIEW 是存起來的查詢，不複製資料；網頁查的時候資料庫才去
 ### stage_watched_stock　關注的股票（VIEW）
 
 - 每個交易日關注哪些股票：往前 30 個交易日（含當天）被列注意過的（看 `stage_notice_clause`，和規則引擎一樣）。處置中、在注意累計名單上的一定是最近被列注意過的，不用另外加。
-- 規則只寫在這裡：規則引擎（analyze，寫 `app_progress`＝卡片牆）、新聞摘要、卡片 AI 摘要都用它決定要算、要寫哪些。crawler 抓重大訊息、新聞也是同一個範圍（當天的注意股還沒整理成 stage，從 raw 讀）。
+- 規則只寫在這裡：規則引擎（analyze，寫 `app_progress`＝卡片牆）、新聞摘要、卡片 AI 摘要都用它決定要算、要寫哪些。新聞線的 crawler 抓重大訊息、新聞也讀它（股價線整理好當天的注意股以後；那天還沒有名單就用之前最近一個交易日的）。
 - 寫在 `schema/view.sql`。
 
 | 欄位 | 型別 | 說明 |
@@ -472,7 +472,7 @@ AI 項目的結果（由 `ai/task.py` 寫入）。和 `app_*` 分開：`app_*` �
 ### ai_news_story　同一件事
 
 - 由 `group_news_stories` 寫入：好幾家媒體報同一件事，歸成一個 story。一則新聞和 3 天內、同一檔股票、比它早的新聞，是同一篇（標題一樣，或一則是另一則的開頭：轉貼時後面加了欄目名稱，例如「…-起漲K線」）或向量相似度 ≥ 0.84（`ai/retriever.py`），就歸到那則的 story；`story_id` 是這件事最早的那則新聞。不呼叫 API。
-- 排在 `embed_news` 後面；天和天有先後（後面的歸到前面的），所以整段區間一個任務。重跑會把區間內的新聞重新歸類（每天的資料線會重算最近 8 天）。
+- 排在 `embed_news` 後面；天和天有先後（後面的歸到前面的），所以整段區間一個任務。重跑會把區間內的新聞重新歸類（新聞線每一輪會重算最近 8 天）。
 - 每則新聞只留一列（主鍵 `news_id`）：換 embedding 模型後重跑就換成新模型的歸類，不會兩個模型混在一起。
 - 網站的新聞列表一件事只列最早的那則，後面寫「也有 X、Y 報導」；卡片 AI 摘要挑新聞時，同一件事也只留一則。
 
@@ -508,6 +508,7 @@ AI 項目的結果（由 `ai/task.py` 寫入）。和 `app_*` 分開：`app_*` �
 
 - 每次呼叫 LLM 一列（`repository.save_llm_call`，和 raw 表的 `save_raw` 一樣：有問題的也記，記完丟 `FetchError`）；只新增。
 - API 錯誤（429、5xx、連線失敗）沒有回應，不記在這裡，記在任務歷史 `job_run`。
+- 同一筆（`ref_key`）、同一版（`prompt_version`）失敗 3 次就不再問（`repository.MAX_FAILED_CALLS`）；索引 `idx_ai_llm_call_failed` 只放 `status = 'failure'` 的列。
 
 | 欄位 | 型別 | 說明 |
 |---|---|---|

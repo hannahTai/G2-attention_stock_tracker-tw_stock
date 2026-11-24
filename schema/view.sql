@@ -79,12 +79,13 @@ SELECT
     -- 卡片 AI 摘要（最新一版、通過檢查的；還沒寫、沒通過的為 NULL）和第三句用到的新聞
     cs.summary AS ai_summary,
     cs.news_ids AS ai_summary_news_ids,
-    cs.summarized_at AS ai_summary_at   -- 寫摘要的時間（沿用前一天的，是原本寫的時間）
+    cs.summarized_at AS ai_summary_at,   -- 寫摘要的時間（沿用前一天的，是原本寫的時間）
+    cs.reused AS ai_summary_reused       -- 輸入和前一天一樣，沿用前一天的摘要
 
 FROM app_progress p
 
 LEFT JOIN LATERAL (
-    SELECT x.summary, x.news_ids, x.summarized_at
+    SELECT x.summary, x.news_ids, x.summarized_at, x.reused
     FROM ai_card_summary x
     WHERE x.stock_id = p.stock_id AND x.card_date = p.trade_date AND x.summary_ok
     ORDER BY NULLIF(regexp_replace(x.prompt_version, '\D', '', 'g'), '')::INT DESC NULLS LAST, x.summarized_at DESC   -- v8 比 v7 新（沿用的摘要時間是原本寫的）
@@ -245,7 +246,7 @@ LEFT JOIN ai_news_story st   -- 每則新聞一列
 -- ---------- 關注的股票（stage 層）----------
 -- 每個交易日關注哪些股票：往前 30 個交易日（含當天）被列注意過的（要點的「30 個營業日內」）。
 -- 只讀 stage。規則引擎（analyze，寫 app_progress＝卡片牆）、新聞摘要、卡片 AI 摘要都用這個決定要算、要寫哪些，規則只寫在這裡；
--- crawler 抓重大訊息、新聞也是同一個範圍（當天的注意股還沒整理成 stage，從 raw 算，見 crawler/producer.py 的 watched_by_day）。
+-- 新聞線的 crawler 抓重大訊息、新聞也讀這裡（股價線整理好當天的注意股以後；還沒有那天就用之前最近一個交易日，見 repository.watched_companies）。
 -- 處置中、在注意累計名單上的股票一定是最近被列注意過的，所以不用另外加。
 -- is_company：上市公司（權證、ETF 為否：規則引擎照樣算，但沒有重大訊息、不查新聞、不寫 AI 摘要）
 -- 29＝30 個交易日（含當天）－1：和 common/rules.py 的 WATCH_WINDOW_DAYS 要一樣（tests/test_main.py 會檢查）。

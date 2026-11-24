@@ -5,8 +5,9 @@
 #   docker compose ps                   # 看狀態
 #   docker compose logs -f celery-transform   # 看 log（服務名稱見下面；log 檔另外存在 data/logs/）
 #   docker compose down                 # 停掉（資料留在 volume pgdata）
-#   docker compose run --rm producer python main.py                       # 跑一次每日資料線（抓 → 整理 → 計算 → AI）
-#   docker compose run --rm producer python main.py backfill --start 20261101   # 回補
+#   docker compose run --rm producer python main.py                       # 跑一次股價線（證交所 → 整理 → 還差幾次）
+#   docker compose run --rm producer python main.py news                  # 跑一次新聞線（觀測站、新聞 → 整理 → AI）
+#   docker compose run --rm producer python main.py backfill --start 20261101   # 回補（兩條線）
 #
 # 網址（本機）：
 #   網頁      http://localhost:8502
@@ -181,7 +182,7 @@ services:
     profiles: ["manual"]                # docker compose up 不會啟動它
     command: ["python", "main.py"]
     volumes:
-      - ./data:/app/data                # main.py 的檔案鎖（同一時間只跑一輪）放在本機的 data/
+      - ./data:/app/data                # main.py 的檔案鎖（同一條線同一時間只跑一輪）放在本機的 data/
     depends_on:
       celery-crawl-twse:
         condition: service_started

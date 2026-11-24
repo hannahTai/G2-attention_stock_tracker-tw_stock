@@ -14,12 +14,21 @@ from crawler import producer as crawler_producer
 from transform import task, transformer
 
 
-def build_jobs(start: str, end: str) -> list[tuple]:
-    """產生任務清單：[(任務函式, 參數 dict), ...]。"""
+def build_jobs(start: str, end: str, part: str | None = None) -> list[tuple]:
+    """產生任務清單：[(任務函式, 參數 dict), ...]。part：twse＝股價線的（證交所），news＝新聞線的（重大訊息、新聞），
+    None＝兩個都做。"""
+    jobs = []
+    if part in (None, "twse"):
+        jobs += build_twse_jobs(start, end)
+    if part in (None, "news"):
+        jobs += build_news_jobs(start, end)
+    return jobs
+
+
+def build_twse_jobs(start: str, end: str) -> list[tuple]:
+    """股價線：證交所的（注意股、處置股、注意累計名單、收盤行情、市場成交、開休市日期、公司清單）。"""
     days = dates_between(start, end)
     months = months_between(start, end)
-    announcement_months = set(months) | {prev_month(m) for m in months}   # 重大訊息查當月和上個月
-
     jobs = [(task.transform_notice, {"date_yyyymmdd": d}) for d in days]
     jobs += [(task.transform_punish, {"date_yyyymmdd": d}) for d in days]
     jobs += [(task.transform_punish_watchlist, {"date_yyyymmdd": d}) for d in days]
@@ -27,6 +36,14 @@ def build_jobs(start: str, end: str) -> list[tuple]:
     jobs += [(task.transform_market_daily, {"month_yyyymm": m}) for m in months]
     jobs += [(task.transform_holiday, {"year": y}) for y in holiday_years(start, end)]   # 11 月起也整理下一年
     jobs += [(task.transform_company, {"date_yyyymmdd": end})]                    # 只用最新一份
+    return jobs
+
+
+def build_news_jobs(start: str, end: str) -> list[tuple]:
+    """新聞線：重大訊息（清單、全文）、新聞（清單、網頁）。"""
+    months = months_between(start, end)
+    announcement_months = set(months) | {prev_month(m) for m in months}   # 重大訊息查當月和上個月
+    jobs = []
     for key in repository.list_raw_keys("announcement"):                    # 例如 1303_202611
         stock_id, month_yyyymm = key.split("_")
         if month_yyyymm in announcement_months:
@@ -56,9 +73,12 @@ def build_jobs(start: str, end: str) -> list[tuple]:
 
 def main() -> None:
     args = cli.parse_args()   # daily：今天；backfill：--start～--end
-    repository.ensure_tables()   # 全新的資料庫才建表；建表、更新 VIEW 在 main.py 一輪開始時做
+    repository.ensure_tables()   # 全新的資料庫才建表；建表、更新 VIEW 在 main.py 開始時做（schema/*.sql 改過才做）
 
-    failed = runner.run_jobs(build_jobs(args.start, args.end), queue="transform")
+    # 不給 --part：先整理證交所，再算重大訊息、新聞的範圍（要讀剛整理好的注意股，stage_watched_stock）
+    failed = []
+    for part in [args.part] if args.part else ["twse", "news"]:
+        failed += runner.run_jobs(build_jobs(args.start, args.end, part), queue="transform")
     runner.finish(failed)
 
 

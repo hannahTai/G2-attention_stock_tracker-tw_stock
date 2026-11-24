@@ -1,31 +1,34 @@
 """producer 層（抓取）：決定這一輪要抓哪些資料。API → raw。
 
-    uv run python -m crawler.producer                        # 抓今天（daily ＝ 只有今天的 backfill）
-    uv run python -m crawler.producer backfill --start 20261001  # 回補到今天（可加 --end）
-    uv run python -m crawler.producer backfill --start 20261001 --refetch  # 已經抓完整的也重抓
+    uv run python -m crawler.producer daily --part twse      # 抓今天的證交所（daily ＝ 只有今天的 backfill）
+    uv run python -m crawler.producer daily --part news      # 抓今天的重大訊息、新聞（先跑 transform --part twse）
+    uv run python -m crawler.producer backfill --start 20261001 --part twse  # 回補到今天（可加 --end）
+    uv run python -m crawler.producer backfill --start 20261001 --part twse --refetch  # 已經抓完整的也重抓
 
 任務清單的每一項是 (任務函式, 參數 dict)，例如 (task.crawl_notice, {"date_yyyymmdd": "20261113"})，
 交給 common/runner.py 執行（每個任務間隔一下、暫時性的失敗重試）。
-分五批：證交所先跑完，觀測站、FinMind 才能依當天的注意股、處置股決定要查哪些公司。之後分成兩條鏈同時進行：
-- 觀測站：重大訊息清單 → 公告全文（有了清單，才知道要查哪幾則公告的全文）
-- 新聞：FinMind 新聞清單（同一批公司）→ 打開每則新聞的網頁
-兩條鏈打的是不同的網站、不同的佇列，不會互相影響；同一條鏈裡上一批做完才送下一批。
+分兩部分，main.py 的兩條線各跑一部分（--part，一定要給：新聞的部分要讀證交所整理好的注意股，中間要先跑 transform）：
+- --part twse（股價線）：證交所，分好幾步依序做（見 build_twse_steps）
+- --part news（新聞線）：查哪些公司讀 stage_watched_stock（股價線整理好的注意股），兩條鏈同時進行：
+  - 觀測站：重大訊息清單 → 公告全文（有了清單，才知道要查哪幾則公告的全文）
+  - 新聞：FinMind 新聞清單（同一批公司）→ 打開每則新聞的網頁
+  兩條鏈打的是不同的網站、不同的佇列，不會互相影響；同一條鏈裡上一批做完才送下一批。
 
 已經抓完整的不再抓（加 --refetch 就全部重抓）。「完整」＝在那份資料不會再變之後抓的，見 is_complete()。
+還不完整的重大訊息清單、新聞清單，REFETCH_GAP（30 分鐘）內剛抓過的也先不抓（重跑、手動多跑幾次不會一直打觀測站、FinMind）。
 注意累計名單、上市公司清單只有當下一份，每次都抓。
 """
-import bisect
 import calendar
 import datetime
 import functools
 import urllib.parse
 
-from common import cli, repository, rules, runner
+from common import cli, date_utils, repository, runner
 from common.config import (
     NEWS_LOOKBACK_DAYS, SLEEP_SECONDS, SLEEP_SECONDS_FINMIND, SLEEP_SECONDS_MOPS, SLEEP_SECONDS_NEWS_DETAIL,
 )
 from common.date_utils import (
-    dates_between, days_before, holiday_years, months_between, parse_yyyymmdd, prev_month, today_yyyymmdd,
+    dates_between, days_before, holiday_years, months_between, parse_yyyymmdd, prev_month, to_yyyymmdd, today_yyyymmdd,
 )
 from common.hash_utils import url_md5
 from crawler import client, task
@@ -88,51 +91,52 @@ def build_twse_jobs(start: str, end: str, refetch: bool = False) -> list[tuple]:
     return [job for step in build_twse_steps(start, end, refetch) for job in step]
 
 
-# ---------- 第二批：觀測站重大訊息（要先有第一批的注意股、處置股、公司清單）----------
-NOTICE_LOOKBACK_CALENDAR_DAYS = 120   # 關注名單往前讀幾個日曆天的注意股（要涵蓋 WATCH_WINDOW_DAYS 個交易日，連假也夠）
+# ---------- 第二批：觀測站重大訊息（查哪些公司讀 stage_watched_stock：要先跑完股價線的 transform）----------
+# 還不完整的重大訊息清單、新聞清單：上次抓到現在不到這麼久就先不重抓（新聞線每 3 小時跑一次，手動重跑、回補也不會一直重抓）
+# 30 分鐘：股價線跑完接著跑的新聞線（約 18:01）照樣重抓 17:00 那次抓的清單，當天的卡片不會漏掉 17 點多的公告、新聞
+REFETCH_GAP = datetime.timedelta(minutes=30)
 
 
-@functools.cache   # 同一輪（一個 producer 程序）裡 raw 的注意股不會變，算一次給重大訊息、新聞共用
-def watched_by_day(start: str, end: str) -> dict[str, set[str]]:
-    """區間內每天的關注名單：往前 WATCH_WINDOW_DAYS 個交易日（含當天）被列注意過的股票，和 stage_watched_stock（卡片牆）同一個規則；
-    再加上那天處置中的（raw 處置股）當保險：處置中一定是最近被列注意過的，只有 raw 缺了某幾天時才會多出來，多查幾家不會漏。
-    全部從 raw 算，不看 stage：同一輪剛抓的、還沒整理成 stage 的日子也算得到（多天一起補、全新的資料庫都一樣）。
-    交易日＝raw 注意股有人被列的日子：沒人被列的交易日很少，算漏只會讓窗口往前多看一天、多查幾家，不會漏掉。
-    休市的日子（週末、連假）用之前的交易日的名單：新聞照樣每天查，連假比 NEWS_LOOKBACK_DAYS 長也不會漏。
-    範圍內要用的注意股一次讀完，再一天一天往後滑。
-    和 stage_watched_stock 比，這裡故意只會多、不會少（多的只是多查幾家重大訊息、新聞）。"""
-    # 往前照日期讀：注意股每個日曆天都抓（休市也有一份空的），30 個交易日最多約 45 天（過年連假），讀 120 天很夠
-    read_from = days_before(start, NOTICE_LOOKBACK_CALENDAR_DAYS)
-    keys = [key for key in repository.list_raw_keys("notice") if read_from <= key <= end]
-    listed = {}   # 有人被列注意的日子 → 那天被列的股票
-    for raw in repository.read_raws("notice", keys):
-        ids = client.notice_stock_ids(raw["body"])
-        if ids:
-            listed[raw["meta"]["key"]] = ids
-    days = sorted(listed)
-    watched = {}
-    for date_yyyymmdd in dates_between(start, end):
-        before = bisect.bisect_left(days, date_yyyymmdd)   # days 裡比這天早的有幾個
-        if date_yyyymmdd in listed:   # 當天有人被列：當天＋往前 29 個
-            window = days[max(0, before - (rules.WATCH_WINDOW_DAYS - 1)):before] + [date_yyyymmdd]
-        else:                         # 休市、或還沒公布：之前的交易日的完整 30 個
-            window = days[max(0, before - rules.WATCH_WINDOW_DAYS):before]
-        punish = repository.read_raw("punish", date_yyyymmdd)   # 含當天起 14 天內處置中的公告
-        watched[date_yyyymmdd] = set().union(*(listed[day] for day in window),
-                                             client.punish_stock_ids(punish["body"]) if punish else set())
-    return watched
+def recently_fetched(fetched_times: dict, key: str, now: datetime.datetime | None = None) -> bool:
+    """這份 REFETCH_GAP 內剛抓過（還不完整也先不重抓）。抓取時間和 now 都是台灣時間（沒有時區）。
 
-
-def watched_companies(start: str, end: str) -> dict[str, set[str]]:
-    """區間內每天被關注的上市公司：{日期: {公司}}。權證、ETF 不是上市公司，沒有重大訊息，也不查新聞。
-
-    還沒抓到過公司清單（例如全新的資料庫、證交所擋掉）：回傳空的，這輪先不查。
+    >>> at = datetime.datetime(2026, 11, 24, 14, 0)
+    >>> later = datetime.timedelta(minutes=10), datetime.timedelta(hours=1)
+    >>> recently_fetched({"k": at}, "k", at + later[0]), recently_fetched({"k": at}, "k", at + later[1])
+    (True, False)
     """
-    company_keys = repository.list_raw_keys("company")
-    if not company_keys:
-        return {}
-    companies = client.company_ids(repository.read_raw("company", company_keys[-1])["body"])
-    return {date_yyyymmdd: stocks & companies for date_yyyymmdd, stocks in watched_by_day(start, end).items()}
+    fetched_at = fetched_times.get(key)
+    now = now or date_utils.now().replace(tzinfo=None)
+    return fetched_at is not None and now - fetched_at < REFETCH_GAP
+
+
+def needs_fetch(fetched_times: dict, key: str, ready_at: datetime.datetime, stale_before: datetime.datetime | None = None) -> bool:
+    """要不要抓：還不完整（is_complete），而且不是 REFETCH_GAP 內剛抓過（recently_fetched）。
+    stale_before：今天的注意股抓到的時間；這之前抓的清單算舊的，剛抓過也重抓（股價線跑完接著跑的新聞線，卡片才不會漏掉傍晚的公告、新聞）。
+
+    >>> at = datetime.datetime(2026, 11, 24, 17, 55)
+    >>> needs_fetch({"k": at}, "k", datetime.datetime(2026, 11, 25, 8), datetime.datetime(2026, 11, 24, 18, 1))
+    True
+    """
+    if is_complete(fetched_times, key, ready_at):
+        return False
+    fetched_at = fetched_times.get(key)
+    if stale_before and fetched_at is not None and fetched_at < stale_before:
+        return True
+    return not recently_fetched(fetched_times, key)
+
+
+def notice_fetched_at(day: str) -> datetime.datetime | None:
+    """那天的注意股抓到的時間（還沒有是 None）：這之前抓的清單算舊的（needs_fetch 的 stale_before）。"""
+    return repository.notice_fetched_at(parse_yyyymmdd(day))
+
+
+@functools.cache   # 一個 producer 只查一次：每一步（清單、全文、新聞、網頁）看到同一份名單，也不用重算 view 好幾次
+def watched_companies(start: str, end: str) -> dict[str, set[str]]:
+    """區間內每天要查重大訊息、新聞的上市公司：{日期: {公司}}，從 stage_watched_stock 拿（repository.watched_companies）。
+    股價線把當天的注意股整理成 stage 以後就有當天的名單；還沒有（早上、休市）用之前最近一個交易日的。權證、ETF 不在裡面。"""
+    watched = repository.watched_companies(parse_yyyymmdd(start), parse_yyyymmdd(end))
+    return {to_yyyymmdd(day): companies for day, companies in watched.items()}
 
 
 def announcement_targets(start: str, end: str) -> list[tuple[str, str]]:
@@ -145,12 +149,14 @@ def announcement_targets(start: str, end: str) -> list[tuple[str, str]]:
 
 
 def build_mops_jobs(start: str, end: str, refetch: bool = False) -> list[tuple]:
-    """重大訊息清單：每個 (公司, 月份) 一個任務；那個月過完以後抓的就不再抓（當月會有新公告，照樣抓）。"""
+    """重大訊息清單：每個 (公司, 月份) 一個任務；那個月過完以後抓的就不再抓（當月會有新公告，照樣抓，
+    但 REFETCH_GAP 內剛抓過的先不抓）。"""
     fetched = {} if refetch else repository.raw_fetched_times("announcement")
     end_of_day = datetime.time(23, 59, 59)                  # 公告晚上也會發，月底當天整天都可能有
+    stale_before = notice_fetched_at(end)                   # 今天的注意股抓到以前抓的清單算舊的
     return [(task.crawl_announcement, {"stock_id": s, "year": int(m[:4]), "month": int(m[4:])})
             for s, m in announcement_targets(start, end)
-            if not is_complete(fetched, f"{s}_{m}", month_ready_at(m, end_of_day))]
+            if needs_fetch(fetched, f"{s}_{m}", month_ready_at(m, end_of_day), stale_before)]
 
 
 # ---------- 第三批：重大訊息全文（要先有第二批的公告清單）----------
@@ -187,10 +193,11 @@ def stock_news_targets(start: str, end: str) -> list[tuple[str, str]]:
 
 
 def build_stock_news_jobs(start: str, end: str, refetch: bool = False) -> list[tuple]:
-    """新聞清單：每個 (公司, 日期) 一個任務；那天過完（隔天 08:00）以後抓的就不再抓。"""
+    """新聞清單：每個 (公司, 日期) 一個任務；那天過完（隔天 08:00）以後抓的就不再抓（REFETCH_GAP 內剛抓過的也先不抓）。"""
     fetched = {} if refetch else repository.raw_fetched_times("stock_news")
+    stale_before = notice_fetched_at(end)   # 今天的注意股抓到以前抓的清單算舊的
     return [(task.crawl_stock_news, {"stock_id": s, "date_yyyymmdd": d}) for s, d in stock_news_targets(start, end)
-            if not is_complete(fetched, f"{s}_{d}", stock_news_ready_at(d))]
+            if needs_fetch(fetched, f"{s}_{d}", stock_news_ready_at(d), stale_before)]
 
 
 # ---------- 第五批：新聞網頁（要先有第四批的新聞清單）----------
@@ -221,22 +228,28 @@ def spread_by_site(links: list[str]) -> list[str]:
 # ---------- 執行 ----------
 def main() -> None:
     args = cli.parse_args()   # daily：今天；backfill：--start～--end，--refetch 全部重抓
-    repository.ensure_tables()   # 全新的資料庫才建表；建表、更新 VIEW 在 main.py 一輪開始時做
+    if args.part is None:
+        # 新聞的部分要讀證交所整理好的注意股（stage_watched_stock），中間要先跑 transform：分開跑，不能一次做完
+        raise SystemExit("crawler 要給 --part，例如 python -m crawler.producer daily --part twse"
+                         "（--part news 之前要先跑 transform --part twse）；兩條線一起跑用 main.py")
+    repository.ensure_tables()   # 全新的資料庫才建表；建表、更新 VIEW 在 main.py 開始時做（schema/*.sql 改過才做）
 
     span = (args.start, args.end, args.refetch)
     # queue：開 Celery 時，每個來源各自一個佇列、一個 worker（見 common/worker.py）
-    # 證交所先做完（要知道哪些股票被關注），分好幾步依序做（見 build_twse_steps）；
-    # 之後觀測站、新聞兩條鏈同時進行，各自上一批做完才送下一批
+    # --part twse（股價線）：證交所，分好幾步依序做（見 build_twse_steps）
+    # --part news（新聞線）：觀測站、新聞兩條鏈同時進行，各自上一批做完才送下一批；查哪些公司讀 stage_watched_stock
     failed = []
-    for step in build_twse_steps(*span):
-        if step:
-            failed += runner.run_jobs(step, sleep=SLEEP_SECONDS, queue="crawl_twse")
-    failed += runner.run_chains([
-        [(lambda: build_mops_jobs(*span), SLEEP_SECONDS_MOPS, "crawl_mops"),
-         (lambda: build_detail_jobs(*span), SLEEP_SECONDS_MOPS, "crawl_mops")],
-        [(lambda: build_stock_news_jobs(*span), SLEEP_SECONDS_FINMIND, "crawl_finmind"),
-         (lambda: build_news_detail_jobs(*span), SLEEP_SECONDS_NEWS_DETAIL, "crawl_news")],
-    ])
+    if args.part == "twse":
+        for step in build_twse_steps(*span):
+            if step:
+                failed += runner.run_jobs(step, sleep=SLEEP_SECONDS, queue="crawl_twse")
+    else:
+        failed += runner.run_chains([
+            [(lambda: build_mops_jobs(*span), SLEEP_SECONDS_MOPS, "crawl_mops"),
+             (lambda: build_detail_jobs(*span), SLEEP_SECONDS_MOPS, "crawl_mops")],
+            [(lambda: build_stock_news_jobs(*span), SLEEP_SECONDS_FINMIND, "crawl_finmind"),
+             (lambda: build_news_detail_jobs(*span), SLEEP_SECONDS_NEWS_DETAIL, "crawl_news")],
+        ])
     runner.finish(failed)
 
 

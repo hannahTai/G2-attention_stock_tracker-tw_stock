@@ -292,24 +292,24 @@ def test_recent_disposition_shows_without_folding():
 
 
 def test_ai_summary_block_above_notice_log():
-    """AI 摘要在注意紀錄上面；沒有摘要（沒寫、沒通過檢查）就寫一行「今天沒有 AI 摘要」。"""
+    """AI 摘要在注意紀錄上面；沒有摘要（沒寫、沒通過檢查）就寫一行「今天還沒有 AI 摘要」。"""
     page = render.stock_html(stock_detail(card_of("2222")))
     assert page.index("AI 摘要") < page.index("注意紀錄")
-    assert "今天沒有 AI 摘要。" in page
+    assert "今天還沒有 AI 摘要。" in page
 
 
 def test_ai_summary_shows_text_and_sources():
     """有摘要時顯示全文和新聞來源連結（標題要跳脫）。"""
     detail = stock_detail(card_of("2222"))
-    detail["ai_summary"] = {"summary": "今天因第一款被列注意。", "summarized_at": "2026-11-19T19:05:00",   # API 的格式
+    detail["ai_summary"] = {"summary": "今天因第一款被列注意。", "summarized_at": "2026-11-19T19:05:00", "reused": True,   # API 的格式
                             "sources": [{"title": "訂單<增加>", "link": "https://example.com/n1", "publisher": "經濟日報",
                                          "news_date": datetime.date(2026, 11, 19)}]}
     page = render.stock_html(detail)
-    assert "今天因第一款被列注意。" in page and "今天沒有 AI 摘要" not in page
+    assert "今天因第一款被列注意。" in page and "今天還沒有 AI 摘要" not in page
     assert 'href="https://example.com/n1"' in page and "訂單&lt;增加&gt;" in page
-    # 寫摘要的時間接在標題旁的灰字後面；比卡片那天（11/20）早＝沿用前幾天寫的
+    # 寫摘要的時間接在標題旁的灰字後面；沿用前幾天寫的（reused）前面加「沿用」
     assert '不構成投資建議・<span class="mono">沿用 11/19 19:05</span>' in page
-    detail["ai_summary"]["summarized_at"] = "2026-11-20T19:05:00"
+    detail["ai_summary"].update(summarized_at="2026-11-20T19:05:00", reused=False)
     assert '不構成投資建議・<span class="mono">11/20 19:05</span>' in render.stock_html(detail)
 
 

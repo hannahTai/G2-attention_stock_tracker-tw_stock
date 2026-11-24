@@ -287,16 +287,16 @@ def test_summarize_news_asks_once_more_when_a_number_is_not_in_the_article(summa
     """摘要裡有原文沒有的數字（自己換算）：說哪個數字找不到，請它照原文寫法改，只重問一次。"""
     summaries.answers = [{"summary": "健策10月營收約 0.3 千億元，年增81％"}, SHORT_ANSWER]
     result = ai_task.summarize_news(NEWS["news_id"])
-    assert len(summaries.asked) == 2 and "summary 裡的 0.3 在資料裡找不到" in summaries.asked[1][-1]["content"]
+    assert len(summaries.asked) == 2 and "summary 裡的 0.3 在原文裡找不到" in summaries.asked[1][-1]["content"]
     assert summaries.rows[0]["summary"] == SHORT_ANSWER["summary"] and summaries.rows[0]["summary_ok"]
     assert "0.3 不在資料裡，重問一次" in result
 
 
-def test_summarize_news_does_not_re_ask_for_numbers_the_llm_saw(summaries):
-    """LLM 看到的訊息裡有的數字（例如日期那一行的 11/20）不重問：不叫 LLM 刪掉對的資訊，也不多花一次錢。"""
-    summaries.answers = [{"summary": "健策11月20日公告10月營收30.73億元"}]
+def test_summarize_news_re_asks_for_a_date_only_in_the_date_line(summaries):
+    """數字只在日期那一行（11/20），原文沒有：summary_ok 會擋，所以也重問；改好的摘要照樣顯示（不會整段被藏起來）。"""
+    summaries.answers = [{"summary": "健策11月20日公告10月營收30.73億元"}, {"summary": "健策公告10月營收30.73億元"}]
     ai_task.summarize_news(NEWS["news_id"])
-    assert len(summaries.asked) == 1
+    assert len(summaries.asked) == 2 and summaries.rows[-1]["summary_ok"]
 
 
 def test_summarize_news_keeps_answer_when_number_still_wrong(summaries):

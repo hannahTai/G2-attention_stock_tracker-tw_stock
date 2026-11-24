@@ -1,7 +1,7 @@
 """client 層：只負責跟 API 拿資料，不整理、不存檔（存進 raw 表的是 task.py）。API 的格式只有這裡知道。
 
   fetch_xxx()：打 API，回傳原始回應
-  xxx_stock_ids()、watchlist_date()、company_ids()、announcement_ids()、stock_news_links()：從回應取出 producer、task 要用的值
+  watchlist_date()、company_ids()、announcement_ids()、stock_news_links()：從回應取出 producer、task 要用的值
   news_detail_head()、news_detail_text()：從新聞網頁取 <head>（存進 raw）、抽全文（全文只在記憶體裡，不存）
   xxx_problem()：檢查回應，有問題回傳原因（task 存成失敗），沒問題回傳 None
 
@@ -237,16 +237,6 @@ def read_page(resp: requests.Response, started: float) -> NewsPage:
 
 
 # ---------- 從回應取值：producer、task 要用的值 ----------
-def notice_stock_ids(body) -> set[str]:
-    """注意股回應裡的證券代號（data 每列第 2 欄）。"""
-    return {row[1].strip() for row in body.get("data") or []}
-
-
-def punish_stock_ids(body) -> set[str]:
-    """處置股回應裡的證券代號（data 每列第 3 欄）。"""
-    return {row[2].strip() for row in body.get("data") or []}
-
-
 def watchlist_day(body) -> datetime.date | None:
     """注意累計名單標題上的資料日期，找不到就回傳 None。crawler（raw_key）和 transform（data_date）都用這個。
 

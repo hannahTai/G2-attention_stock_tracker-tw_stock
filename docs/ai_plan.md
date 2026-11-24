@@ -1,16 +1,18 @@
 # AI 項目
 
-> 2026-11-16 整理，2026-11-23 更新
+> 2026-11-16 整理，2026-11-24 更新
 
 資料線（API → raw → stage → app）算出注意股離處置還差幾次；AI 項目在旁邊多做三件事：公告分類、新聞 RAG、卡片 AI 摘要。各自讀資料庫、各自寫結果表，哪一個當天失敗都不影響資料線和網站。
 
 ## 整體架構
 
 ```
-資料線
-  證交所、觀測站、FinMind → crawler → raw_* → transform → stage_* → analyze → app_*（還差幾次）
+股價線（週一～五 18:00～22:00 每小時）
+  證交所 → crawler → raw_* → transform → stage_*（注意股…）→ analyze → app_*（還差幾次）
+新聞線（每天 08:00 起每 3 小時，到 23:00）
+  stage_watched_stock 決定查哪些公司 → 觀測站、FinMind → crawler → raw_* → transform → stage_*（重大訊息、新聞）→ AI
 
-AI（只讀 stage_* 和前面的 AI 結果，不讀 app_*；和 analyze 同時跑）
+AI（新聞線：只讀 stage_* 和前面的 AI 結果，不讀 app_*；和股價線的 analyze 互不等）
   ① 公告分類     重大訊息 → Claude（結構化輸出）→ ai_announcement_label
   ② 新聞 RAG     新聞網頁 → Claude 寫摘要 → ai_news_summary
                  標題＋摘要 → bge-m3 轉向量 → ai_news_embedding（pgvector）
@@ -21,7 +23,7 @@ AI（只讀 stage_* 和前面的 AI 結果，不讀 app_*；和 analyze 同時�
   資料 API（FastAPI）讀 app_*、ai_*（透過 VIEW），網頁（FastAPI＋Jinja2）打 API
 ```
 
-一輪的順序：公告分類 → 新聞摘要 → 新聞向量 → 同一件事 → 卡片 AI 摘要（後面的會用到前面的結果）。
+新聞線一輪的順序：公告分類 → 新聞摘要 → 新聞向量 → 同一件事 → 卡片 AI 摘要（後面的會用到前面的結果）。卡片 AI 摘要要用當天的注意股、處置股、收盤行情（股價線）和這檔的公告、新聞清單（新聞線），都到了才寫：股價線成功的那一輪放完記號就接著跑一次新聞線，當天的卡片在那時候寫（一檔一天一次）；往前看 7 天，補沒寫成的。
 
 | 項目 | 做什麼 | 為什麼要做 | 新概念 |
 | --- | --- | --- | --- |
@@ -33,14 +35,15 @@ AI（只讀 stage_* 和前面的 AI 結果，不讀 app_*；和 analyze 同時�
 
 ## 共同原則
 
-- **批次、存表**：每天收盤後跑，結果存成表給網站讀；不做聊天式問答。
+- **批次、存表**：排程跑（新聞線每 3 小時；卡片摘要每天收盤後一次），結果存成表給網站讀；不做聊天式問答。
 - **AI 不取代規則引擎**：還差幾次、處置日期由規則引擎算；AI 的輸入也不讀規則引擎的結果（`app_*`），只讀 stage 和其他 AI 結果。
 - **AI 結果放 `ai_*` 表**：`app_*` 隨時可以從 stage 免費重算；AI 結果重跑要花錢、同樣的輸入答案可能不一樣，所以拿到就留著。重算 stage、app 不碰 `ai_*`。
 - **只處理新資料**：結果表的主鍵含 `prompt_version`，已經有同一版結果的跳過；改了 prompt 就加一版，新版另外存、舊的留著比較。
 - **輸入沒變就不問**：卡片 AI 摘要存輸入的雜湊值，跟前一天一樣（處置中、沒有新公告、沒有新新聞）就沿用前一天的摘要。
 - **程式檢查 AI 的回答**：摘要裡的數字都要出現在輸入裡、引用的新聞編號要是這次給的，才算 `summary_ok`；沒過的網站不顯示。
 - **記錄每次呼叫**：`ai_llm_call` 記 token、快取、花費、秒數、模型、prompt 版本、成功或失敗。
-- **有就帶、沒有照寫**：卡片 AI 摘要會用公告分類和新聞 RAG 的結果，但它們當天沒有結果也照樣寫，不互相依賴。
+- **有就帶、沒有照寫**：卡片 AI 摘要會用公告分類和新聞 RAG 的結果，但它們當天沒有結果也照樣寫，不互相依賴（但這檔那天的新聞清單、那個月的公告清單要抓過才寫，不會寫成「沒有公告和新聞」）。
+- **失敗 3 次就不再問**：同一筆、同一版 prompt 拒答、被截斷 3 次就跳過（`repository.MAX_FAILED_CALLS`），新聞線一天跑 6 次也不會一直重問；換版本重新算。
 - **沒設 `ANTHROPIC_API_KEY`**：跳過要呼叫 Claude 的項目，不算失敗；新聞向量、同一件事照做（不用 API）。
 - **外部文字是資料、不是指令**：新聞、公告放在 prompt 的標籤裡，system prompt 說裡面的要求一律忽略；AI 只產生文字和標記，不能動其他資料。
 
@@ -117,7 +120,7 @@ FinMind 的 `TaiwanStockNews`（`https://api.finmindtrade.com/api/v4/data`）：
 資料線：
 
 ```
-crawl_finmind：被關注的股票，一檔一天一個任務 → raw_stock_news
+crawl_finmind：被關注的上市公司（stage_watched_stock），一檔一天一個任務 → raw_stock_news（還沒過完的那天，30 分鐘內抓過就先不重抓）
 crawl_news：打開新聞網頁，只存 <head>（標題、meta 摘要）、全文有幾個字 → raw_news_detail
 transform → stage_news（一則一列，主鍵＝連結的 md5）、stage_stock_news（哪檔有哪則）、stage_news_detail（導言）
 ```
@@ -215,7 +218,7 @@ ORDER BY 1 DESC, 2;
 ## 還沒做
 
 - **評估**：公告分類人工標 100 則當標準答案，算準確率、每一類的 precision、recall；新聞檢索人工標 20 檔，比較向量挑的前 5 則和「最新 5 則」；卡片 AI 摘要固定 20 檔人工評分（正確、完整、易讀）。
-- **排程**：現在用 Windows 工作排程器每天跑 `main.py`；之後換 Airflow（排每一步、失敗通知），每一步裡的大量小任務照樣交給 Celery。
+- **排程**：現在用 Windows 工作排程器跑兩條線（`main.py` 股價線、`main.py news` 新聞線）；之後換 Airflow（兩條線各一個 DAG、失敗通知），每一步裡的大量小任務照樣交給 Celery。
 - **雲端**：GCP（Cloud SQL、VM 或 Cloud Run）；API key 用 Secret Manager。
 - **花費上限**：在 Anthropic 後台設每月上限；網站加一頁看每天花費。
 

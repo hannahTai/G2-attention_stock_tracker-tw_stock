@@ -1,6 +1,6 @@
 # 任務與佇列
 
-> 2026-11-23 整理
+> 2026-11-23 整理，2026-11-24 更新
 
 ## 一張圖看懂
 
@@ -24,44 +24,49 @@ producer（列出要做的任務）
 
 ## 所有任務和 worker
 
-後面的任務要用前面的結果，所以 producer 一步做完才送下一步。同一步的任務互不等。
+資料線分兩條：股價線（證交所 → 整理 → 還差幾次）、新聞線（觀測站、新聞 → 整理 → AI）。後面的任務要用前面的結果，所以 producer 一步做完才送下一步。同一步的任務互不等。
 
 ![任務和 worker](images/workers-and-tasks.png)
 
 表裡的「佇列」是任務送進哪個佇列；聽這個佇列的 worker 見下面「8 個 worker」。
 
-| 步驟 | 任務 | 佇列 | 為什麼排在這裡 |
-|---|---|---|---|
-| 1 | `crawl_holiday` 開休市日期、`crawl_market_daily` 市場成交 | `crawl_twse` | 判斷那天是不是交易日的依據，最先抓 |
-| 2 | `crawl_stock_price` 收盤行情 | `crawl_twse` | 要先知道那天該不該有交易 |
-| 3 | `crawl_punish` 處置股 | `crawl_twse` | 同上 |
-| 4 | `crawl_notice` 注意股、`crawl_punish_watchlist` 注意累計名單、`crawl_company` 公司清單 | `crawl_twse` | 注意股還沒公布時名單是空的；和它一起公布的處置股公布了，空名單才代表真的沒人被列 |
-| 5 | `crawl_announcement` 重大訊息清單 → `crawl_announcement_detail` 全文 | `crawl_mops` | 要先知道哪些股票被關注；和下一列同時 |
-| 5 | `crawl_stock_news` 新聞清單 → `crawl_news_detail` 新聞網頁 | `crawl_finmind` → `crawl_news` | 同上 |
-| 6 | `transform_xxx` 整理（11 種） | `transform` | 要先抓好 |
-| 7 | `analyze_progress` 還差幾次 | `analyze` | 只讀整理好的資料；和下面的 AI 同時 |
-| 7 | `classify_announcement` 公告分類 | `ai` | AI 照這個順序：後面的用前面的結果；呼叫 Claude |
-| 7 | `summarize_news` 新聞摘要 | `ai` | 呼叫 Claude |
-| 7 | `embed_news` 新聞向量 | `embed` | 要用 bge-m3 把「標題＋摘要」轉成向量（摘要要先寫好） |
-| 7 | `group_news_stories` 同一件事 | `ai` | 只比資料庫裡已經有的向量，不用模型 |
-| 7 | `summarize_card` 卡片 AI 摘要 | `embed` | 查詢也要用 bge-m3 轉成向量，才能挑相關的新聞；再呼叫 Claude |
+| 線 | 步驟 | 任務 | 佇列 | 為什麼排在這裡 |
+|---|---|---|---|---|
+| 股價線 | 1 | `crawl_holiday` 開休市日期、`crawl_market_daily` 市場成交 | `crawl_twse` | 判斷那天是不是交易日的依據，最先抓 |
+| 股價線 | 2 | `crawl_stock_price` 收盤行情 | `crawl_twse` | 要先知道那天該不該有交易 |
+| 股價線 | 3 | `crawl_punish` 處置股 | `crawl_twse` | 同上 |
+| 股價線 | 4 | `crawl_notice` 注意股、`crawl_punish_watchlist` 注意累計名單、`crawl_company` 公司清單 | `crawl_twse` | 注意股還沒公布時名單是空的；和它一起公布的處置股公布了，空名單才代表真的沒人被列 |
+| 股價線 | 5 | `transform_xxx` 整理證交所的（7 種） | `transform` | 要先抓好 |
+| 股價線 | 6 | `analyze_progress` 還差幾次 | `analyze` | 只讀整理好的資料 |
+| 新聞線 | 1 | `crawl_announcement` 重大訊息清單 → `crawl_announcement_detail` 全文 | `crawl_mops` | 查哪些公司讀 `stage_watched_stock`（股價線整理好的注意股）；和下一列同時 |
+| 新聞線 | 1 | `crawl_stock_news` 新聞清單 → `crawl_news_detail` 新聞網頁 | `crawl_finmind` → `crawl_news` | 同上 |
+| 新聞線 | 2 | `transform_xxx` 整理重大訊息、新聞（4 種） | `transform` | 要先抓好 |
+| 新聞線 | 3 | `classify_announcement` 公告分類 | `ai` | AI 照這個順序：後面的用前面的結果；呼叫 Claude |
+| 新聞線 | 3 | `summarize_news` 新聞摘要 | `ai` | 呼叫 Claude |
+| 新聞線 | 3 | `embed_news` 新聞向量 | `embed` | 要用 bge-m3 把「標題＋摘要」轉成向量（摘要要先寫好） |
+| 新聞線 | 3 | `group_news_stories` 同一件事 | `ai` | 只比資料庫裡已經有的向量，不用模型 |
+| 新聞線 | 3 | `summarize_card` 卡片 AI 摘要 | `embed` | 查詢也要用 bge-m3 轉成向量，才能挑相關的新聞；再呼叫 Claude。只寫那天的注意股、處置股、收盤行情都整理好的日子（股價線跑完以後） |
 
 AI 這段在 `ai` 和 `embed` 兩個 worker 之間輪流（圖上一上一下）：要用本機 embedding 模型（bge-m3）的任務都送 `embed`，只有它載入模型（約 2.3 GB 記憶體，只載一份）；其他的送 `ai`。順序不能換：向量要用摘要、歸類要用向量、卡片摘要要用前面全部的結果。
 
-## 每小時一輪
+## 兩條線的排程
 
-週一～五 18:00～22:00，每個整點跑一次 `main.py`（一輪＝上面全部）。同一時間只跑一輪：上一輪還沒跑完，這一輪排隊等。
+- **股價線**：週一～五 18:00～22:00，每個整點跑一次 `main.py`。
+- **新聞線**：每天 08:00、11:00、14:00、17:00、20:00、23:00 跑一次 `main.py news`；股價線成功的那一輪放完記號也接著跑一次（18:00，證交所晚公布就是 19:00、20:00…）。
+- 同一條線同一時間只跑一輪：上一輪還沒跑完，這一輪排隊等。兩條線可以同時跑（寫不同的表）。
 
-![每小時一輪](images/hourly-round.png)
+![兩條線的排程](images/hourly-round.png)
 
 | 哪裡失敗 | 這一輪 |
 |---|---|
-| crawler 的某個任務 | 其他的照抓；transform、analyze、ai 照跑（用已經抓到的）。少的那份資料：transform 跳過、analyze 那天不算，不會算錯 |
-| transform | **停**：不跑 analyze、ai（stage 不完整，算出來會錯） |
-| analyze 或 ai | 另一邊照跑 |
+| crawler 的某個任務 | 其他的照抓；後面照跑（用已經抓到的）。少的那份資料：transform 跳過、analyze 那天不算，不會算錯 |
+| transform | **停**：股價線不跑 analyze、新聞線不跑 ai（stage 不完整，算出來會錯） |
+| ai | 只影響 AI 的結果；還差幾次是股價線算的，不受影響 |
 
-- **全部成功**：放當天的完成記號（`data/done/YYYYMMDD`），之後的整點看到就直接結束。
-- **有任何失敗**：不放記號，**下一個整點再跑一輪**：做過的跳過，只補失敗、還沒做的。
+- **股價線全部成功**：放當天的完成記號（`data/done/YYYYMMDD`），接著跑一次新聞線；之後的整點看到記號就直接結束。
+- **股價線有任何失敗**：不放記號，**下一個整點再跑一輪**：做過的跳過，只補失敗、還沒做的。
+- **新聞線**不放記號：每次都跑，已經抓完整的跳過；還會變的清單（當月的重大訊息、還沒過完的那天的新聞）30 分鐘內剛抓過的也跳過。
+- **卡片 AI 摘要**：股價線把當天的注意股、處置股、收盤行情整理好以後，接著跑的那次新聞線就寫（一檔一天一次）。每一檔還要那天的新聞清單、那個月的公告清單抓到了才寫（當天新被列、還沒抓到或抓失敗的，下一輪抓到了再寫）。沒寫成的（股價線很晚才跑完、最後一次新聞線失敗）之後的新聞線會補：往前看 7 天，補還沒寫的。
 - 暫時性的失敗（逾時、伺服器錯誤、太多請求）在這一輪裡就先自動重做（5 秒後，最多 3 次）；worker 掛掉，沒做完的任務回到佇列給別人做。
 
 ## 重跑不會怎樣

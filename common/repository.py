@@ -1,6 +1,8 @@
 """repository 層：只負責把資料存進 PostgreSQL、從 PostgreSQL 讀回來，不知道資料從哪個 API 來、被整理過什麼。
 
-  連線、建表   get_engine()、create_database()、drop_database()、create_tables()（一輪一次）、ensure_tables()（producer 用）
+  連線、建表   get_engine()、create_database()、drop_database()、
+               create_tables()（schema/*.sql 改過才做、回補每次做）、ensure_tables()（producer 用）、
+               schema_hash()、applied_schema_hash()（比對雜湊值，見 main.py 的 refresh_schema）
   raw 表       寫：save_raw()、save_raw_record()（只新增、不修改）
                讀：read_raw()、read_raws()、list_raw_keys()、raw_fetched_times()（每個 raw_key 只看最新一份成功的）、
                    raw_keys_done()（成功或永久失敗的，不用再抓）
@@ -8,7 +10,8 @@
   stage、app   insert_rows()、delete_where_in()、has_newer_rows()、upsert_rows()
   任務歷史     insert_job_run()（job_run 表，只新增）
   一列寫入     insert_one()（任務一次寫一列：raw、ai_* 表）
-  AI（ai/）    讀：list_unlabeled_announcements()、read_announcement()、has_announcement_label()、
+  AI（ai/）    讀：watched_companies()（新聞線要查哪些公司）、
+                   list_unlabeled_announcements()、read_announcement()、has_announcement_label()、
                    list_unsummarized_news()、read_news()、has_news_summary()
                    list_news_to_embed()、news_story_links()、stock_news_candidates()（新聞 RAG，pgvector）、
                    list_unsummarized_cards()、card_facts()、recent_announcements()、has_card_summary()、previous_card_summary()
@@ -21,6 +24,7 @@
 """
 import datetime
 import functools
+import hashlib
 import json
 import re
 import urllib.parse
@@ -73,7 +77,7 @@ DATABASE_EXISTS_ERRORS = ("42P04", "23505")
 
 def create_database(database: str = DB_NAME) -> None:
     """資料庫不存在就建（PostgreSQL 沒有 CREATE DATABASE IF NOT EXISTS，先查再建）。
-    兩個 producer 同時查到「不存在」、同時建（analyze 和 ai 同時開始）：
+    兩個 producer 同時查到「不存在」、同時建（例如股價線、新聞線同時開始）：
     後建的那個會得到「已經存在」（DATABASE_EXISTS_ERRORS），當成成功。"""
     with get_engine("").connect() as conn:
         exists = conn.execute(sqlalchemy.text("SELECT 1 FROM pg_database WHERE datname = :name"),
@@ -108,16 +112,38 @@ SCHEMA_LOCK_KEY = 20261123
 def create_tables(database: str = DB_NAME) -> None:
     """建資料庫，再執行 schema/*.sql 建表。已經存在的表跳過，不刪任何表（欄位改了要自己 ALTER）；VIEW 每次重建。
 
-    整個交易會鎖住很多表（建索引、COMMENT、DROP VIEW），所以只在一輪開始時跑一次（main.py、docker compose 的 setup），
+    整個交易會鎖住很多表（建索引、COMMENT、DROP VIEW），所以只在 schema/*.sql 改過時跑
+    （main.py 比對 COMMENT ON SCHEMA 的雜湊值；回補、docker compose 的 setup 每次跑），
     producer 只用 ensure_tables 確認有表。同一時間只讓一個執行（兩個同時 DROP、CREATE VIEW 會 deadlock）：
     交易一開始先拿 advisory lock，別人拿著就等，交易結束自動放掉。
     """
     create_database(database)
     with get_engine(database).begin() as conn:
-        # 等鎖最多 10 分鐘（連線預設 1 分鐘）：DROP VIEW 要等網頁上正在查的 SQL 做完，一輪只跑一次，等久一點沒關係
+        # 等鎖最多 10 分鐘（連線預設 1 分鐘）：DROP VIEW 要等網頁上正在查的 SQL 做完，只有改過 schema 才跑，等久一點沒關係
         conn.execute(sqlalchemy.text("SET LOCAL lock_timeout = '10min'"))
         conn.execute(sqlalchemy.text("SELECT pg_advisory_xact_lock(:key)"), {"key": SCHEMA_LOCK_KEY})
         run_sql_files(conn)
+        # 記下這次用的 schema/*.sql（雜湊值是 16 進位字串，直接放進 SQL 沒問題）：main.py 比對，改過才再建
+        conn.execute(sqlalchemy.text(f"COMMENT ON SCHEMA {SCHEMA} IS '{schema_hash()}'"))
+
+
+@functools.cache
+def schema_hash() -> str:
+    """schema/*.sql 全部內容的雜湊值：改了任何一個檔就不一樣。"""
+    digest = hashlib.sha256()
+    for sql_file in SQL_FILES:
+        # 換行統一成 \n：Windows（CRLF）和 Docker／Linux（LF）看到的同一份檔案算出一樣的值，不會互相以為改過
+        digest.update(sql_file.name.encode() + b"\0" + sql_file.read_bytes().replace(b"\r\n", b"\n"))
+    return digest.hexdigest()
+
+
+def applied_schema_hash() -> str | None:
+    """資料庫上次建表、更新 VIEW 時用的 schema/*.sql 雜湊值（create_tables 記在 SCHEMA 的 COMMENT）。
+    記在資料庫、不記在本機檔案：還原舊的備份、換一個資料庫，記的值跟著換，就會重建。
+    schema 還不存在，或還沒記過是 None。資料庫不存在就先建（全新安裝時 main.py 第一個查的就是這裡）；
+    連不上這類錯誤照樣丟出來，不會當成 schema 改了去建表。"""
+    create_database()
+    return query_rows("SELECT obj_description(to_regnamespace(:schema), 'pg_namespace') AS h", {"schema": SCHEMA})[0].h
 
 
 @functools.cache
@@ -415,6 +441,29 @@ def insert_one(table: str, row: dict, on_conflict: str = "") -> None:
 
 
 # ---------- AI（ai/）----------
+# 同一筆、同一個 prompt 版本呼叫 LLM 失敗（拒答、回答被截斷）幾次以後就不再問：新聞線一天跑 6 次、往前看好幾天，
+# 不擋的話同一筆會一直重問、一直花錢，每一輪也都算失敗。改 prompt（換版本）就重新算
+MAX_FAILED_CALLS = 3
+
+
+def not_given_up(task: str, ref_key_sql: str) -> str:
+    """WHERE 的一段：這一筆（ref_key＝ref_key_sql）這一版（:version）失敗還沒到 MAX_FAILED_CALLS 次。task、ref_key_sql 是程式寫死的。"""
+    return (f"  AND (SELECT count(*) FROM tw_stock.ai_llm_call f WHERE f.status = 'failure' AND f.task = '{task}' "
+            f"       AND f.ref_key = {ref_key_sql} AND f.prompt_version = :version) < {MAX_FAILED_CALLS} ")
+
+
+def repeatedly_skipped(task: str, mark: str, arg: str) -> set[str]:
+    """job_run 裡最近 3 天這個任務、結果有 mark 的次數到 MAX_FAILED_CALLS 的那些（args 的 arg 欄，例如 news_id）。
+    例如新聞摘要：網頁打不開、全文太短不呼叫 LLM（ai_llm_call 沒有紀錄），用任務歷史數跳過幾次。"""
+    rows = query_rows(
+        "SELECT args ->> :arg AS key FROM tw_stock.job_run "
+        "WHERE task = :task AND status = 'success' AND result LIKE '%' || :mark || '%' "
+        "  AND started_at >= LOCALTIMESTAMP - INTERVAL '3 days' "   # 只看最近 3 天：網站暫時擋一下，過幾天照樣再試
+        "GROUP BY 1 HAVING count(*) >= :times",
+        {"arg": arg, "task": task, "mark": mark, "times": MAX_FAILED_CALLS})
+    return {row.key for row in rows}
+
+
 def list_unlabeled_announcements(start: datetime.date, end: datetime.date, prompt_version: str) -> list[tuple[str, datetime.date, int]]:
     """這個 prompt 版本還沒分類、已經有全文的公告：(公司, 輸入日期, 序號)。
 
@@ -427,6 +476,7 @@ def list_unlabeled_announcements(start: datetime.date, end: datetime.date, promp
         "WHERE (a.announce_date BETWEEN :start AND :end OR CAST(d.loaded_at AS DATE) BETWEEN :start AND :end) "
         "  AND NOT EXISTS (SELECT 1 FROM tw_stock.ai_announcement_label l "
         "                  WHERE l.announcement_id = a.announcement_id AND l.prompt_version = :version) "
+        + not_given_up("classify_announcement", "a.announcement_id") +
         "ORDER BY a.announce_date, a.company_id, a.enter_date, a.serial_number",
         {"start": start, "end": end, "version": prompt_version})
     return [(row.company_id, row.enter_date, row.serial_number) for row in rows]
@@ -469,6 +519,7 @@ def list_unsummarized_news(start: datetime.date, end: datetime.date, prompt_vers
         "              WHERE sn.news_id = n.news_id AND w.day BETWEEN :start AND :end AND w.is_company) "
         "  AND NOT EXISTS (SELECT 1 FROM tw_stock.ai_news_summary s "
         "                  WHERE s.news_id = n.news_id AND s.prompt_version = :version) "
+        + not_given_up("summarize_news", "n.news_id") +
         "ORDER BY n.news_time, n.news_id",
         {"start": start, "end": end, "min_chars": min_text_chars, "version": prompt_version})
     return [row.news_id for row in rows]
@@ -504,7 +555,7 @@ SHARED_LEAD_MIN_NEWS = 3
 def list_news_to_embed(start: datetime.date, end: datetime.date, model: str) -> list[dict]:
     """新聞日期在區間內的新聞：標題、新聞摘要（最新一版、通過檢查的）、導言（網站共用的當成沒有），
     和這個模型上次轉的文字的雜湊值（還沒轉過是 None）。要不要重轉由 task 比對雜湊值決定。
-    ai 只讀 stage 和 AI 結果，不讀 app 的 VIEW（ai 和 analyze 同時跑）。"""
+    ai 只讀 stage 和 AI 結果，不讀 app 的 VIEW（ai 在新聞線，和股價線的 analyze 互不等）。"""
     rows = query_rows(
         f"SELECT n.news_id, n.title, {LATEST_NEWS_SUMMARY} AS ai_summary, "
         "       CASE WHEN shared.news_count >= :shared_min THEN NULL ELSE d.lead END AS lead, e.input_hash "
@@ -593,16 +644,71 @@ def stock_news_candidates(stock_id: str, start: datetime.date, end: datetime.dat
 # ---------- 卡片 AI 摘要 ----------
 
 
+def notice_fetched_at(day: datetime.date) -> datetime.datetime | None:
+    """那天的注意股是什麼時候抓的（stage_notice_day.source_fetched_at，raw 的抓取時間，重跑 transform 不會變）；還沒有是 None。
+    這之前抓的重大訊息、新聞清單算舊的：新聞線要重抓，卡片 AI 摘要不能用（見 list_unsummarized_cards）。"""
+    rows = query_rows("SELECT source_fetched_at FROM tw_stock.stage_notice_day WHERE query_date = :day", {"day": day})
+    return rows[0].source_fetched_at if rows else None
+
+
+def watched_companies(start: datetime.date, end: datetime.date) -> dict[datetime.date, set[str]]:
+    """區間內每天要查重大訊息、新聞的上市公司（新聞線用）：stage_watched_stock 那天的名單。
+    那天還沒有名單（股價線還沒跑、注意股還沒整理好、休市）就用之前最近一個有名單的交易日：早上、週末也照樣查新聞。
+    「有名單」＝stage_notice_day 有那天：只有交易日、收盤行情整理好了，view 已經有那天，但少了當天新被列的。"""
+    rows = query_rows(
+        "SELECT w.day, w.stock_id, w.is_company FROM tw_stock.stage_watched_stock w "
+        "JOIN tw_stock.stage_notice_day nd ON nd.query_date = w.day "   # 那天的注意股整理好了才算有名單
+        "WHERE w.day <= :end AND w.day >= ("
+        "  SELECT COALESCE(max(w2.day), :start) FROM tw_stock.stage_watched_stock w2 "
+        "  JOIN tw_stock.stage_notice_day nd2 ON nd2.query_date = w2.day WHERE w2.day <= :start)",
+        {"start": start, "end": end})
+    by_day: dict[datetime.date, set[str]] = {}
+    for row in rows:   # 只有權證、ETF 的交易日也是「有名單」（那天沒有要查的公司），不沿用前一天的
+        companies = by_day.setdefault(row.day, set())
+        if row.is_company:
+            companies.add(row.stock_id)
+    earlier = [d for d in by_day if d < start]   # 查詢只多拿 start 之前最近的那一天
+    latest = by_day[max(earlier)] if earlier else set()
+    watched = {}
+    day = start
+    while day <= end:
+        latest = by_day.get(day, latest)
+        watched[day] = latest
+        day += datetime.timedelta(days=1)
+    return watched
+
+
 def list_unsummarized_cards(start: datetime.date, end: datetime.date, prompt_version: str) -> list[tuple[str, datetime.date]]:
     """區間內每個交易日要寫卡片 AI 摘要的上市公司，這一版還沒寫的：(證券代號, 日期)。
     和卡片牆同一批股票（stage_watched_stock：往前 30 個交易日被列注意過），只讀 stage。
-    那天的注意股要已經整理好（stage_notice_day 有那天）：不然會把今天被列的寫成「今天沒被列注意」，而且之後不會重寫。"""
+    寫了就不會重寫，所以要的資料都到了才寫：
+    - 那天的注意股、處置股、收盤行情都整理好（stage_notice_day、stage_punish_day、stage_stock_price 有那天）：
+      不然會把今天被列的寫成「今天沒被列注意」、漏掉處置或今天的漲跌。股價線和新聞線可能同時跑，所以三個都要看。
+    - 這檔那天的新聞清單、那個月的公告清單，在那天的注意股抓到以後（stage_notice_day.source_fetched_at）又抓過一次
+      或已經完整（之後不會再抓：回補時注意股比清單晚抓也算），上個月的公告清單也抓過（30 天的公告可能跨月）：
+      當天新被列注意、新聞線還沒抓到的，抓失敗（例如 FinMind 429）的，
+      或只有下午舊清單的，不會寫成「沒有公告和新聞」或漏掉傍晚的公告，下一輪抓到了再寫。
+      raw 只拿來看「抓過沒、什麼時候抓的」，摘要的內容照樣只讀 stage 和 AI 結果。"""
     rows = query_rows(
         "SELECT w.stock_id, w.day AS trade_date FROM tw_stock.stage_watched_stock w "
+        "JOIN tw_stock.stage_notice_day nd ON nd.query_date = w.day "                                 # 那天的注意股、
         "WHERE w.day BETWEEN :start AND :end AND w.is_company "
-        "  AND EXISTS (SELECT 1 FROM tw_stock.stage_notice_day nd WHERE nd.query_date = w.day) "   # 那天的注意股整理好了才寫
+        "  AND EXISTS (SELECT 1 FROM tw_stock.stage_punish_day pd WHERE pd.query_date = w.day) "   # 處置股、
+        "  AND EXISTS (SELECT 1 FROM tw_stock.stage_stock_price sp WHERE sp.trade_date = w.day) "  # 收盤行情都整理好了，
+        # 這檔那天的新聞清單、那個月的公告清單：注意股抓到以後又抓過，或已經完整（之後不會再抓；回補時注意股比清單晚抓也算），
+        "  AND EXISTS (SELECT 1 FROM tw_stock.raw_stock_news r "
+        "              WHERE r.raw_key = w.stock_id || '_' || to_char(w.day, 'YYYYMMDD') AND r.ok "
+        "                AND r.fetched_at >= LEAST(COALESCE(nd.source_fetched_at, '-infinity'), "
+        "                                          w.day + INTERVAL '1 day 8 hours')) "   # 隔天 08:00 以後抓的＝完整（FinMind 一天是 UTC）
+        "  AND EXISTS (SELECT 1 FROM tw_stock.raw_announcement r "
+        "              WHERE r.raw_key = w.stock_id || '_' || to_char(w.day, 'YYYYMM') AND r.ok "
+        "                AND r.fetched_at >= LEAST(COALESCE(nd.source_fetched_at, '-infinity'), "
+        "                                          date_trunc('month', w.day) + INTERVAL '1 month')) "   # 那個月過完以後抓的＝完整
+        "  AND EXISTS (SELECT 1 FROM tw_stock.raw_announcement r "               # 上個月的公告清單也抓過才寫
+        "              WHERE r.raw_key = w.stock_id || '_' || to_char(w.day - INTERVAL '1 month', 'YYYYMM') AND r.ok) "
         "  AND NOT EXISTS (SELECT 1 FROM tw_stock.ai_card_summary s "
         "                  WHERE s.stock_id = w.stock_id AND s.card_date = w.day AND s.prompt_version = :version) "
+        + not_given_up("summarize_card", "md5(w.stock_id || '_' || to_char(w.day, 'YYYYMMDD'))") +   # card_id（ai/task.py）
         "ORDER BY w.day, w.stock_id",
         {"start": start, "end": end, "version": prompt_version})
     return [(row.stock_id, row.trade_date) for row in rows]

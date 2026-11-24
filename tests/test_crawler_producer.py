@@ -1,4 +1,6 @@
 """crawler/producer.py 決定要抓哪些重大訊息、新聞：用記憶體裡的假 raw 表（raw_store），不連網路、不連資料庫。執行：uv run pytest"""
+import types
+
 import pytest
 
 from common import repository
@@ -8,10 +10,9 @@ from crawler import producer as pc
 
 
 def setup_day(raw_store, day="20261113"):
-    """今天：2330 被列注意、0050 處置（ETF，不在公司清單）。"""
+    """今天：關注名單（stage_watched_stock 的上市公司）只有 2330。"""
     raw_store.put("company", day, [{"公司代號": "2330 "}, {"公司代號": "2317"}])
-    raw_store.put("notice", day, {"data": [["1", "2330"]]})
-    raw_store.put("punish", day, {"data": [["1", "x", "0050"]]})
+    raw_store.watched[day] = {"2330"}
 
 
 def keys(jobs):
@@ -19,8 +20,6 @@ def keys(jobs):
 
 
 def test_client_ids_strip_spaces():
-    assert client.notice_stock_ids({"data": [["1", "2330 "]]}) == {"2330"}
-    assert client.punish_stock_ids({"data": []}) == set()
     assert client.company_ids([{"公司代號": "2330 "}, {"公司代號": "2317"}]) == {"2330", "2317"}
 
 
@@ -32,10 +31,10 @@ def test_this_and_prev_month_for_listed_companies_only(raw_store):
 
 def test_range_dedupes_and_skips_finished_months(raw_store):
     """區間內重複的（公司, 月）只查一次；那個月過完以後抓過的不再抓，加 refetch 就重抓。
-    2317 10/20 被列注意、11/13 還在 30 個交易日內：11 月的公告也要查。"""
+    2317 10/20 起在關注名單、11/13 還在：11 月的公告也要查；2330 10/27 起在關注名單。"""
     setup_day(raw_store)
-    raw_store.put("notice", "20261020", {"data": [["1", "2317"], ["2", "030039"]]})   # 10/20：2317、權證
-    raw_store.put("notice", "20261027", {"data": [["1", "2330"]]})                     # 10/27：2330 被列注意
+    for day in pc.dates_between("20261020", "20261113"):
+        raw_store.watched[day] = {"2317"} | ({"2330"} if day >= "20261027" else set())
     raw_store.put("announcement", "2330_202610", {}, fetched_at="2026-11-13T21:00:00+08:00")   # 10 月過完才抓：完整
     raw_store.put("announcement", "2317_202610", {}, fetched_at="2026-10-20T21:00:00+08:00")   # 10 月還沒過完：要重抓
     raw_store.put("announcement", "2330_202611", {}, fetched_at="2026-11-13T21:00:00+08:00")   # 當月：照樣抓
@@ -46,37 +45,60 @@ def test_range_dedupes_and_skips_finished_months(raw_store):
     assert ("2330", 2026, 10) in keys(pc.build_mops_jobs("20261020", "20261113", refetch=True))
 
 
-def test_watched_includes_stocks_flagged_in_the_last_30_trading_days(raw_store, monkeypatch):
-    """關注名單＝往前 30 個交易日（含當天）被列注意過，全部從 raw 算：今天沒被列、前幾天被列的也要查重大訊息、新聞。
-    （這裡把 30 換成 3：當天＋往前 2 個有人被列的交易日）"""
-    monkeypatch.setattr(pc.rules, "WATCH_WINDOW_DAYS", 3)
-    setup_day(raw_store)
-    raw_store.put("notice", "20261001", {"data": [["1", "1101"]]})   # 超過窗口：不算
-    raw_store.put("notice", "20261110", {"data": [["1", "2317"]]})
-    raw_store.put("notice", "20261111", {"data": []})                 # 沒人被列：不算一個交易日
-    raw_store.put("notice", "20261112", {"data": [["1", "2454"]]})
-    # 0050：那天處置中（保險，raw 缺天也不漏）
-    assert pc.watched_by_day("20261113", "20261113")["20261113"] == {"2330", "2317", "2454", "0050"}
-    # 週六休市：用之前的交易日的完整名單（和 11/13 一樣），新聞照樣查，連假後不會漏
-    assert pc.watched_by_day("20261114", "20261114")["20261114"] == {"2317", "2454", "2330"}
+def test_watched_companies_carry_the_latest_day_forward(monkeypatch):
+    """repository.watched_companies：stage_watched_stock 還沒有的日子（早上股價線還沒跑、週末）用之前最近一天的名單。"""
+    import datetime
+    d = datetime.date
+    rows = [types.SimpleNamespace(day=d(2026, 11, 20), stock_id="2330", is_company=True),
+            types.SimpleNamespace(day=d(2026, 11, 20), stock_id="2317", is_company=True),
+            types.SimpleNamespace(day=d(2026, 11, 23), stock_id="2454", is_company=True)]
+    monkeypatch.setattr(repository, "query_rows", lambda sql, params: rows)
+    watched = repository.watched_companies(d(2026, 11, 20), d(2026, 11, 24))
+    assert watched == {d(2026, 11, 20): {"2330", "2317"}, d(2026, 11, 21): {"2330", "2317"}, d(2026, 11, 22): {"2330", "2317"},
+                       d(2026, 11, 23): {"2454"}, d(2026, 11, 24): {"2454"}}
 
 
-def test_watched_window_survives_a_long_holiday(raw_store, monkeypatch):
-    """中間很多天沒人被列（連假、休市都有一份空的注意股）：照日期往前讀，窗口裡最早被列的股票也不會漏。
-    （這裡把 30 換成 3：當天＋往前 2 個有人被列的日子；舊寫法只讀固定幾筆，會讀不到 9/20）"""
-    monkeypatch.setattr(pc.rules, "WATCH_WINDOW_DAYS", 3)
-    setup_day(raw_store)
-    raw_store.put("notice", "20260920", {"data": [["1", "1101"]]})
-    for day in pc.dates_between("20260921", "20261112"):   # 50 多天，每天一份空的
-        raw_store.put("notice", day, {"data": []})
-    assert "1101" in pc.watched_by_day("20261113", "20261113")["20261113"]
+def test_watched_companies_start_on_a_day_without_a_list(monkeypatch):
+    """區間從還沒有名單的日子開始（例如今天早上股價線還沒跑、週末）：用查到的之前最近一天的名單。"""
+    import datetime
+    d = datetime.date
+    rows = [types.SimpleNamespace(day=d(2026, 11, 23), stock_id="2330", is_company=True)]
+    monkeypatch.setattr(repository, "query_rows", lambda sql, params: rows)
+    assert repository.watched_companies(d(2026, 11, 24), d(2026, 11, 24)) == {d(2026, 11, 24): {"2330"}}
 
 
-def test_failed_raw_is_ignored(raw_store):
-    """注意股那天的回應失敗（被擋）：不算進關注名單。"""
-    setup_day(raw_store)
-    raw_store.put("notice", "20261112", "<html>blocked</html>", ok=False)
-    assert pc.watched_by_day("20261112", "20261112")["20261112"] == set()
+def test_watched_companies_day_with_only_warrants_has_no_company(monkeypatch):
+    """那天名單上只有權證（不是上市公司）：那天沒有要查的公司，不沿用前一天的。"""
+    import datetime
+    d = datetime.date
+    rows = [types.SimpleNamespace(day=d(2026, 11, 19), stock_id="2330", is_company=True),
+            types.SimpleNamespace(day=d(2026, 11, 20), stock_id="030039", is_company=False)]
+    monkeypatch.setattr(repository, "query_rows", lambda sql, params: rows)
+    assert repository.watched_companies(d(2026, 11, 19), d(2026, 11, 20)) == {d(2026, 11, 19): {"2330"}, d(2026, 11, 20): set()}
+
+
+def test_watched_companies_empty_before_any_list(monkeypatch):
+    import datetime
+    monkeypatch.setattr(repository, "query_rows", lambda sql, params: [])
+    assert repository.watched_companies(datetime.date(2026, 11, 20), datetime.date(2026, 11, 21)) == {
+        datetime.date(2026, 11, 20): set(), datetime.date(2026, 11, 21): set()}
+
+
+def test_list_fetched_recently_is_not_fetched_again(raw_store, monkeypatch):
+    """還不完整的清單：REFETCH_GAP（30 分鐘）內剛抓過的先不抓，新聞線重跑也不會一直打觀測站、FinMind。"""
+    monkeypatch.setattr(pc, "NEWS_LOOKBACK_DAYS", 0)
+    setup_day(raw_store, "20261124")
+    now = pc.date_utils.now().replace(tzinfo=None)
+    recent = (now - pc.datetime.timedelta(minutes=10)).isoformat() + "+08:00"
+    raw_store.put("announcement", "2330_202611", {"result": {"data": []}}, fetched_at=recent)
+    raw_store.put("stock_news", "2330_20261124", {"data": []}, fetched_at=recent)
+    assert keys(pc.build_mops_jobs("20261124", "20261124")) == [("2330", 2026, 10)]
+    assert keys(pc.build_stock_news_jobs("20261124", "20261124")) == []
+    assert len(pc.build_stock_news_jobs("20261124", "20261124", refetch=True)) == 1   # --refetch：剛抓過的也重抓
+    # 今天的注意股在那之後才抓到（股價線剛跑完）：剛抓的清單算舊的，照樣重抓，卡片才不會漏掉傍晚的公告、新聞
+    raw_store.notice_times["20261124"] = now
+    assert keys(pc.build_stock_news_jobs("20261124", "20261124")) == [("2330", "20261124")]
+    assert ("2330", 2026, 11) in keys(pc.build_mops_jobs("20261124", "20261124"))
 
 
 def test_holiday_is_fetched_only_once_per_year(raw_store):
@@ -107,8 +129,7 @@ def test_client_announcement_ids_convert_roc_date():
 def test_detail_jobs_use_api_from_list(raw_store):
     """存託憑證（DR）的全文是另一支 API（t59sb01_detail），照清單上寫的打。"""
     setup_day(raw_store, day="20261113")
-    raw_store.put("notice", "20261113", {"data": [["1", "9103"]]})
-    raw_store.put("company", "20261113", [{"公司代號": "9103"}])
+    raw_store.watched["20261113"] = {"9103"}
     raw_store.put("announcement", "9103_202611", announcement_list(("9103", "1151102", "1"), api_name="t59sb01_detail"))
     assert keys(pc.build_detail_jobs("20261113", "20261113")) == [("9103", "20261102", 1, "t59sb01_detail")]
 
@@ -184,7 +205,7 @@ def test_news_detail_jobs_from_stock_news(raw_store, monkeypatch):
     """新聞清單裡的每個連結打開一次：論壇貼文不抓、抓過的（成功、永久失敗）不再抓、好幾檔共用的連結只抓一次。"""
     monkeypatch.setattr(pc, "NEWS_LOOKBACK_DAYS", 0)
     setup_day(raw_store)
-    raw_store.put("notice", "20261113", {"data": [["1", "2330"], ["2", "2317"]]})
+    raw_store.watched["20261113"] = {"2330", "2317"}
     raw_store.put("stock_news", "2330_20261113", {"data": [
         {"link": "https://udn.com/1"}, {"link": "https://www.cmoney.tw/forum/article/9"}, {"link": "https://ltn.com.tw/2"}]})
     raw_store.put("stock_news", "2317_20261113", {"data": [{"link": "https://udn.com/1"}, {"link": "https://ctee.com.tw/3"}]})

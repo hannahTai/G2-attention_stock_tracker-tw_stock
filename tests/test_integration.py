@@ -449,7 +449,13 @@ def test_card_summary_reads_only_stage_and_ai(db):
                 "VALUES (:c, :c, :c, '24', :d)", c=company, d=day)
         for trading in (datetime.date(2026, 11, 18), datetime.date(2026, 11, 19), day):
             run("INSERT INTO stage_trading_day (trade_date, is_trading) VALUES (:d, TRUE)", d=trading)
-            run("INSERT INTO stage_notice_day (query_date, notice_count) VALUES (:d, 1)", d=trading)   # 那天的注意股整理好了
+            run("INSERT INTO stage_notice_day (query_date, notice_count) VALUES (:d, 1)", d=trading)   # 那天的注意股、
+            run("INSERT INTO stage_punish_day (query_date, punish_count) VALUES (:d, 1)", d=trading)   # 處置股整理好了
+        for stock in ("1101", "2317", "2330"):   # 這幾檔 11/20 的新聞清單、11 月的公告清單抓到了（9910 沒抓：不寫）
+            for source, key in (("raw_stock_news", f"{stock}_20261120"), ("raw_announcement", f"{stock}_202611"),
+                                ("raw_announcement", f"{stock}_202610")):   # 上個月的公告清單也抓過
+                run(f"INSERT INTO {source} (raw_key, fetched_at, http_status, ok, url, body) "
+                    "VALUES (:k, LOCALTIMESTAMP, 200, TRUE, 'test', '{}')", k=key)
         run("INSERT INTO stage_notice (trade_date, stock_id, stock_name, reason_text) "   # 1101：前兩天被列注意，今天沒有
             "VALUES (:d, '1101', '台泥', '最近六個營業日累積收盤價漲幅達32.10%')", d=datetime.date(2026, 11, 18))
         run("INSERT INTO stage_notice_clause (trade_date, stock_id, clause) VALUES (:d, '1101', 1)", d=datetime.date(2026, 11, 18))
@@ -478,6 +484,11 @@ def test_card_summary_reads_only_stage_and_ai(db):
             "VALUES (:a, 'v3', '其他', FALSE, TRUE, TRUE, '子公司破產', '…', TRUE, 'm')", a=announcement_id)
 
     assert repository.list_unsummarized_cards(day, day, "v8") == [("1101", day), ("2317", day), ("2330", day)]
+    # 新聞線要查的公司：11/21（週六）沒有名單，用 11/20 的；權證、ETF 不算
+    assert repository.watched_companies(day, datetime.date(2026, 11, 21)) == {day: {"1101", "2317", "2330"},
+                                                                              datetime.date(2026, 11, 21): {"1101", "2317", "2330"}}
+    # 11/19 收盤行情還沒整理好（股價線還在跑）：先不寫那天的卡片，不會寫成漏掉漲跌的摘要
+    assert repository.list_unsummarized_cards(datetime.date(2026, 11, 19), day, "v8") == [("1101", day), ("2317", day), ("2330", day)]
     facts = repository.card_facts("2330", day)
     assert facts["is_listed_today"] and facts["reason_text"].startswith("最近六個") and facts["clauses"] == "1,13"
     assert float(facts["change_pct"]) == -10.0   # -100 ÷ (900 + 100)
@@ -490,6 +501,49 @@ def test_card_summary_reads_only_stage_and_ai(db):
     assert repository.card_facts("9910", day) is None   # 沒被列注意過、沒處置、不在名單上：不是卡片牆上的股票
     [announcement] = repository.recent_announcements("2330", datetime.date(2026, 10, 21), day)
     assert (announcement["category"], announcement["is_negative"], announcement["ai_summary"]) == ("其他", True, "子公司破產")
+    # 11/20 的注意股在清單之後才抓到（清單是下午的舊的）：先不寫，等新聞線重抓
+    with db.begin() as conn:
+        conn.execute(sqlalchemy.text("UPDATE stage_notice_day SET source_fetched_at = LOCALTIMESTAMP + INTERVAL '1 hour' "
+                                     "WHERE query_date = :d"), {"d": day})
+    assert repository.list_unsummarized_cards(day, day, "v8") == []
+    # 回補：注意股比清單晚抓，但清單已經完整（新聞清單隔天 08:00 以後抓的、公告清單那個月過完以後抓的）：照樣寫
+    with db.begin() as conn:
+        conn.execute(sqlalchemy.text("UPDATE raw_stock_news SET fetched_at = '2026-11-21 09:00' WHERE raw_key LIKE '%_20261120'"))
+        conn.execute(sqlalchemy.text("UPDATE raw_announcement SET fetched_at = '2026-12-01 09:00' WHERE raw_key LIKE '%_202611'"))
+        conn.execute(sqlalchemy.text("UPDATE stage_notice_day SET source_fetched_at = '2026-12-02 09:00' WHERE query_date = :d"),
+                     {"d": day})
+    assert repository.list_unsummarized_cards(day, day, "v8") == [("1101", day), ("2317", day), ("2330", day)]
+    with db.begin() as conn:
+        conn.execute(sqlalchemy.text("UPDATE stage_notice_day SET source_fetched_at = NULL WHERE query_date = :d"), {"d": day})
+    # 同一張卡片這一版失敗 3 次（例如 LLM 拒答）：不再問，不會一直花錢
+    with db.begin() as conn:
+        for _ in range(repository.MAX_FAILED_CALLS):
+            conn.execute(sqlalchemy.text(
+                "INSERT INTO ai_llm_call (task, ref_key, model, prompt_version, status, seconds, called_at) "
+                "VALUES ('summarize_card', :k, 'm', 'v8', 'failure', 1, LOCALTIMESTAMP)"), {"k": key_md5("2330", "20261120")})
+    assert repository.list_unsummarized_cards(day, day, "v8") == [("1101", day), ("2317", day)]
+    assert ("2330", day) in repository.list_unsummarized_cards(day, day, "v9")   # 換 prompt 版本重新算
+
+
+def test_repeatedly_skipped_counts_job_runs(db):
+    """新聞摘要跳過（網頁沒辦法摘要）3 次的不再排：看 job_run 的結果數次數。"""
+    with db.begin() as conn:
+        for times, news_id in ((3, "a"), (2, "b")):
+            for _ in range(times):
+                conn.execute(sqlalchemy.text(
+                    "INSERT INTO job_run (task, args, status, result, attempt, mode, started_at, finished_at, seconds) "
+                    "VALUES ('ai.task.summarize_news', CAST(:args AS JSONB), 'success', :result, 1, 'local', "
+                    "LOCALTIMESTAMP, LOCALTIMESTAMP, 1)"),
+                    {"args": json.dumps({"news_id": news_id}), "result": f"{news_id} {ai_task.PAGE_SKIPPED}：網頁打不開（HTTP 403），跳過"})
+    assert repository.repeatedly_skipped("ai.task.summarize_news", ai_task.PAGE_SKIPPED, "news_id") == {"a"}
+
+
+def test_create_tables_records_the_schema_hash(db):
+    """create_tables 把 schema/*.sql 的雜湊值記在資料庫（main.py 比對，改過才再建）。"""
+    with db.connect() as conn:
+        applied = conn.execute(sqlalchemy.text(
+            "SELECT obj_description(to_regnamespace(:s), 'pg_namespace')"), {"s": repository.SCHEMA}).scalar()
+    assert applied == repository.schema_hash()
 
 
 def test_create_tables_can_run_at_the_same_time(db):
@@ -502,7 +556,7 @@ def test_create_tables_can_run_at_the_same_time(db):
 
 
 def test_create_database_can_run_at_the_same_time(test_engine):
-    """全新的伺服器上 analyze、ai 同時開始：兩邊都查到資料庫不存在、同時建，後建的不算失敗。"""
+    """全新的伺服器上股價線、新聞線同時開始：兩邊都查到資料庫不存在、同時建，後建的不算失敗。"""
     name = f"{TEST_DATABASE}_race"
     repository.drop_database(name)
     try:

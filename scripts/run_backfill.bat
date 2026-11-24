@@ -1,7 +1,7 @@
 @echo off
-rem Backfill a date range: crawler (API -> raw) -> transform (raw -> stage) -> analyze (stage -> app).
-rem Runs main.py backfill: a crawler failure does not stop the later steps (analyze checks its own inputs);
-rem a transform failure skips analyze.
+rem Backfill a date range: both lines, stock line first (TWSE -> transform -> analyze),
+rem then the news line (MOPS, FinMind news -> transform -> ai; it reads the notices the stock line loaded).
+rem Runs main.py backfill: a crawler failure does not stop the later steps; a transform failure skips that line's last step.
 rem Usage:  scripts\run_backfill.bat 20261001            (20261001 to today)
 rem         scripts\run_backfill.bat 20261001 20261031   (fixed range)
 rem Double-click also works: it asks for the start date.

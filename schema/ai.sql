@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS ai_llm_call (
     called_at             TIMESTAMP(3)  NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ai_llm_call_called ON ai_llm_call (called_at);   -- 每天花多少
+-- 失敗幾次就不再問（repository.MAX_FAILED_CALLS）：只放失敗的列，很小
+CREATE INDEX IF NOT EXISTS idx_ai_llm_call_failed ON ai_llm_call (ref_key, prompt_version) WHERE status = 'failure';
 COMMENT ON TABLE ai_llm_call IS '每次呼叫 LLM 一列（token、花費、延遲）';
 COMMENT ON COLUMN ai_llm_call.call_id IS '流水號';
 COMMENT ON COLUMN ai_llm_call.task IS '哪個任務，例如 classify_announcement、summarize_news、summarize_card';

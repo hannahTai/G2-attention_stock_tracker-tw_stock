@@ -14,7 +14,8 @@
 同一個 prompt 版本已經有結果的就跳過（不重複花錢）；還沒有全文的公告也跳過，下次再分類。
 摘要超過上限（公告 60 字；新聞依文章長度，見 summarizer.summary_limit）：帶著上次的回答請 LLM 縮短，只重問一次；
 還是太長、或縮短失敗就用手上的回答照存，summary_ok＝否。
-只讀 stage 表和前面的 AI 結果，不讀規則引擎的結果（app），所以和 analyze 同時跑。只寫自己的 ai_* 表，失敗不影響資料線和其他任務。
+只讀 stage 表和前面的 AI 結果，不讀規則引擎的結果（app）：新聞線跑它，和股價線的 analyze 互不等。
+只寫自己的 ai_* 表，失敗不影響資料線和其他任務。
 例外：summarize_news 要新聞全文，全文不存進資料庫（著作權），只能當場再抓一次網頁（用 crawler/client.py 的函式，不另寫爬蟲）。
 每個函式都用 @app.task 註冊成 Celery 任務（見 common/worker.py）；要用本機 embedding 模型的（embed_news、summarize_card）
 在 embed 佇列上跑，其他在 ai 佇列；
@@ -31,13 +32,15 @@ from common.worker import Job, app
 from crawler import client as crawler_client
 
 
-def shorten_once(ask, key: str, user_message: str, answer: dict, model: str, limit: int, shorten_messages) -> tuple[dict, str, str]:
+def shorten_once(ask, key: str, user_message: str, answer: dict, model: str, limit: int, shorten_messages,
+                 clean=lambda summary: summary) -> tuple[dict, str, str]:
     """摘要超過 limit 字：帶著上次的回答請 LLM 縮短，只重問一次。
 
     ask：asker 做好的 ask。limit、shorten_messages：classifier、summarizer 或 card_summarizer 的上限和縮短的說法。
+    clean：數字數之前先怎麼整理（卡片摘要拿掉（新聞 N）編號，和 summary_ok 一樣）。
     回傳 (回答, 模型, 附註)。縮短失敗（拒答、API 錯誤）就用手上的回答（已經付過錢），附註寫給結果那一行看。
     """
-    if not verifier.too_long(answer["summary"], limit):
+    if not verifier.too_long(clean(answer["summary"]), limit):
         return answer, model, ""
     try:
         return (*ask(key, shorten_messages(user_message, answer, limit)), "")
@@ -50,12 +53,12 @@ def fix_numbers_once(ask, key: str, user_message: str, answer: dict, model: str,
     """摘要裡有原文沒有的數字（LLM 自己換算，例如 374,246仟元 寫成 3.74 億元）：帶著上次的回答、
     說哪幾個數字找不到，請 LLM 照原文的寫法改，只重問一次。還是不對就照存（summary_ok＝否，網站不顯示）。
     source：和 summary_ok 檢查同一份原文；clean：summary_ok 檢查前先怎麼整理摘要（卡片摘要拿掉（新聞 N）編號）。
-    只重問「LLM 看到的訊息裡也沒有」的數字（真的編出來的）：日期、條款這些訊息裡有的，不叫 LLM 拿掉（不然會刪掉對的資訊）。
+    重問的是 summary_ok 會擋的每個數字（和 summary_ok 用同一份原文）：訊息裡的日期這類原文沒有的數字也問，
+    LLM 拿掉那個數字、摘要照樣顯示；不問的話 summary_ok 不過，整段摘要都不顯示。
     在 shorten_once 之前做（改完數字再檢查長度）。
     回傳 (回答, 模型, 附註)。重問失敗（拒答、API 錯誤）就用手上的回答（已經付過錢）。
     """
-    seen = verifier.numbers_in(user_message)
-    missing = [n for n in verifier.missing_numbers(clean(answer["summary"]), source) if n not in seen]
+    missing = verifier.missing_numbers(clean(answer["summary"]), source)
     if not missing:
         return answer, model, ""
     try:
@@ -69,7 +72,7 @@ def fix_answer(ask, key: str, user_message: str, answer: dict, model: str, sourc
     """LLM 回答後的檢查和重問，三個 AI 項目共用：先改數字（fix_numbers_once），再檢查長度（shorten_once）。
     回傳 (回答, 模型, 附註)。"""
     answer, model, numbers_note = fix_numbers_once(ask, key, user_message, answer, model, source, clean)
-    answer, model, shorten_note = shorten_once(ask, key, user_message, answer, model, limit, shorten_messages)
+    answer, model, shorten_note = shorten_once(ask, key, user_message, answer, model, limit, shorten_messages, clean)
     return answer, model, numbers_note + shorten_note
 
 
@@ -108,6 +111,11 @@ def classify_announcement(company_id: str, enter_yyyymmdd: str, serial_number: i
     return f"ai_announcement_label/{key}：{label['category']}{f'（{flags}）' if flags else ''}{note}"
 
 
+# 新聞的網頁這次沒辦法摘要（打不開、被擋、全文太短）時，任務結果（job_run.result）有這段字：
+# ai/producer.py 數同一則跳過幾次，到 repository.MAX_FAILED_CALLS 次就不再排（新聞線一天跑好幾次，不會一直重抓同一個網頁）
+PAGE_SKIPPED = "網頁沒辦法摘要"
+
+
 @app.task(base=Job)
 def summarize_news(news_id: str) -> str:
     """一則新聞 → ai_news_summary：當場打開網頁抽全文，請 LLM 用自己的話寫摘要。
@@ -126,15 +134,15 @@ def summarize_news(news_id: str) -> str:
 
     unreachable = crawler_client.unreachable_link_problem(news["link"])   # Google 轉址：不打
     if unreachable:
-        return f"{news_id} {unreachable}，跳過"
+        return f"{news_id} {PAGE_SKIPPED}：{unreachable}，跳過"
     page = crawler_client.fetch_news_detail(news["link"])   # 逾時、連線失敗：requests 的錯誤直接丟出去（會重試）
     if page.problem:
         if page.status_code and repository.is_temporary_status(page.status_code):
             raise requests.HTTPError(page.problem)   # 5xx、429：丟 requests 的 HTTPError，runner／Celery 會重試
-        return f"{news_id} 網頁打不開（{page.problem}），跳過"
+        return f"{news_id} {PAGE_SKIPPED}：網頁打不開（{page.problem}），跳過"
     text = crawler_client.news_detail_text(page.content) or ""   # 全文只在記憶體裡
     if len(text) < summarizer.MIN_TEXT_CHARS:
-        return f"{news_id} 全文太短（{len(text)} 字），跳過"
+        return f"{news_id} {PAGE_SKIPPED}：全文太短（{len(text)} 字），跳過"
 
     limit = summarizer.summary_limit(text)   # 文章的三成，80～1200 字
     user_message = summarizer.build_user_message(news, text, limit)

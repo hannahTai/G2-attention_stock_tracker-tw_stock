@@ -100,6 +100,7 @@ def get_stock(stock_id: str, date: str | None = fastapi.Query(None, description=
             "punish_history": queries.punish_history(conn, stock_id, start, day),
             "announcements": queries.announcements(conn, stock_id, start, day),
             "ai_summary": ({"summary": card["ai_summary"], "summarized_at": card.get("ai_summary_at"),
+                            "reused": bool(card.get("ai_summary_reused")),
                             "sources": queries.news_by_ids(conn, card["ai_summary_news_ids"] or [])}
                            if card.get("ai_summary") else None),
             "news": queries.stock_news(conn, stock_id, day - datetime.timedelta(days=NEWS_LOOKBACK_DAYS - 1), day),   # 含當天

@@ -39,7 +39,8 @@ NEWS_TASK_TIME_LIMIT_SECONDS = 3 * NEWS_DEADLINE_SECONDS
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
 RETRY_DELAY_SECONDS = float(os.environ.get("RETRY_DELAY_SECONDS", "5"))
 
-# 同一時間只跑一輪（main.py 的檔案鎖 data/pipeline.lock）：上一輪還沒跑完，最多等幾秒（預設 2 小時，回補可能跑很久）
+# 同一條線同一時間只跑一輪（main.py 的檔案鎖：股價線 data/pipeline.lock、新聞線 data/news.lock）：
+# 上一輪還沒跑完，最多等幾秒（預設 2 小時，回補可能跑很久）
 PIPELINE_LOCK_WAIT_SECONDS = float(os.environ.get("PIPELINE_LOCK_WAIT_SECONDS", str(2 * 60 * 60)))
 
 # PostgreSQL（資料庫 DB_NAME 裡的 schema 也叫 DB_NAME，SQL 寫 tw_stock.<表名> 或直接寫表名都可以）

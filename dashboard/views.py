@@ -167,28 +167,28 @@ def news_item(news: dict) -> dict:
             "also": "、".join(news.get("also_reported_by") or [])}
 
 
-def ai_summary_box(ai_summary: dict | None, day: datetime.date | None = None) -> dict | None:
-    """API 的卡片 AI 摘要 → 網頁的框：摘要全文、第三句用到的新聞（標題連結、媒體、日期）。沒有摘要就是 None。"""
+def ai_summary_box(ai_summary: dict | None) -> dict | None:
+    """API 的卡片 AI 摘要 → 網頁的框：摘要全文、寫的時間、第三句用到的新聞（標題連結、媒體、日期）。沒有摘要就是 None。"""
     if not ai_summary:
         return None
-    return {"summary": ai_summary["summary"], "time": summary_time(ai_summary.get("summarized_at"), day),
+    return {"summary": ai_summary["summary"], "time": summary_time(ai_summary.get("summarized_at"), ai_summary.get("reused")),
             "sources": [news_item(s) for s in ai_summary.get("sources") or []]}
 
 
-def summary_time(value: str | None, day: datetime.date | None = None) -> str | None:
+def summary_time(value: str | None, reused: bool = False) -> str | None:
     """摘要寫的時間（API 給的 ISO 字串）→ 「11/23 19:05」；沒有為 None。
-    比卡片那天早（輸入一樣，沿用前幾天寫的）前面加「沿用」，看得出不是那天寫的。
+    沿用前幾天寫的（輸入一樣，reused）前面加「沿用」，看得出不是那天寫的。
 
-    >>> summary_time("2026-11-23T19:05:00", datetime.date(2026, 11, 23)), summary_time(None)
+    >>> summary_time("2026-11-23T19:05:00"), summary_time(None)
     ('11/23 19:05', None)
-    >>> summary_time("2026-11-10T19:05:00", datetime.date(2026, 11, 20))
+    >>> summary_time("2026-11-10T19:05:00", reused=True)
     '沿用 11/10 19:05'
     """
     if not value:
         return None
     moment = datetime.datetime.fromisoformat(value)
     text = f"{moment.month}/{moment.day} {moment:%H:%M}"
-    return f"沿用 {text}" if day and moment.date() < day else text
+    return f"沿用 {text}" if reused else text
 
 
 def change(pct: decimal.Decimal | float | None) -> dict | None:
@@ -881,7 +881,7 @@ def stock_page(detail: dict) -> dict:
         "card": row,
         "wall": wall_card(row),
         "recent_days": RECENT_DAYS,
-        "ai_summary": ai_summary_box(detail.get("ai_summary"), day),   # 卡片 AI 摘要；還沒寫、沒通過檢查的是 None（網頁顯示說明）
+        "ai_summary": ai_summary_box(detail.get("ai_summary")),   # 卡片 AI 摘要；還沒寫、沒通過檢查的是 None（網頁顯示說明）
         # 新聞資訊：當天的先列，前幾天的收起來
         "news_total": len(detail.get("news") or []),
         "news_today": [news_item(n) for n in detail.get("news") or [] if n.get("news_date") == day],

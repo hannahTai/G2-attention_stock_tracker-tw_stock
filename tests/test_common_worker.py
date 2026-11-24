@@ -147,19 +147,45 @@ def test_run_chains_locally_runs_one_chain_after_another(monkeypatch):
     assert order == ["a1", "a2", "b1"]
 
 
-def test_crawler_runs_twse_first_then_two_chains(monkeypatch):
-    """crawler：證交所先做完，之後觀測站（清單 → 全文）、新聞（FinMind 清單 → 網頁）兩條鏈。"""
+@pytest.mark.parametrize(("part", "expected"), [
+    ("twse", ["crawl_twse", "crawl_twse"]),                                          # 證交所分步驟依序（空的步驟跳過）
+    ("news", [[["crawl_mops", "crawl_mops"], ["crawl_finmind", "crawl_news"]]]),     # 觀測站、新聞兩條鏈
+])
+def test_crawler_part_runs_twse_steps_or_two_chains(monkeypatch, part, expected):
+    """crawler --part twse：證交所分步驟；--part news：觀測站（清單 → 全文）、新聞（FinMind 清單 → 網頁）兩條鏈。"""
     calls = []
     monkeypatch.setattr(crawler_producer.repository, "ensure_tables", lambda: None)
     monkeypatch.setattr(crawler_producer.cli, "parse_args",
-                        lambda: types.SimpleNamespace(start="20261120", end="20261120", refetch=False))
+                        lambda: types.SimpleNamespace(start="20261120", end="20261120", refetch=False, part=part))
     monkeypatch.setattr(crawler_producer.runner, "run_jobs", lambda jobs, sleep, queue: calls.append(queue) or [])
     monkeypatch.setattr(crawler_producer.runner, "run_chains",
                         lambda chains: calls.append([[queue for _, _, queue in chain] for chain in chains]) or [])
     monkeypatch.setattr(crawler_producer.runner, "finish", lambda failed: None)
     monkeypatch.setattr(crawler_producer, "build_twse_steps", lambda *a: [["holiday"], [], ["price"]])   # 空的步驟跳過
     crawler_producer.main()
-    assert calls == ["crawl_twse", "crawl_twse", [["crawl_mops", "crawl_mops"], ["crawl_finmind", "crawl_news"]]]
+    assert calls == expected
+
+
+def test_crawler_without_part_stops(monkeypatch):
+    """crawler 沒給 --part：直接結束（新聞的部分要先跑 transform --part twse，不能一次做完）。"""
+    monkeypatch.setattr(crawler_producer.cli, "parse_args",
+                        lambda: types.SimpleNamespace(start="20261120", end="20261120", refetch=False, part=None))
+    with pytest.raises(SystemExit, match="--part"):
+        crawler_producer.main()
+
+
+def test_transform_without_part_runs_twse_before_building_news_jobs(monkeypatch):
+    """transform 沒給 --part：先整理證交所，做完才算重大訊息、新聞的任務（要讀剛整理好的注意股）。"""
+    from transform import producer as transform_producer
+    order = []
+    monkeypatch.setattr(transform_producer.repository, "ensure_tables", lambda: None)
+    monkeypatch.setattr(transform_producer.cli, "parse_args",
+                        lambda: types.SimpleNamespace(start="20261120", end="20261120", part=None))
+    monkeypatch.setattr(transform_producer, "build_jobs", lambda start, end, part: order.append(f"build {part}") or [part])
+    monkeypatch.setattr(transform_producer.runner, "run_jobs", lambda jobs, queue: order.append(f"run {jobs[0]}") or [])
+    monkeypatch.setattr(transform_producer.runner, "finish", lambda failed: None)
+    transform_producer.main()
+    assert order == ["build twse", "run twse", "build news", "run news"]
 
 
 def test_run_jobs_on_workers_needs_a_queue(monkeypatch):
@@ -175,8 +201,8 @@ def test_transform_and_analyze_use_their_own_queues(monkeypatch):
     monkeypatch.setattr(runner, "run_jobs", lambda jobs, queue=None, **kw: queues.append(queue) or [])
     for producer, _name in ((transform_producer, "transform"), (analyze_producer, "analyze")):
         monkeypatch.setattr(producer.repository, "ensure_tables", lambda: None)
-        monkeypatch.setattr(producer, "build_jobs", lambda start, end: [])
-        monkeypatch.setattr(producer.cli, "parse_args", lambda: types.SimpleNamespace(start="20261120", end="20261120"))
+        monkeypatch.setattr(producer, "build_jobs", lambda *span: [])
+        monkeypatch.setattr(producer.cli, "parse_args", lambda: types.SimpleNamespace(start="20261120", end="20261120", part="twse"))
         monkeypatch.setattr(producer.runner, "finish", lambda failed: None)
         producer.main()
     assert queues == ["transform", "analyze"]
@@ -243,7 +269,7 @@ def test_ai_producer_order_and_queues(monkeypatch, key, expected):
     monkeypatch.setattr(ai_producer, "ANTHROPIC_API_KEY", key)
     monkeypatch.setattr(ai_producer.runner, "run_jobs", lambda jobs, queue: sent.append((jobs[0], queue)) or [])
     for name in ("build_classify_jobs", "build_summary_jobs", "build_embed_jobs", "build_story_jobs", "build_card_jobs"):
-        monkeypatch.setattr(ai_producer, name, lambda start, end, name=name: [name])
+        monkeypatch.setattr(ai_producer, name, lambda start, end, *rest, name=name: [name])
     ai_producer.run_all("20261120", "20261120")
     assert sent == expected
 
@@ -285,3 +311,10 @@ def test_run_chains_locally_keeps_going_when_one_chain_cannot_build(monkeypatch)
         raise ConnectionError("連不上")
     failed = runner.run_chains([[(broken, 0.0, "a1"), chain_step("a2")], [chain_step("b1")]])
     assert order == ["b1"] and failed == ["第 1 條鏈產生 a1 的任務清單"]
+
+
+def test_summary_jobs_skip_news_whose_page_was_skipped_too_often(monkeypatch):
+    """網頁打不開、全文太短跳過 MAX_FAILED_CALLS 次的新聞不再排（看任務歷史）。"""
+    monkeypatch.setattr(ai_producer.repository, "list_unsummarized_news", lambda *a: ["n1", "n2"])
+    monkeypatch.setattr(ai_producer.repository, "repeatedly_skipped", lambda task, mark, arg: {"n2"})
+    assert [kw["news_id"] for _, kw in ai_producer.build_summary_jobs("20261120", "20261120")] == ["n1"]
