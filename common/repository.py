@@ -427,8 +427,8 @@ def insert_job_run(row: dict) -> None:
 ONE_ROW_TABLES = ("ai_llm_call", "ai_announcement_label", "ai_news_summary", "ai_card_summary")
 
 
-def insert_one(table: str, row: dict, on_conflict: str = "") -> None:
-    """新增一列，自己開一個交易（任務一次只寫一列，沒有別的寫入要跟它一起成功）。
+def insert_one(table: str, row: dict, on_conflict: str = "") -> int:
+    """新增一列，自己開一個交易（任務一次只寫一列，沒有別的寫入要跟它一起成功），回傳寫了幾列（0＝撞到主鍵、沒動）。
 
     on_conflict：主鍵撞到時怎麼辦，例如 "ON CONFLICT (...) DO NOTHING"；沒給就是一般 INSERT（撞到會報錯）。
     """
@@ -437,7 +437,7 @@ def insert_one(table: str, row: dict, on_conflict: str = "") -> None:
     columns = ", ".join(row)
     values = ", ".join(f":{c}" for c in row)
     with get_engine().begin() as conn:
-        conn.execute(sqlalchemy.text(f"INSERT INTO tw_stock.{table} ({columns}) VALUES ({values}) {on_conflict}"), row)
+        return conn.execute(sqlalchemy.text(f"INSERT INTO tw_stock.{table} ({columns}) VALUES ({values}) {on_conflict}"), row).rowcount
 
 
 # ---------- AI（ai/）----------
@@ -446,22 +446,11 @@ def insert_one(table: str, row: dict, on_conflict: str = "") -> None:
 MAX_FAILED_CALLS = 3
 
 
-def not_given_up(task: str, ref_key_sql: str) -> str:
-    """WHERE 的一段：這一筆（ref_key＝ref_key_sql）這一版（:version）失敗還沒到 MAX_FAILED_CALLS 次。task、ref_key_sql 是程式寫死的。"""
+def not_given_up(task: str, ref_key_sql: str, since_sql: str = "'-infinity'") -> str:
+    """WHERE 的一段：這一筆（ref_key＝ref_key_sql）這一版（:version）失敗還沒到 MAX_FAILED_CALLS 次。
+    since_sql：只數這個時間以後的失敗（卡片重寫：只數上次寫好以後的）。task、ref_key_sql、since_sql 是程式寫死的。"""
     return (f"  AND (SELECT count(*) FROM tw_stock.ai_llm_call f WHERE f.status = 'failure' AND f.task = '{task}' "
-            f"       AND f.ref_key = {ref_key_sql} AND f.prompt_version = :version) < {MAX_FAILED_CALLS} ")
-
-
-def repeatedly_skipped(task: str, mark: str, arg: str) -> set[str]:
-    """job_run 裡最近 3 天這個任務、結果有 mark 的次數到 MAX_FAILED_CALLS 的那些（args 的 arg 欄，例如 news_id）。
-    例如新聞摘要：網頁打不開、全文太短不呼叫 LLM（ai_llm_call 沒有紀錄），用任務歷史數跳過幾次。"""
-    rows = query_rows(
-        "SELECT args ->> :arg AS key FROM tw_stock.job_run "
-        "WHERE task = :task AND status = 'success' AND result LIKE '%' || :mark || '%' "
-        "  AND started_at >= LOCALTIMESTAMP - INTERVAL '3 days' "   # 只看最近 3 天：網站暫時擋一下，過幾天照樣再試
-        "GROUP BY 1 HAVING count(*) >= :times",
-        {"arg": arg, "task": task, "mark": mark, "times": MAX_FAILED_CALLS})
-    return {row.key for row in rows}
+            f"       AND f.ref_key = {ref_key_sql} AND f.prompt_version = :version AND f.called_at > {since_sql}) < {MAX_FAILED_CALLS} ")
 
 
 def list_unlabeled_announcements(start: datetime.date, end: datetime.date, prompt_version: str) -> list[tuple[str, datetime.date, int]]:
@@ -507,18 +496,30 @@ def insert_announcement_label(row: dict) -> None:
     insert_one("ai_announcement_label", row, "ON CONFLICT (announcement_id, prompt_version) DO NOTHING")
 
 
+# 新聞摘要「跳過」（網頁打不開、全文太短，沒有問 LLM）的列：model 寫這個、summary 空的、summary_ok 為否
+# （網站看不到；ai/task.py 的 skip_news 寫）。
+# 跳過超過 1 天就再試一次（網站暫時擋一下也有機會）：一天最多試一次，新聞超過 NEWS_LOOKBACK_DAYS 天就不在範圍裡，不會一直試
+NEWS_SKIPPED_MODEL = "skipped"
+
+
+def news_summary_done(news_id_sql: str) -> str:
+    """SQL 的一段：這則新聞這一版（:version）已經有結果：真的摘要，或 1 天內跳過的。news_id_sql 是程式寫死的。"""
+    return (f"EXISTS (SELECT 1 FROM tw_stock.ai_news_summary s WHERE s.news_id = {news_id_sql} AND s.prompt_version = :version "
+            f"        AND (s.model <> '{NEWS_SKIPPED_MODEL}' OR s.summarized_at >= LOCALTIMESTAMP - INTERVAL '1 day'))")
+
+
 def list_unsummarized_news(start: datetime.date, end: datetime.date, prompt_version: str, min_text_chars: int) -> list[str]:
     """這個 prompt 版本還沒摘要的新聞（news_id）：新聞日期在區間內、有抓到網頁、全文至少 min_text_chars 字，
     而且是區間內被關注的上市公司的新聞（stage_watched_stock：往前 30 個交易日被列注意過，和卡片牆同一批）。
-    其他公司的新聞（例如一次抓全部上市公司的回補）不摘要。"""
+    其他公司的新聞（例如一次抓全部上市公司的回補）不摘要。問 LLM 失敗太多次的也不排；
+    網頁打不開、全文太短的，任務記一列「跳過」（ai/task.py 的 skip_news），1 天後才再排（見 news_summary_done）。"""
     rows = query_rows(
         "SELECT n.news_id FROM tw_stock.stage_news n "
         "JOIN tw_stock.stage_news_detail d USING (news_id) "
         "WHERE n.news_date BETWEEN :start AND :end AND d.text_chars >= :min_chars "
         "  AND EXISTS (SELECT 1 FROM tw_stock.stage_stock_news sn JOIN tw_stock.stage_watched_stock w ON w.stock_id = sn.stock_id "
         "              WHERE sn.news_id = n.news_id AND w.day BETWEEN :start AND :end AND w.is_company) "
-        "  AND NOT EXISTS (SELECT 1 FROM tw_stock.ai_news_summary s "
-        "                  WHERE s.news_id = n.news_id AND s.prompt_version = :version) "
+        "  AND NOT " + news_summary_done("n.news_id") + " "
         + not_given_up("summarize_news", "n.news_id") +
         "ORDER BY n.news_time, n.news_id",
         {"start": start, "end": end, "min_chars": min_text_chars, "version": prompt_version})
@@ -533,14 +534,18 @@ def read_news(news_id: str) -> dict | None:
 
 
 def has_news_summary(news_id: str, prompt_version: str) -> bool:
-    """這則新聞、這個 prompt 版本已經摘要過了嗎（摘要過就不再花錢問）。"""
-    return bool(query_rows("SELECT 1 FROM tw_stock.ai_news_summary WHERE news_id = :news_id AND prompt_version = :version",
-                           {"news_id": news_id, "version": prompt_version}))
+    """這則新聞、這個 prompt 版本已經摘要過了嗎（摘要過就不再花錢問；1 天內跳過的也算，超過 1 天再試）。"""
+    return bool(query_rows("SELECT " + news_summary_done("CAST(:news_id AS CHAR(32))"),
+                           {"news_id": news_id, "version": prompt_version})[0][0])
 
 
 def insert_news_summary(row: dict) -> None:
-    """新聞摘要的結果新增一列（欄位見 schema/ai.sql）。同一則、同一版已經有了就不動（同一個任務被送了兩次）。"""
-    insert_one("ai_news_summary", row, "ON CONFLICT (news_id, prompt_version) DO NOTHING")
+    """新聞摘要的結果新增一列（欄位見 schema/ai.sql）。同一則、同一版已經有真的摘要就不動（同一個任務被送了兩次）；
+    原本是「跳過」的（再試一次）：換成這次的結果（摘要，或再跳過一次，時間換成現在）。"""
+    insert_one("ai_news_summary", row,
+               "ON CONFLICT (news_id, prompt_version) DO UPDATE SET summary = EXCLUDED.summary, summary_ok = EXCLUDED.summary_ok, "
+               "model = EXCLUDED.model, summarized_at = EXCLUDED.summarized_at "
+               f"WHERE tw_stock.ai_news_summary.model = '{NEWS_SKIPPED_MODEL}'")
 
 
 # ---------- 新聞 RAG（pgvector）----------
@@ -678,17 +683,33 @@ def watched_companies(start: datetime.date, end: datetime.date) -> dict[datetime
     return watched
 
 
+# 卡片 AI 摘要帶那天往前幾天（含）的公告
+CARD_ANNOUNCEMENT_DAYS = 30
+
+
+def card_summary_is_current(stock_sql: str, day_sql: str) -> str:
+    """SQL 的一段：這檔這天這一版（:version）的卡片 AI 摘要已經寫了，而且寫完以後沒有新的公告
+    （寫的時候給的公告則數 announcement_count，比現在那天往前 CARD_ANNOUNCEMENT_DAYS 天的公告少，就是後來又出現了，要重寫；
+    例如 18:00 寫好卡片，公司 19:30 才發公告）。announcement_count 是 NULL 的舊列不重寫。stock_sql、day_sql 是程式寫死的。"""
+    return (f"EXISTS (SELECT 1 FROM tw_stock.ai_card_summary s "
+            f"        WHERE s.stock_id = {stock_sql} AND s.card_date = {day_sql} AND s.prompt_version = :version "
+            f"          AND (s.announcement_count IS NULL OR s.announcement_count >= "
+            f"               (SELECT count(*) FROM tw_stock.stage_announcement a WHERE a.company_id = {stock_sql} "
+            f"                AND a.announce_date BETWEEN {day_sql} - {CARD_ANNOUNCEMENT_DAYS} AND {day_sql})))")
+
+
 def list_unsummarized_cards(start: datetime.date, end: datetime.date, prompt_version: str) -> list[tuple[str, datetime.date]]:
-    """區間內每個交易日要寫卡片 AI 摘要的上市公司，這一版還沒寫的：(證券代號, 日期)。
+    """區間內每個交易日要寫卡片 AI 摘要的上市公司，這一版還沒寫的（或寫完以後又出現新公告的）：(證券代號, 日期)。
     和卡片牆同一批股票（stage_watched_stock：往前 30 個交易日被列注意過），只讀 stage。
-    寫了就不會重寫，所以要的資料都到了才寫：
+    要的資料都到了才寫（不然會寫錯；寫錯的只有之後又出現新公告才會重寫，所以不能靠重寫補）：
     - 那天的注意股、處置股、收盤行情都整理好（stage_notice_day、stage_punish_day、stage_stock_price 有那天）：
       不然會把今天被列的寫成「今天沒被列注意」、漏掉處置或今天的漲跌。股價線和新聞線可能同時跑，所以三個都要看。
     - 這檔那天的新聞清單、那個月的公告清單，在那天的注意股抓到以後（stage_notice_day.source_fetched_at）又抓過一次
       或已經完整（之後不會再抓：回補時注意股比清單晚抓也算），上個月的公告清單也抓過（30 天的公告可能跨月）：
       當天新被列注意、新聞線還沒抓到的，抓失敗（例如 FinMind 429）的，
       或只有下午舊清單的，不會寫成「沒有公告和新聞」或漏掉傍晚的公告，下一輪抓到了再寫。
-      raw 只拿來看「抓過沒、什麼時候抓的」，摘要的內容照樣只讀 stage 和 AI 結果。"""
+      raw 只拿來看「抓過沒、什麼時候抓的」，摘要的內容照樣只讀 stage 和 AI 結果。
+    寫過的不再寫，除非寫完以後又出現新的公告（見 card_summary_is_current）。"""
     rows = query_rows(
         "SELECT w.stock_id, w.day AS trade_date FROM tw_stock.stage_watched_stock w "
         "JOIN tw_stock.stage_notice_day nd ON nd.query_date = w.day "                                 # 那天的注意股、
@@ -706,9 +727,11 @@ def list_unsummarized_cards(start: datetime.date, end: datetime.date, prompt_ver
         "                                          date_trunc('month', w.day) + INTERVAL '1 month')) "   # 那個月過完以後抓的＝完整
         "  AND EXISTS (SELECT 1 FROM tw_stock.raw_announcement r "               # 上個月的公告清單也抓過才寫
         "              WHERE r.raw_key = w.stock_id || '_' || to_char(w.day - INTERVAL '1 month', 'YYYYMM') AND r.ok) "
-        "  AND NOT EXISTS (SELECT 1 FROM tw_stock.ai_card_summary s "
-        "                  WHERE s.stock_id = w.stock_id AND s.card_date = w.day AND s.prompt_version = :version) "
-        + not_given_up("summarize_card", "md5(w.stock_id || '_' || to_char(w.day, 'YYYYMMDD'))") +   # card_id（ai/task.py）
+        "  AND NOT " + card_summary_is_current("w.stock_id", "w.day") + " "
+        # card_id（ai/task.py）；已經寫過的（之後又出現新公告、要重寫）只數寫好以後的失敗
+        + not_given_up("summarize_card", "md5(w.stock_id || '_' || to_char(w.day, 'YYYYMMDD'))",
+                       "COALESCE((SELECT s.summarized_at FROM tw_stock.ai_card_summary s WHERE s.stock_id = w.stock_id "
+                       "          AND s.card_date = w.day AND s.prompt_version = :version), '-infinity')") +
         "ORDER BY w.day, w.stock_id",
         {"start": start, "end": end, "version": prompt_version})
     return [(row.stock_id, row.trade_date) for row in rows]
@@ -774,16 +797,17 @@ def recent_announcements(stock_id: str, start: datetime.date, end: datetime.date
     return [row._asdict() for row in rows]
 
 
-def has_card_summary(card_id: str, prompt_version: str) -> bool:
-    """這張卡片、這個 prompt 版本已經寫過摘要了嗎。"""
-    return bool(query_rows("SELECT 1 FROM tw_stock.ai_card_summary WHERE card_id = :card_id AND prompt_version = :version",
-                           {"card_id": card_id, "version": prompt_version}))
+def has_card_summary(stock_id: str, day: datetime.date, prompt_version: str) -> bool:
+    """這張卡片、這個 prompt 版本已經寫過摘要，而且寫完以後沒有新的公告（見 card_summary_is_current）。"""
+    return bool(query_rows("SELECT " + card_summary_is_current("CAST(:stock_id AS VARCHAR)", "CAST(:day AS DATE)"),
+                           {"stock_id": stock_id, "day": day, "version": prompt_version})[0][0])
 
 
 def previous_card_summary(stock_id: str, before: datetime.date, prompt_version: str) -> dict | None:
     """這檔、這一版、before 之前最近一天的摘要（輸入一樣就沿用）；沒有就回傳 None。"""
     rows = query_rows(
-        "SELECT card_id, prompt_version, stock_id, card_date, summary, news_ids, input_hash, summary_ok, reused, model, summarized_at "
+        "SELECT card_id, prompt_version, stock_id, card_date, summary, news_ids, input_hash, summary_ok, reused, model, "
+        "       announcement_count "
         "FROM tw_stock.ai_card_summary WHERE stock_id = :stock_id AND card_date < :before AND prompt_version = :version "
         "ORDER BY card_date DESC LIMIT 1",
         {"stock_id": stock_id, "before": before, "version": prompt_version})
@@ -791,8 +815,28 @@ def previous_card_summary(stock_id: str, before: datetime.date, prompt_version: 
 
 
 def insert_card_summary(row: dict) -> None:
-    """卡片 AI 摘要的結果新增一列（欄位見 schema/ai.sql）。同一張卡片、同一版已經有了就不動。"""
-    insert_one("ai_card_summary", row, "ON CONFLICT (card_id, prompt_version) DO NOTHING")
+    """卡片 AI 摘要的結果寫一列（欄位見 schema/ai.sql）。summarized_at＝這一列寫入的時間（沿用前一天的也是）。
+    同一張卡片、同一版已經有了：
+    - 寫完以後又出現新的公告（公告則數變多），或原本的沒通過檢查：換成新的。
+    - 公告則數一樣（同一個任務被送了兩次）：不動。
+    - 新的沒通過檢查、原本的有通過：留著原本的摘要，只更新公告則數，這張就不再重排。這是取捨：沒通過檢查不算
+      API 失敗，「失敗 3 次就不再問」擋不住，一直重排會每一輪都花錢、持續好幾天；留著通過檢查的舊摘要比較好。"""
+    stored = "tw_stock.ai_card_summary"
+    written = insert_one(
+        "ai_card_summary", row,
+        "ON CONFLICT (card_id, prompt_version) DO UPDATE SET summary = EXCLUDED.summary, news_ids = EXCLUDED.news_ids, "
+        "input_hash = EXCLUDED.input_hash, summary_ok = EXCLUDED.summary_ok, reused = EXCLUDED.reused, model = EXCLUDED.model, "
+        "summarized_at = EXCLUDED.summarized_at, announcement_count = EXCLUDED.announcement_count "
+        f"WHERE (EXCLUDED.announcement_count > COALESCE({stored}.announcement_count, -1) OR NOT {stored}.summary_ok) "
+        f"  AND (EXCLUDED.summary_ok OR NOT {stored}.summary_ok)")
+    if not written:   # 原本的通過檢查、新的沒有：留著原本的，只更新公告則數（則數一樣的不動）
+        with get_engine().begin() as conn:
+            conn.execute(sqlalchemy.text(
+                "UPDATE tw_stock.ai_card_summary SET announcement_count = :announcement_count "
+                "WHERE card_id = :card_id AND prompt_version = :prompt_version "
+                "  AND (announcement_count IS NULL OR announcement_count < :announcement_count)"),
+                {"announcement_count": row.get("announcement_count"), "card_id": row["card_id"],
+                 "prompt_version": row["prompt_version"]})
 
 
 def save_llm_call(row: dict, problem: str | None = None) -> str:

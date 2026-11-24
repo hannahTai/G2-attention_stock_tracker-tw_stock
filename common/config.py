@@ -62,7 +62,7 @@ SHOW_DATE_PICKER = os.environ.get("SHOW_DATE_PICKER", "0") == "1"
 USE_CELERY = os.environ.get("USE_CELERY", "1") == "1"
 RABBITMQ_HOST = os.environ.get("RABBITMQ_HOST", "127.0.0.1")
 RABBITMQ_PORT = int(os.environ.get("RABBITMQ_PORT", 5672))
-RABBITMQ_USER = os.environ.get("RABBITMQ_USER", "rabbitmq")           # 預設值和 docker-compose.yml 一樣（本機開發用）
+RABBITMQ_USER = os.environ.get("RABBITMQ_USER", "rabbitmq")           # 預設值只給本機程式用；docker compose 一定要在 .env 設
 RABBITMQ_PASSWORD = os.environ.get("RABBITMQ_PASSWORD", "rabbitmq")
 
 # 任務歷史：每個任務跑完寫一列 tw_stock.job_run（common/runner.py 的 record()）；測試裡關掉
@@ -71,6 +71,11 @@ JOB_LOG = os.environ.get("JOB_LOG", "1") == "1"
 # 文字 log：每天一個檔 <LOG_DIR>/<名稱>-YYYY-MM-DD.log，只留最近 LOG_KEEP_DAYS 天（common/logs.py）
 LOG_DIR = pathlib.Path(os.environ.get("LOG_DIR", str(PROJECT_ROOT / "data" / "logs")))
 LOG_KEEP_DAYS = int(os.environ.get("LOG_KEEP_DAYS", "30"))
+
+# 備份（scripts/backup_db.py 寫、check_backup.py 還原、check_health.py 看有沒有太舊）：檔案放哪；
+# 沒裝 pg_dump／psql 時，到 WSL 裡的哪個 Docker 容器跑
+BACKUP_DIR = pathlib.Path(os.environ.get("BACKUP_DIR", str(PROJECT_ROOT / "data" / "backup")))
+PG_CONTAINER = os.environ.get("PG_CONTAINER", "postgres")
 
 # AI（ai/）：Claude API。金鑰的環境變數 ANTHROPIC_API_KEY 由 anthropic 套件自己讀；沒設就跳過 AI 任務，資料線照常
 ANTHROPIC_API_KEY = secret("ANTHROPIC_API_KEY")

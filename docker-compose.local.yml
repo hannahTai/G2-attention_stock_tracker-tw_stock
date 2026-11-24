@@ -3,15 +3,16 @@
 # 把 Windows 上的程式碼直接掛進容器（.:/app），改了存檔就生效，不用每次 --build：
 #   api（FastAPI）    存檔自動重啟（uvicorn --reload）
 #   web（網頁）       存檔自動重啟（uvicorn --reload），重新整理網頁就看得到
-#   Celery worker、producer、setup  用掛進來的最新程式碼；改了任務的程式要 docker compose restart celery-crawl-twse celery-crawl-mops celery-crawl-finmind celery-crawl-news celery-transform celery-analyze celery-ai celery-embed
+#   Celery worker、producer、setup  用掛進來的最新程式碼；改了任務的程式要 wsl docker compose restart celery-crawl-twse celery-crawl-mops celery-crawl-finmind celery-crawl-news celery-transform celery-analyze celery-ai celery-embed
 #                                  （worker 沒有自動重載：跑到一半的任務重載會被中斷）
 #
 # 為什麼要「輪詢」（polling）：檔案是在 Windows 改的（D:\ 掛到 WSL 的 /mnt/d），Linux 收不到「檔案變了」的通知，
 # 只能每隔一下去看一次有沒有變。
 #
 # 套件裝在 image 的 /opt/venv（見 Dockerfile），掛載 /app 不會蓋掉；改了 pyproject.toml 才需要 docker compose up -d --build。
-# 不要開發模式（例如放上雲端）：docker compose -f docker-compose.yml up -d，只用基本設定、用 image 裡的程式碼。
-# 看合併後的結果：docker compose config
+# 不要開發模式（例如放上雲端）：wsl docker compose -f docker-compose.yml up -d，只用基本設定、用 image 裡的程式碼。
+# 掛進整個專案，web 容器裡也看得到 .env（基本設定的 web 不給 .env）：只在自己的電腦開發時用。
+# 看合併後的結果：wsl docker compose config
 
 x-code: &code
   volumes:

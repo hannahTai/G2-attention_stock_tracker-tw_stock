@@ -79,7 +79,7 @@ SELECT
     -- 卡片 AI 摘要（最新一版、通過檢查的；還沒寫、沒通過的為 NULL）和第三句用到的新聞
     cs.summary AS ai_summary,
     cs.news_ids AS ai_summary_news_ids,
-    cs.summarized_at AS ai_summary_at,   -- 寫摘要的時間（沿用前一天的，是原本寫的時間）
+    cs.summarized_at AS ai_summary_at,   -- 這一列寫入的時間（網頁不顯示）
     cs.reused AS ai_summary_reused       -- 輸入和前一天一樣，沿用前一天的摘要
 
 FROM app_progress p
@@ -88,7 +88,7 @@ LEFT JOIN LATERAL (
     SELECT x.summary, x.news_ids, x.summarized_at, x.reused
     FROM ai_card_summary x
     WHERE x.stock_id = p.stock_id AND x.card_date = p.trade_date AND x.summary_ok
-    ORDER BY NULLIF(regexp_replace(x.prompt_version, '\D', '', 'g'), '')::INT DESC NULLS LAST, x.summarized_at DESC   -- v8 比 v7 新（沿用的摘要時間是原本寫的）
+    ORDER BY NULLIF(regexp_replace(x.prompt_version, '\D', '', 'g'), '')::INT DESC NULLS LAST, x.summarized_at DESC   -- v8 比 v7 新
     LIMIT 1
 ) cs ON TRUE
 

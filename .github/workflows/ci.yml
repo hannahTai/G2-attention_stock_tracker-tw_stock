@@ -1,0 +1,61 @@
+# CI：每次 push 到 GitHub、每個 pull request，自動跑 ruff（檢查程式）和 pytest（全部測試，含連資料庫的整合測試）
+# 結果看 GitHub 上的 Actions 頁；沒過的 commit 旁邊會有紅色的 ✗
+#
+# 整合測試（tests/test_integration.py）要 PostgreSQL：這裡另外開一個用完就丟的資料庫（services.postgres，和 docker-compose.yml 同一個 image），
+# 測試自己建 tw_stock_test、測完刪掉。不需要 RabbitMQ（測試在本機依序執行）、不呼叫 Claude API、不連證交所。
+name: CI
+
+on:
+  push:
+    branches: [main]   # 其他分支開 pull request 時才跑（不然同一個 commit 會跑兩次）
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres   # 用完就丟的測試資料庫，不是正式的密碼
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: tw_stock
+      USE_CELERY: "0"
+      TZ: Asia/Taipei
+      PYTHONUTF8: "1"
+      REQUIRE_DB: "1"   # 連不上資料庫就失敗，不要靜靜跳過整合測試（tests/test_integration.py）
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # uv：和本機一樣照 uv.lock 裝套件（Python 3.12 也由 uv 裝）；套件下載有快取，第二次起快很多
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: 裝套件
+        run: uv sync --frozen
+
+      - name: ruff（檢查程式）
+        run: uv run ruff check .
+
+      - name: pytest（全部測試）
+        run: uv run pytest -q -rs   # -rs：有跳過的測試寫出原因

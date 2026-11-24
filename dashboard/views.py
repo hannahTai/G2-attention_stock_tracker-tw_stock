@@ -168,27 +168,11 @@ def news_item(news: dict) -> dict:
 
 
 def ai_summary_box(ai_summary: dict | None) -> dict | None:
-    """API 的卡片 AI 摘要 → 網頁的框：摘要全文、寫的時間、第三句用到的新聞（標題連結、媒體、日期）。沒有摘要就是 None。"""
+    """API 的卡片 AI 摘要 → 網頁的框：摘要全文、第三句用到的新聞（標題連結、媒體、日期）。沒有摘要就是 None。
+    寫的時間不顯示：沿用前幾天的、換新版 prompt 時補寫的，時間和卡片的日子對不起來，容易看成是哪天的摘要。"""
     if not ai_summary:
         return None
-    return {"summary": ai_summary["summary"], "time": summary_time(ai_summary.get("summarized_at"), ai_summary.get("reused")),
-            "sources": [news_item(s) for s in ai_summary.get("sources") or []]}
-
-
-def summary_time(value: str | None, reused: bool = False) -> str | None:
-    """摘要寫的時間（API 給的 ISO 字串）→ 「11/23 19:05」；沒有為 None。
-    沿用前幾天寫的（輸入一樣，reused）前面加「沿用」，看得出不是那天寫的。
-
-    >>> summary_time("2026-11-23T19:05:00"), summary_time(None)
-    ('11/23 19:05', None)
-    >>> summary_time("2026-11-10T19:05:00", reused=True)
-    '沿用 11/10 19:05'
-    """
-    if not value:
-        return None
-    moment = datetime.datetime.fromisoformat(value)
-    text = f"{moment.month}/{moment.day} {moment:%H:%M}"
-    return f"沿用 {text}" if reused else text
+    return {"summary": ai_summary["summary"], "sources": [news_item(s) for s in ai_summary.get("sources") or []]}
 
 
 def change(pct: decimal.Decimal | float | None) -> dict | None:

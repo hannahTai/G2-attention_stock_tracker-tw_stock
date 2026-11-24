@@ -9,6 +9,7 @@
 import concurrent.futures
 import datetime
 import json
+import os
 import random
 
 import pandas as pd
@@ -18,7 +19,7 @@ import sqlalchemy
 from ai import task as ai_task
 from analyze import task as analyze_task
 from api import queries
-from common import repository, runner
+from common import date_utils, repository, runner
 from common.config import DB_NAME, MAX_RETRIES
 from common.hash_utils import key_md5, url_md5
 from tests.test_transform_transformer import (
@@ -43,6 +44,8 @@ def test_engine():
         repository.drop_database(TEST_DATABASE)
         repository.create_tables(TEST_DATABASE)   # 跟正式的一樣：建資料庫、執行 schema/*.sql
     except sqlalchemy.exc.OperationalError:
+        if os.environ.get("REQUIRE_DB") == "1":   # CI：連不上資料庫就算失敗，不要靜靜跳過整合測試
+            raise
         pytest.skip("連不到 PostgreSQL：先啟動 PostgreSQL、確認 .env 的連線設定")
 
     engine = repository.get_engine(TEST_DATABASE)
@@ -331,6 +334,24 @@ def test_news_summary_listed_once_and_shown_in_view(db):
     assert repository.list_unsummarized_news(day, day, "v1", 200) == [url_md5(NEWS_LINK)]
     assert repository.list_unsummarized_news(day, day, "v1", 1000) == []   # 全文太短
 
+    # 網頁打不開、全文太短：記一列「跳過」，1 天內不再排、網站不顯示；超過 1 天再試，成功就換成真的摘要
+    news_id = url_md5(NEWS_LINK)
+    repository.insert_news_summary({"news_id": news_id, "prompt_version": "v0", "summary": "", "summary_ok": False,
+                                    "model": repository.NEWS_SKIPPED_MODEL})
+    assert repository.list_unsummarized_news(day, day, "v0", 200) == [] and repository.has_news_summary(news_id, "v0")
+    with db.begin() as conn:
+        conn.execute(sqlalchemy.text("UPDATE tw_stock.ai_news_summary SET summarized_at = LOCALTIMESTAMP - INTERVAL '25 hours'"))
+    assert repository.list_unsummarized_news(day, day, "v0", 200) == [news_id] and not repository.has_news_summary(news_id, "v0")
+    repository.insert_news_summary({"news_id": news_id, "prompt_version": "v0", "summary": "這次打開了", "summary_ok": True,
+                                    "model": "m"})
+    repository.insert_news_summary({"news_id": news_id, "prompt_version": "v0", "summary": "第二次", "summary_ok": True,
+                                    "model": "m"})   # 已經有真的摘要：不動
+    with db.connect() as conn:
+        summary = conn.execute(sqlalchemy.text("SELECT summary FROM tw_stock.ai_news_summary WHERE prompt_version = 'v0'")).scalar()
+        assert summary == "這次打開了"
+        conn.execute(sqlalchemy.text("DELETE FROM tw_stock.ai_news_summary WHERE prompt_version = 'v0'"))
+        conn.commit()
+
     row = {"news_id": url_md5(NEWS_LINK), "prompt_version": "v1", "summary": "台積電財報亮眼", "summary_ok": True, "model": "m"}
     repository.insert_news_summary(row)
     repository.insert_news_summary({**row, "summary": "第二次"})   # 同一版再寫一次：不動
@@ -401,6 +422,28 @@ def test_news_rag_ranks_by_cosine_and_card_summary_shows_in_app_card(db):
         card = conn.execute(sqlalchemy.text("SELECT ai_summary, ai_summary_news_ids FROM app_card")).one()
     assert card.ai_summary == "因累積漲幅太大被列注意。" and card.ai_summary_news_ids == [url_md5(NEWS_LINK)]
     assert repository.previous_card_summary("2330", datetime.date(2026, 11, 21), "v1")["summary"] == row["summary"]
+
+    # 寫完以後又出現新的公告：不算寫過（下一輪重寫）；重寫換掉原本那列。announcement_count 是 NULL 的舊列不重寫
+    assert repository.has_card_summary("2330", day, "v1")   # 舊列（NULL）
+    repository.insert_card_summary({**row, "announcement_count": 0})
+    assert repository.has_card_summary("2330", day, "v1")   # 0 則公告，現在也 0 則
+    with db.begin() as conn:
+        conn.execute(sqlalchemy.text(
+            "INSERT INTO tw_stock.stage_announcement (company_id, announce_date, enter_date, serial_number, announcement_id, "
+            "announce_time, company_name, subject) "
+            "VALUES ('2330', :d, :d, 9, md5('2330_20261120_9'), '19:30', '台積電', '傍晚的公告')"), {"d": day})
+    assert not repository.has_card_summary("2330", day, "v1")
+    # 重寫的沒通過檢查：留著原本通過的摘要，只更新公告則數（不會一直重排）
+    repository.insert_card_summary({**row, "summary": "沒通過。", "summary_ok": False, "announcement_count": 1})
+    assert repository.has_card_summary("2330", day, "v1")
+    with db.connect() as conn:
+        assert conn.execute(sqlalchemy.text("SELECT summary, summary_ok FROM tw_stock.ai_card_summary")).one() == (row["summary"], True)
+    repository.insert_card_summary({**row, "summary": "重送的。", "announcement_count": 1})   # 公告則數一樣（任務送了兩次）：不動
+    with db.connect() as conn:
+        assert conn.execute(sqlalchemy.text("SELECT summary FROM tw_stock.ai_card_summary")).scalar() == row["summary"]
+    repository.insert_card_summary({**row, "summary": "重寫了。", "announcement_count": 2})   # 又多一則公告：換成新的
+    with db.connect() as conn:
+        assert conn.execute(sqlalchemy.text("SELECT summary FROM tw_stock.ai_card_summary")).scalars().all() == ["重寫了。"]
 
 
 def test_same_story_grouped_and_listed_once(db):
@@ -523,19 +566,17 @@ def test_card_summary_reads_only_stage_and_ai(db):
                 "VALUES ('summarize_card', :k, 'm', 'v8', 'failure', 1, LOCALTIMESTAMP)"), {"k": key_md5("2330", "20261120")})
     assert repository.list_unsummarized_cards(day, day, "v8") == [("1101", day), ("2317", day)]
     assert ("2330", day) in repository.list_unsummarized_cards(day, day, "v9")   # 換 prompt 版本重新算
-
-
-def test_repeatedly_skipped_counts_job_runs(db):
-    """新聞摘要跳過（網頁沒辦法摘要）3 次的不再排：看 job_run 的結果數次數。"""
+    # 之前的失敗之後寫好了，後來又出現新的公告：重寫只數寫好以後的失敗，照樣排
+    repository.insert_card_summary({"card_id": key_md5("2330", "20261120"), "prompt_version": "v8", "stock_id": "2330",
+                                    "card_date": day, "summary": "寫好了。", "news_ids": [], "input_hash": "0" * 32,
+                                    "summary_ok": True, "reused": False, "model": "m", "announcement_count": 0,
+                                    "summarized_at": date_utils.now().replace(tzinfo=None) + datetime.timedelta(minutes=1)})
     with db.begin() as conn:
-        for times, news_id in ((3, "a"), (2, "b")):
-            for _ in range(times):
-                conn.execute(sqlalchemy.text(
-                    "INSERT INTO job_run (task, args, status, result, attempt, mode, started_at, finished_at, seconds) "
-                    "VALUES ('ai.task.summarize_news', CAST(:args AS JSONB), 'success', :result, 1, 'local', "
-                    "LOCALTIMESTAMP, LOCALTIMESTAMP, 1)"),
-                    {"args": json.dumps({"news_id": news_id}), "result": f"{news_id} {ai_task.PAGE_SKIPPED}：網頁打不開（HTTP 403），跳過"})
-    assert repository.repeatedly_skipped("ai.task.summarize_news", ai_task.PAGE_SKIPPED, "news_id") == {"a"}
+        conn.execute(sqlalchemy.text(
+            "INSERT INTO tw_stock.stage_announcement (company_id, announce_date, enter_date, serial_number, announcement_id, "
+            "announce_time, company_name, subject) "
+            "VALUES ('2330', :d, :d, 9, md5('2330_20261120_9'), '19:30', '台積電', '傍晚的公告')"), {"d": day})
+    assert ("2330", day) in repository.list_unsummarized_cards(day, day, "v8")
 
 
 def test_create_tables_records_the_schema_hash(db):

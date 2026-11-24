@@ -45,7 +45,7 @@ Source → Ingest → Storage → Process → Serve → Observe
 | Storage | PostgreSQL 三層：`raw_*`（API 原文）→ `stage_*`（清理後）→ `app_*`（引擎結果），另外 `ai_*`（AI 結果、LLM 呼叫紀錄）；之後 Cloud SQL、BigQuery |
 | Process | pandas：`transform/` 整理（raw → stage）、`analyze/` 規則引擎——依要點第六條算離處置還差幾次（stage → app）；`ai/` Claude API——公告分類、新聞摘要、卡片 AI 摘要（結構化輸出），新聞 RAG（本機 bge-m3 轉向量，pgvector 檢索） |
 | Serve | FastAPI 資料 API（只讀 `app_*` 表和 VIEW，回 JSON）＋ 網頁（FastAPI＋Jinja2 範本，卡片牆、個股頁，只打 API、不連資料庫）；Metabase → Looker Studio 儀表板 |
-| Observe | `data/logs/`、任務歷史 `tw_stock.job_run`、回測（真實處置 75 筆全部算到，條件也都對上）；之後失敗通知 |
+| Observe | `data/logs/`、任務歷史 `tw_stock.job_run`、每天的檢查（資料線、網站、備份，有問題跳 Windows 通知）、AI 品質報表、回測（真實處置 75 筆全部算到，條件也都對上）；GitHub Actions 跑 CI（ruff、全部測試） |
 
 順序是 ELT：原文先存進 raw，再清理、計算；規則改了可以從 raw 重算，不必重抓。每天只處理當天的資料。
 
@@ -110,7 +110,8 @@ common/                     各資料夾共用（crawler、transform、analyze �
 ├─ rules.py                   處置規則的常數（門檻、計入的款次、新制、處置天數、撮合間隔）：規則引擎和網頁共用
 └─ hash_utils.py              雜湊工具：url_md5（新聞的 news_id＝連結的 md5）
 schema/                     建表 SQL：raw.sql、stage.sql、app.sql、view.sql（給網頁讀的 VIEW）、ai.sql（AI 結果）、log.sql（任務歷史）
-scripts/                    .bat：排程（daily＝股價線、news＝新聞線）、回補（backfill）、從 raw 重算（rebuild）、備份（backup）、網站（web：API ＋ 網頁）
+scripts/                    .bat：排程（daily＝股價線、news＝新聞線、backup＝備份、check＝每天的檢查）、回補（backfill）、從 raw 重算（rebuild）、網站（web：API ＋ 網頁）；
+                            .py：備份（backup_db）、確認備份還原得回來（check_backup）、每天的檢查（check_health）、AI 品質報表（ai_report）
 tests/                      測試
 docs/                       流程說明（flow.md）、任務與佇列（queues.md）、資料表（tables.md）、處置規則（rules.md）、AI 項目（ai_plan.md）、提案
 main.py                     兩條資料線：股價線（證交所 → transform → analyze）、新聞線（`main.py news`：觀測站、新聞 → transform → ai）
@@ -122,34 +123,36 @@ main.py                     兩條資料線：股價線（證交所 → transfor
 
 ### Docker Compose（一鍵啟動）
 
-PostgreSQL、RabbitMQ、8 個 Celery worker、Flower、資料 API、網頁全部用 Docker 跑：
+PostgreSQL、RabbitMQ、8 個 Celery worker、Flower、資料 API、網頁全部用 Docker 跑（Docker 裝在 WSL 裡，在 PowerShell 要打 `wsl docker compose …`）：
 
 ```bash
-cp .env.example .env                                # 填入密碼（AI 項目要 ANTHROPIC_API_KEY，沒填就跳過）
-docker compose up -d --build                        # 啟動（第一次會建表）
-docker compose run --rm producer python main.py       # 跑一次股價線：任務送進 RabbitMQ，由 worker 執行
-docker compose run --rm producer python main.py news  # 跑一次新聞線（要讀股價線整理好的注意股）
+cp .env.example .env                                # 填入密碼（資料庫、RabbitMQ 一定要填；AI 項目要 ANTHROPIC_API_KEY，沒填就跳過）
+wsl docker compose up -d --build                        # 啟動（第一次會建表）
+wsl docker compose run --rm producer python main.py       # 跑一次股價線：任務送進 RabbitMQ，由 worker 執行
+wsl docker compose run --rm producer python main.py news  # 跑一次新聞線（要讀股價線整理好的注意股）
 ```
 
 開發時 `.env` 的 `COMPOSE_FILE` 把 `docker-compose.local.yml` 疊上來：程式碼直接掛進容器，api、web 存檔自動重載；改了任務的程式要重啟 worker：
 
 ```bash
-docker compose restart celery-crawl-twse celery-crawl-mops celery-crawl-finmind celery-crawl-news   celery-transform celery-analyze celery-ai celery-embed
+wsl docker compose restart celery-crawl-twse celery-crawl-mops celery-crawl-finmind celery-crawl-news   celery-transform celery-analyze celery-ai celery-embed
 ```
 
 | 服務 | 網址 |
 |---|---|
 | 網頁 | http://localhost:8502 |
 | 資料 API | http://localhost:8001/docs |
-| Flower（worker、任務狀況） | http://localhost:5556 |
+| Flower（worker、任務狀況；`.env` 的 `FLOWER_USER`／`FLOWER_PASSWORD` 登入） | http://localhost:5556 |
 | RabbitMQ 管理介面 | http://localhost:15673 |
+
+只有網頁（8502）開給別台電腦（同一個網路的手機、筆電）；資料庫、RabbitMQ、Flower、資料 API 只開在這台電腦。網頁的容器不拿 `.env`（不連資料庫、不用金鑰）。
 
 8 個 worker 各聽一個佇列（`crawl_twse`、`crawl_mops`、`crawl_finmind`、`crawl_news`、`transform`、`analyze`、`ai`、`embed`），各自控制速度：打外部網站的一次做一個、做完等一下，只碰資料庫的同時做好幾個。
 log 在 `data/logs/`，每天一個檔、留 30 天：`daily-YYYY-MM-DD.log`（股價線）、`news-YYYY-MM-DD.log`（新聞線）、`crawl_twse-…`、`crawl_mops-…`、`crawl_finmind-…`、`crawl_news-…`、`transform-…`、`analyze-…`、`ai-…`、`embed-…`（八個 worker）。每個任務每跑一次另外記一列在 `tw_stock.job_run`（任務歷史，永久保留）。
 
 ### 本機（不用 Docker 跑程式，資料庫還是要有）
 
-預設 `USE_CELERY=1`：任務送進 RabbitMQ 給 Compose 裡的 Celery worker 做（要先 `docker compose up -d`）。沒開 Docker 時，`.env` 設 `USE_CELERY=0` 就改成在這台電腦依序執行，不需要 RabbitMQ。
+預設 `USE_CELERY=1`：任務送進 RabbitMQ 給 Compose 裡的 Celery worker 做（要先 `wsl docker compose up -d`）。沒開 Docker 時，`.env` 設 `USE_CELERY=0` 就改成在這台電腦依序執行，不需要 RabbitMQ。
 
 ```bash
 git clone https://github.com/hannahTai/G2-attention_stock_tracker-tw_stock.git

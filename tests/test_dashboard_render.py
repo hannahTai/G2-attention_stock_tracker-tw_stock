@@ -307,10 +307,8 @@ def test_ai_summary_shows_text_and_sources():
     page = render.stock_html(detail)
     assert "今天因第一款被列注意。" in page and "今天還沒有 AI 摘要" not in page
     assert 'href="https://example.com/n1"' in page and "訂單&lt;增加&gt;" in page
-    # 寫摘要的時間接在標題旁的灰字後面；沿用前幾天寫的（reused）前面加「沿用」
-    assert '不構成投資建議・<span class="mono">沿用 11/19 19:05</span>' in page
-    detail["ai_summary"].update(summarized_at="2026-11-20T19:05:00", reused=False)
-    assert '不構成投資建議・<span class="mono">11/20 19:05</span>' in render.stock_html(detail)
+    # 寫摘要的時間不顯示（沿用的、補寫的和卡片的日子對不起來，容易誤會）
+    assert "19:05" not in page and "沿用" not in page
 
 
 def test_news_block_below_announcements():

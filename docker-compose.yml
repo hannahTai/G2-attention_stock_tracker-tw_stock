@@ -1,13 +1,14 @@
 # 注意股，還差幾步？一鍵啟動：PostgreSQL、RabbitMQ、Celery worker、Flower、資料 API、網頁
 #
-#   docker compose up -d --build        # 啟動（第一次或改了套件加 --build）
+# Docker 裝在 WSL 裡：在 Windows 的 PowerShell 要在前面加 wsl（在 WSL 的終端機裡直接打 docker compose）
+#   wsl docker compose up -d --build        # 啟動（第一次或改了套件加 --build）
 #   本機開發時 .env 的 COMPOSE_FILE 會把 docker-compose.local.yml 疊上來：程式碼直接掛進容器，api、web 存檔就自動重載（見那個檔）
-#   docker compose ps                   # 看狀態
-#   docker compose logs -f celery-transform   # 看 log（服務名稱見下面；log 檔另外存在 data/logs/）
-#   docker compose down                 # 停掉（資料留在 volume pgdata）
-#   docker compose run --rm producer python main.py                       # 跑一次股價線（證交所 → 整理 → 還差幾次）
-#   docker compose run --rm producer python main.py news                  # 跑一次新聞線（觀測站、新聞 → 整理 → AI）
-#   docker compose run --rm producer python main.py backfill --start 20261101   # 回補（兩條線）
+#   wsl docker compose ps                   # 看狀態
+#   wsl docker compose logs -f celery-transform   # 看 log（服務名稱見下面；log 檔另外存在 data/logs/）
+#   wsl docker compose down                 # 停掉（資料留在 volume pgdata）
+#   wsl docker compose run --rm producer python main.py                       # 跑一次股價線（證交所 → 整理 → 還差幾次）
+#   wsl docker compose run --rm producer python main.py news                  # 跑一次新聞線（觀測站、新聞 → 整理 → AI）
+#   wsl docker compose run --rm producer python main.py backfill --start 20261101   # 回補（兩條線）
 #
 # 網址（本機）：
 #   網頁      http://localhost:8502
@@ -16,15 +17,27 @@
 #   RabbitMQ  http://localhost:15673    管理介面（帳密 .env 的 RABBITMQ_USER／RABBITMQ_PASSWORD）
 #   資料庫    localhost:5432
 # RabbitMQ、Flower 的埠號故意不用預設的 5672、15672、5555：課程的容器已經佔用了。
+# 只有網頁（8502）開給別台電腦（同一個網路的手機、筆電）；資料庫、RabbitMQ、Flower、資料 API 只開在這台電腦（127.0.0.1），
+# 別台電腦連不到（Windows 上的 main.py、排程、pytest 照樣用 127.0.0.1 連得到）。
 #
 # 連線設定（密碼等）從 .env 讀；容器之間用服務名稱連（db、rabbitmq、api），所以 x-app 會蓋掉 .env 的主機和埠號。
-# 帳號密碼沒在 .env 設的話用預設值（資料庫 postgres／postgres、RabbitMQ rabbitmq／rabbitmq），只適合本機開發；放上雲端一定要在 .env 設。
+# 資料庫、RabbitMQ、Flower 的帳號密碼一定要在 .env 設（DB_USER、DB_PASSWORD、RABBITMQ_USER、RABBITMQ_PASSWORD、FLOWER_USER、FLOWER_PASSWORD），
+# 沒設 docker compose 會直接停下來說缺哪個。
 # 不要用 docker compose down -v：-v 會連 volume 一起刪，資料庫就沒了。
 
-# 專案程式的共同設定：setup、api、web、producer、八個 Celery worker 都用同一個 image（Dockerfile），只是指令不同
-x-app: &app
+# 專案的 image（Dockerfile）：setup、api、web、producer、八個 Celery worker 都用同一個，只是指令不同
+x-image: &image
   build: .
   image: attention-stock-tracker
+  logging:                              # 畫面上的 log（docker compose logs）：每個容器最多 3 個 10MB 的檔，舊的自動丟掉
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+# 要連資料庫、RabbitMQ、Claude API 的服務（web 以外的）：整個 .env 都給
+x-app: &app
+  <<: *image
   env_file: .env
   environment:
     DB_HOST: db
@@ -35,11 +48,6 @@ x-app: &app
     API_URL: http://api:8001
     LOG_DIR: /app/logs
     HF_HOME: /app/data/hf               # 新聞 RAG 的 embedding 模型（bge-m3，約 2.3 GB）下載到這裡，重建 image 不用再下載
-  logging:                              # 畫面上的 log（docker compose logs）：每個容器最多 3 個 10MB 的檔，舊的自動丟掉
-    driver: json-file
-    options:
-      max-size: 10m
-      max-file: "3"
 
 # Celery worker 共同的：RabbitMQ 和資料表都準備好才啟動
 x-celery: &celery
@@ -61,17 +69,17 @@ services:
     container_name: postgres            # scripts/backup_db.py 用這個名字跑 pg_dump（PG_CONTAINER）
     restart: unless-stopped
     environment:
-      # 帳號密碼從 .env 讀，沒設就用 postgres／postgres；只在第一次建 volume（第一次啟動）時用，之後改 .env 不會改到資料庫裡的密碼
-      POSTGRES_USER: ${DB_USER:-postgres}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      # 帳號密碼從 .env 讀（一定要設）；只在第一次建 volume（第一次啟動）時用，之後改 .env 不會改到資料庫裡的密碼
+      POSTGRES_USER: ${DB_USER:?.env 要設 DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?.env 要設 DB_PASSWORD}
       TZ: Asia/Taipei
       PGTZ: Asia/Taipei
     ports:
-      - "5432:5432"                     # 本機的程式（main.py、排程、pytest）也連得到
+      - "127.0.0.1:5432:5432"           # 本機的程式（main.py、排程、pytest）連得到；別台電腦連不到
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:                        # 資料庫真的能連了，才啟動後面的服務
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -82,13 +90,13 @@ services:
     hostname: rabbitmq                  # 固定主機名稱：RabbitMQ 的資料（帳號、佇列）依主機名稱存，不固定的話每次重建容器都會重來
     restart: unless-stopped
     environment:
-      # 和資料庫一樣：帳號密碼從 .env 讀，沒設就用 rabbitmq／rabbitmq；只在第一次建 volume（第一次啟動）時建這個帳號，
+      # 和資料庫一樣：帳號密碼從 .env 讀（一定要設）；只在第一次建 volume（第一次啟動）時建這個帳號，
       # 之後改 .env 不會改到已經建好的帳號（要改密碼用 rabbitmqctl change_password）
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-rabbitmq}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-rabbitmq}
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?.env 要設 RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?.env 要設 RABBITMQ_PASSWORD}
     ports:
-      - "5673:5672"                     # 本機的 producer 要送任務進來時用（.env 設 USE_CELERY=1、RABBITMQ_PORT=5673）
-      - "15673:15672"                   # 管理介面
+      - "127.0.0.1:5673:5672"           # 本機的 producer 要送任務進來時用（.env 設 USE_CELERY=1、RABBITMQ_PORT=5673）
+      - "127.0.0.1:15673:15672"         # 管理介面
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
@@ -161,22 +169,24 @@ services:
       - ./data/logs:/app/logs
       - ./data/hf:/app/data/hf          # embedding 模型的快取（見上面的 HF_HOME）
 
-  # Flower：網頁上看 worker、任務的執行狀況（帳號密碼和上面的 RabbitMQ 同一組）
+  # Flower：網頁上看 worker、任務的執行狀況。打開要登入（FLOWER_USER／FLOWER_PASSWORD，和 RabbitMQ 的分開：知道一組不等於知道另一組）
   flower:
     image: mher/flower:2.0.1
     restart: unless-stopped
-    command: ["celery", "--broker=amqp://${RABBITMQ_USER:-rabbitmq}:${RABBITMQ_PASSWORD:-rabbitmq}@rabbitmq:5672//",
-              "flower", "--port=5555"]
+    command: ["celery", "flower", "--port=5555"]
     environment:
+      # 連 RabbitMQ 的網址（含密碼）放環境變數，不寫在指令上（指令會出現在 docker compose ps、程序清單裡）
+      CELERY_BROKER_URL: amqp://${RABBITMQ_USER:?.env 要設 RABBITMQ_USER}:${RABBITMQ_PASSWORD:?.env 要設 RABBITMQ_PASSWORD}@rabbitmq:5672//
+      FLOWER_BASIC_AUTH: ${FLOWER_USER:?.env 要設 FLOWER_USER}:${FLOWER_PASSWORD:?.env 要設 FLOWER_PASSWORD}   # 打開 Flower 要登入
       TZ: Asia/Taipei                   # 和 worker 同一個時區，不然 Flower 會警告時間差 8 小時
     ports:
-      - "5556:5555"
+      - "127.0.0.1:5556:5555"
     depends_on:
       rabbitmq:
         condition: service_healthy
 
   # producer：決定要做哪些任務、送進佇列（main.py 或 python -m crawler.producer…）。平常不啟動，用 run 執行一次：
-  #   docker compose run --rm producer python main.py
+  #   wsl docker compose run --rm producer python main.py
   producer:
     <<: *app
     profiles: ["manual"]                # docker compose up 不會啟動它
@@ -207,18 +217,21 @@ services:
     <<: *app
     command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8001"]
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"           # 網頁在容器之間用 http://api:8001 連；這台電腦的瀏覽器、run_web.bat 用 127.0.0.1
     depends_on:
       setup:
         condition: service_completed_successfully
     restart: unless-stopped
 
-  # 網頁（FastAPI＋Jinja2）：打上面的資料 API，回傳整頁 HTML
+  # 網頁（FastAPI＋Jinja2）：打上面的資料 API，回傳整頁 HTML。不給 .env：網頁不連資料庫、不用金鑰，
+  # 只要知道資料 API 在哪（網頁有漏洞也拿不到密碼）
   web:
-    <<: *app
+    <<: *image
+    environment:
+      API_URL: http://api:8001
     command: ["uvicorn", "dashboard.app:app", "--host", "0.0.0.0", "--port", "8502"]
     ports:
-      - "8502:8502"
+      - "8502:8502"                     # 唯一開給別台電腦的埠號
     depends_on:
       - api
     restart: unless-stopped

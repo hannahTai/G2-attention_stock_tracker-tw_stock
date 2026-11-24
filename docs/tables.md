@@ -397,7 +397,7 @@ VIEW 是存起來的查詢，不複製資料；網頁查的時候資料庫才去
 
 | VIEW | 給哪個畫面 | 內容 |
 |---|---|---|
-| `app_card` | 卡片牆、個股卡片上半部 | `app_progress` 每一列，加上 `stock_name`、`is_listed_today`、`is_company`（上市公司；卡片牆只放這些，不放權證、ETF）、`close_price`（`stage_stock_price` 當天的收盤；還沒抓到就用注意股公告上的）、`price_change`、`change_pct`（漲跌、漲跌幅 %＝漲跌 ÷（收盤－漲跌）× 100，只有收盤行情有）、`reason_text`、`clauses`（今天被列第幾款，例如 `1,2`）、`is_counted_today`、處置中那次的 `measure_type`／`trigger_condition`／`match_interval_minutes`（和 `app_punish_history` 同名）、`announcement_count`（近 30 個交易日公告則數）、`ai_summary`、`ai_summary_news_ids`、`ai_summary_at`、`ai_summary_reused`（卡片 AI 摘要最新一版、通過檢查的，用到的新聞、寫的時間、是不是沿用前一天的；網頁沿用的時間前面寫「沿用」） |
+| `app_card` | 卡片牆、個股卡片上半部 | `app_progress` 每一列，加上 `stock_name`、`is_listed_today`、`is_company`（上市公司；卡片牆只放這些，不放權證、ETF）、`close_price`（`stage_stock_price` 當天的收盤；還沒抓到就用注意股公告上的）、`price_change`、`change_pct`（漲跌、漲跌幅 %＝漲跌 ÷（收盤－漲跌）× 100，只有收盤行情有）、`reason_text`、`clauses`（今天被列第幾款，例如 `1,2`）、`is_counted_today`、處置中那次的 `measure_type`／`trigger_condition`／`match_interval_minutes`（和 `app_punish_history` 同名）、`announcement_count`（近 30 個交易日公告則數）、`ai_summary`、`ai_summary_news_ids`、`ai_summary_at`、`ai_summary_reused`（卡片 AI 摘要最新一版、通過檢查的，用到的新聞、寫的時間、是不是沿用前一天的；網頁只顯示摘要和新聞，不顯示寫的時間） |
 | `app_trading_day` | 注意紀錄格子、公告和處置紀錄的起日 | `stage_trading_day` 裡有交易的日子（`trade_date`） |
 | `app_notice_history` | 注意紀錄格子 | 每檔每個被列注意的交易日：`clauses`、`is_counted`（true＝累計）、`reason_text`（那天被列的原因全文）。沒被列的日子沒有列；早於 `count_start` 的是「已計入前次處置」 |
 | `app_punish_history` | 處置紀錄 | `stage_punish` 的欄位 |
@@ -443,7 +443,7 @@ AI 項目的結果（由 `ai/task.py` 寫入）。和 `app_*` 分開：`app_*` �
 
 - 每則新聞每個 prompt 版本一列；同一版已經有就不再問 LLM。改了 prompt 就換版本（`ai/summarizer.py` 的 `PROMPT_VERSION`）。
 - 由 `summarize_news` 寫入：模型 `claude-haiku-5-5`（`.env` 的 `AI_SUMMARY_MODEL`）。全文不存進資料庫（著作權），任務當場打開網頁抽全文、交給 LLM，用完就丟；存的只有 LLM 用自己的話寫的摘要。
-- 只摘要有抓到網頁（`stage_news_detail` 有列）、全文至少 200 字的新聞；當場打不開（被擋）、全文太短就跳過，不問 LLM。
+- 只摘要有抓到網頁（`stage_news_detail` 有列）、全文至少 200 字的新聞；當場打不開（被擋）、全文太短就不問 LLM，記一列「跳過」（`model`＝`skipped`、`summary` 空字串、`summary_ok` 為否），1 天後再試（一天最多一次；新聞超過 7 天就不在範圍裡），成功就換成真的摘要。
 
 | 欄位 | 型別 | 說明 |
 |---|---|---|
@@ -451,7 +451,7 @@ AI 項目的結果（由 `ai/task.py` 寫入）。和 `app_*` 分開：`app_*` �
 | prompt_version | VARCHAR(20) | 主鍵之一，例如 `v2` |
 | summary | VARCHAR(1200) | 摘要；上限依文章長度：文章的三成，最少 80、最多 1200 字（`summarizer.summary_limit`）；跟 LLM 說的是上限的八五成（LLM 常常多寫一點），超過上限就請 LLM 縮短，只重問一次；不是新聞內容（登入頁、網站介紹）的為空字串 |
 | summary_ok | BOOLEAN | 摘要通過程式檢查：不是空的、不超過這篇的上限、數字都出現在原文裡；否的話不顯示（`app_stock_news.ai_summary` 為 NULL） |
-| model | VARCHAR(50) | 模型 |
+| model | VARCHAR(50) | 模型；`skipped`＝網頁打不開、全文太短，沒有問 LLM |
 | summarized_at | TIMESTAMP(0) | 摘要時間（台灣時間） |
 
 ### ai_news_embedding　新聞 RAG 的向量
@@ -488,6 +488,7 @@ AI 項目的結果（由 `ai/task.py` 寫入）。和 `app_*` 分開：`app_*` �
 - 由 `summarize_card` 寫入：卡片牆上的每一張（`stage_watched_stock`：往前 30 個交易日被列注意過的上市公司）；不讀規則引擎的結果。一檔一天一列、每個 prompt 版本一列。模型 `claude-haiku-5-5`（`.env` 的 `AI_CARD_MODEL`）。
 - 輸入只讀 stage 和其他 AI 結果（不讀 app）：被列注意的原因（款次換成白話、官方寫的情況；今天沒被列注意的，帶最近一次被列注意的日期和那天的情況）、處置中的期間和撮合間隔、今天的漲跌幅（今天被列注意的才給：每天變，前一天的摘要才能沿用）、近 30 天公告和公告分類、新聞 RAG 挑出的新聞（最多 5 則，標題＋新聞摘要）。不給第幾款、離處置還差幾次、收盤價本身。
 - 輸入的雜湊值和前一天一樣就沿用前一天的摘要（`reused`＝是），不呼叫 API。
+- 寫完以後又出現新的公告（現在那天往前 30 天的公告比 `announcement_count` 多，例如傍晚才發的），下一輪新聞線重寫，換掉原本那列。
 - 網站讀 `app_card.ai_summary`（最新一版、`summary_ok` 的），用到的新聞照 `news_ids` 從 `app_stock_news` 查標題、連結。
 
 | 欄位 | 型別 | 說明 |
@@ -502,7 +503,8 @@ AI 項目的結果（由 `ai/task.py` 寫入）。和 `app_*` 分開：`app_*` �
 | summary_ok | BOOLEAN | 摘要通過程式檢查：不超過 150 字、數字都出現在輸入裡、引用的新聞編號是這次給的；否的話不顯示 |
 | reused | BOOLEAN | 沿用前一天的摘要（輸入一樣，沒有呼叫 API） |
 | model | VARCHAR(50) | 模型 |
-| summarized_at | TIMESTAMP(0) | 寫摘要的時間（台灣時間；沿用前一天的摘要，是原本寫的時間）。網頁在「AI 摘要」標題旁的灰字後面顯示（例如「僅供參考，不構成投資建議・11/23 19:05」） |
+| summarized_at | TIMESTAMP(0) | 這一列寫入的時間（台灣時間；沿用前一天的摘要也是寫入的時間，重寫的「失敗 3 次」從這時候開始算）。網頁不顯示（沿用前幾天的、換新版 prompt 時補寫的，時間和卡片的日子對不起來，容易誤會） |
+| announcement_count | INT | 寫的時候給了幾則公告（那天往前 30 天）；之後公告變多就重寫。NULL＝這一欄加進來以前寫的，不重寫 |
 
 ### ai_llm_call　LLM 呼叫紀錄
 

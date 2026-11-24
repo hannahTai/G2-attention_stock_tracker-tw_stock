@@ -33,7 +33,7 @@ app VIEW（把 app_*、ai_* 合起來）→ API → 網頁
 
 為什麼分兩條：證交所一天公布一次（17:30～17:45），公告、新聞隨時都有，FinMind 又限制速度（6 秒一個）。分開以後還差幾次 18:00 很快就算好，不用等新聞；新聞抓失敗也不影響還差幾次。
 
-兩條線怎麼接起來：新聞線讀 `stage_watched_stock`（往前 30 個交易日被列注意過的上市公司，和卡片牆同一批）決定查哪些公司；當天的名單要等股價線整理好，還沒有（早上、週末）就用之前最近一個交易日的名單。卡片 AI 摘要要用當天的注意股、處置股、收盤行情和公告、新聞，所以只寫這三樣證交所資料都整理好的日子：股價線成功的那一輪（18:00，證交所晚公布就是 19:00、20:00…）放完記號就接著跑一次新聞線，當天新被列注意的股票馬上查公告、新聞，當天的卡片也馬上寫（一檔一天寫一次；新聞線正在跑就等它跑完再跑）。每一檔還要那天的新聞清單、那個月的公告清單在注意股抓到以後又抓過、上個月的公告清單也抓過才寫：17:00 那次跑到一半股價線才跑完，當天新被列注意的股票那一輪沒抓，或抓失敗（例如 FinMind 429），那檔就等下一輪抓到了再寫（寫了就不會重寫，不能寫成「沒有公告和新聞」）。沒寫成的（股價線很晚才跑完、最後一次新聞線失敗）之後的新聞線會補：卡片摘要往前看 7 天，補還沒寫的。
+兩條線怎麼接起來：新聞線讀 `stage_watched_stock`（往前 30 個交易日被列注意過的上市公司，和卡片牆同一批）決定查哪些公司；當天的名單要等股價線整理好，還沒有（早上、週末）就用之前最近一個交易日的名單。卡片 AI 摘要要用當天的注意股、處置股、收盤行情和公告、新聞，所以只寫這三樣證交所資料都整理好的日子：股價線成功的那一輪（18:00，證交所晚公布就是 19:00、20:00…）放完記號就接著跑一次新聞線，當天新被列注意的股票馬上查公告、新聞，當天的卡片也馬上寫（一檔一天寫一次；新聞線正在跑就等它跑完再跑）。每一檔還要那天的新聞清單、那個月的公告清單在注意股抓到以後又抓過、上個月的公告清單也抓過才寫：17:00 那次跑到一半股價線才跑完，當天新被列注意的股票那一輪沒抓，或抓失敗（例如 FinMind 429），那檔就等下一輪抓到了再寫（寫錯了不會自己更正，不能寫成「沒有公告和新聞」；寫完以後只有出現新公告才重寫）。沒寫成的（股價線很晚才跑完、最後一次新聞線失敗）之後的新聞線會補：卡片摘要往前看 7 天，補還沒寫的。
 
 ## 每天怎麼跑
 
@@ -155,9 +155,9 @@ uv run python -m ai.producer        backfill --start 20261113 --end 20261113
 | 新聞摘要 | `summarize_news` | 一則新聞（被關注的股票、全文至少 200 字） | `ai_news_summary` |
 | 新聞 RAG | `embed_news` | 一天的新聞 | `ai_news_embedding` |
 | 同一件事 | `group_news_stories` | 整段區間 | `ai_news_story` |
-| 卡片 AI 摘要 | `summarize_card` | 一檔一天（卡片牆上的每一張：`stage_watched_stock` 的上市公司；那天的注意股、處置股、收盤行情整理好、這檔的公告和新聞清單抓到了才寫，往前 7 天補沒寫成的） | `ai_card_summary` |
+| 卡片 AI 摘要 | `summarize_card` | 一檔一天（卡片牆上的每一張：`stage_watched_stock` 的上市公司；那天的注意股、處置股、收盤行情整理好、這檔的公告和新聞清單抓到了才寫，往前 7 天補沒寫成的；寫完以後又出現新的公告（例如傍晚才發），下一輪重寫） | `ai_card_summary` |
 
-同一筆、同一個 prompt 版本呼叫 Claude 失敗 3 次（例如拒答、回答被截斷）就不再問（`repository.MAX_FAILED_CALLS`，看 `ai_llm_call` 的失敗紀錄）：新聞線一天跑 6 次，不擋的話會一直重問、一直花錢。換 prompt 版本重新算。新聞摘要的網頁打不開、全文太短（不呼叫 Claude）也一樣：同一則最近 3 天跳過 3 次就不再排（看任務歷史 `job_run`；網站暫時擋一下，過幾天照樣再試），不會一直重抓同一個被擋的網頁。
+同一筆、同一個 prompt 版本呼叫 Claude 失敗 3 次（例如拒答、回答被截斷）就不再問（`repository.MAX_FAILED_CALLS`，看 `ai_llm_call` 的失敗紀錄）：新聞線一天跑 6 次，不擋的話會一直重問、一直花錢。換 prompt 版本重新算。新聞摘要的網頁打不開、全文太短（不呼叫 Claude）：在 `ai_news_summary` 記一列「跳過」（`model`＝`skipped`、摘要空的、`summary_ok` 為否，網站不顯示），1 天後才再試（一天最多一次，新聞超過 7 天就不在範圍裡），不會一直重抓同一個被擋的網頁；5xx、429、逾時是暫時的，照樣重試。
 
 ## 常用指令
 
@@ -168,15 +168,22 @@ uv run python main.py backfill --start 20260701         # 兩條線跑一段期�
 uv run python -m crawler.producer daily --part twse|news  # 只跑一步（或 backfill --start ... --part …；crawler 一定要給 --part，transform 不給就兩個都做，analyze、ai 沒有）
 uv run python -m analyze.backtest                       # 回測
 uv run pytest                                           # 測試（連不到 PostgreSQL 的整合測試自動跳過）
+uv run python scripts/check_health.py                   # 檢查資料線、網站、備份有沒有問題（排程每天 22:30 跑，有問題跳 Windows 通知）
+uv run python scripts/ai_report.py                      # AI 最近 7 天：每個版本問幾筆、重問幾成、失敗幾次、花多少、幾成沒通過檢查（可加 --days 30）
+uv run python scripts/check_backup.py                   # 備份還原到另一個資料庫，確認還原得回來（做完刪掉）
 ```
 
-改了 `schema/` 的欄位：程式不會刪表重建，要自己下 `ALTER TABLE`。
+改了 `schema/` 的欄位：程式不會刪表重建；已經存在的表要加欄位，在 schema 裡寫 `ALTER TABLE … ADD COLUMN IF NOT EXISTS`（例如 `schema/ai.sql` 的 `ai_card_summary.announcement_count`），其他改法要自己下 `ALTER TABLE`。
+
+push 到 GitHub 時，CI（`.github/workflows/ci.yml`）自動跑 ruff 和全部測試（另外開一個用完就丟的 PostgreSQL 跑整合測試），結果在 GitHub 的 Actions 頁。
 
 ## 備份
 
 `scripts/backup_db.py`：pg_dump 整個資料庫 → `data/backup/tw_stock_<日期>_<時間>.sql.gz`，留最近 14 份（不鎖表；`.env` 可設 `BACKUP_DIR`）。
 
-還原（會蓋掉整個 tw_stock）：
+確認備份還原得回來（每個月一次，或改了備份的方式以後）：`uv run python scripts/check_backup.py`。把最新一份還原到另一個資料庫 `tw_stock_restore_check`（備份檔裡的 DROP／CREATE DATABASE、`\connect` 拿掉，正式的資料庫不碰），每張表數列數、和正式的比，做完刪掉。
+
+真的要還原（會蓋掉整個 tw_stock）：
 
 ```bash
 gzip -dc data/backup/tw_stock_20261114_233000.sql.gz | wsl docker exec -i postgres psql -U postgres -d postgres
@@ -189,8 +196,10 @@ gzip -dc data/backup/tw_stock_20261114_233000.sql.gz | wsl docker exec -i postgr
 | `G2-attention_stock_tracker-daily` | 週一～五 18:00～22:00 每小時（股價線，當天跑完就跳過） | `scripts\run_daily.bat` | `data/logs/daily-YYYY-MM-DD.log` |
 | `G2-attention_stock_tracker-news` | 每天 08:00、11:00、14:00、17:00、20:00、23:00（新聞線） | `scripts\run_news.bat` | `data/logs/news-YYYY-MM-DD.log` |
 | `G2-attention_stock_tracker-backup` | 週一～五 23:30 | `scripts\run_backup.bat` | `data/backup.log` |
+| `G2-attention_stock_tracker-check` | 每天 22:30（股價線最後一次 22:00 之後） | `scripts\run_check.bat` | `data/logs/check-YYYY-MM-DD.log` |
 
 - 背景執行（`conhost.exe --headless`）；錯過時開機後補跑；關機或睡眠時不會跑。log 留 30 天，永久的紀錄是 `tw_stock.job_run`。
+- 每天的檢查（`scripts/check_health.py`）看四件事：今天是交易日，股價線就要有今天的記號（還在跑的先放過，隔天看上一個交易日的記號補報）；最近一次新聞線成功、照排程應該跑完的那一次有跑；資料 API 的 `/health`、網頁打得開；最新的備份在 3.5 天內。有問題就跳 Windows 通知（要登入著才看得到），結束代碼 1：工作排程器的「上次執行結果」也看得到。四個 .bat 都把結束代碼傳出去。
 - `Start-ScheduledTask <工作名稱>` 手動跑一次；`Get-ScheduledTaskInfo <工作名稱>` 看結果。
 
 重灌時重建（backup 換檔名、時間 23:30，不用每小時那一行，加 `-ExecutionTimeLimit (New-TimeSpan -Hours 1)`）：上一次還在跑時，下一次不會再開一份（工作排程器預設）。
@@ -211,4 +220,13 @@ $trigger  = New-ScheduledTaskTrigger -Daily -At 08:00
 $trigger.Repetition = (New-ScheduledTaskTrigger -Once -At 08:00 -RepetitionInterval (New-TimeSpan -Hours 3) -RepetitionDuration (New-TimeSpan -Hours 15 -Minutes 1)).Repetition   # 每 3 小時，到 23:00
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable
 Register-ScheduledTask -TaskName G2-attention_stock_tracker-news -Action $action -Trigger $trigger -Settings $settings
+```
+
+每天的檢查（每天 22:30）：
+
+```powershell
+$action   = New-ScheduledTaskAction -Execute conhost.exe -Argument "--headless cmd.exe /c `"$(Resolve-Path scripts\run_check.bat)`""
+$trigger  = New-ScheduledTaskTrigger -Daily -At 22:30
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+Register-ScheduledTask -TaskName G2-attention_stock_tracker-check -Action $action -Trigger $trigger -Settings $settings
 ```

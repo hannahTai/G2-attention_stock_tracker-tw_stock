@@ -325,7 +325,7 @@ def test_summarize_news_keeps_first_answer_when_shorten_fails(summaries):
 def test_summarize_news_skips_without_asking(summaries, monkeypatch):
     """摘要過、不在 stage_news、網頁打不開（被擋）、全文太短：跳過，不花錢問 LLM。"""
     summaries.existing.add(NEWS["news_id"])
-    assert "已經摘要過" in ai_task.summarize_news(NEWS["news_id"])
+    assert "已經有結果" in ai_task.summarize_news(NEWS["news_id"])
     assert "不在 stage_news" in ai_task.summarize_news("0" * 32)
     summaries.existing.clear()
     summaries.page = page(status=403)
@@ -333,7 +333,11 @@ def test_summarize_news_skips_without_asking(summaries, monkeypatch):
     summaries.page = page()
     monkeypatch.setattr(crawler_client, "news_detail_text", lambda content: "太短")
     assert "全文太短" in ai_task.summarize_news(NEWS["news_id"])
-    assert summaries.asked == [] and summaries.rows == []
+    assert summaries.asked == []
+    # 網頁打不開、全文太短：記一列「跳過」（1 天後再試）；摘要過、不在 stage_news 不記
+    skipped = {"news_id": NEWS["news_id"], "prompt_version": summarizer.PROMPT_VERSION, "summary": "", "summary_ok": False,
+               "model": repository.NEWS_SKIPPED_MODEL}
+    assert summaries.rows == [skipped] * 2
 
 
 def test_summarize_news_server_error_retries(summaries):
@@ -419,7 +423,7 @@ def test_card_row_maps_news_numbers_to_ids_and_checks_numbers():
 def cards(monkeypatch):
     """假的卡片事實（stage）、公告、新聞 RAG、ai_card_summary、ai_llm_call。"""
     store = types.SimpleNamespace(rows=[], calls=[], asked=[], existing=set(), previous=None, news=list(CARD_NEWS))
-    monkeypatch.setattr(repository, "has_card_summary", lambda card_id, version: card_id in store.existing)
+    monkeypatch.setattr(repository, "has_card_summary", lambda stock_id, day, version: (stock_id, day) in store.existing)
     monkeypatch.setattr(repository, "card_facts", lambda stock_id, day: CARD if stock_id == "3653" else None)
     monkeypatch.setattr(repository, "recent_announcements", lambda stock_id, start, end: CARD_ANNOUNCEMENTS)
     monkeypatch.setattr(repository, "previous_card_summary", lambda stock_id, before, version: store.previous)
@@ -438,6 +442,7 @@ def test_summarize_card_writes_summary_with_news(cards):
     assert ai_task.summarize_card("3653", "20261120").startswith("ai_card_summary/3653_20261120：")
     [row] = cards.rows
     assert row["card_id"] == key_md5("3653", "20261120") and row["summary_ok"] and row["news_ids"] == ["n1"]
+    assert row["announcement_count"] == len(CARD_ANNOUNCEMENTS)   # 之後又出現新的公告就重寫
     assert cards.calls[0]["task"] == "summarize_card" and cards.calls[0]["ref_key"] == row["card_id"]
 
 
@@ -450,6 +455,7 @@ def test_summarize_card_reuses_yesterday_when_input_is_the_same(cards):
     assert "沿用" in ai_task.summarize_card("3653", "20261120")
     [row] = cards.rows
     assert cards.asked == [] and row["summary"] == "昨天的摘要" and row["reused"] and row["card_date"] == datetime.date(2026, 11, 20)
+    assert row["announcement_count"] == len(CARD_ANNOUNCEMENTS)
 
 
 def test_summarize_card_still_writes_when_news_fails(cards, monkeypatch):
@@ -462,7 +468,7 @@ def test_summarize_card_still_writes_when_news_fails(cards, monkeypatch):
 
 
 def test_summarize_card_skips_done_and_missing(cards):
-    cards.existing.add(key_md5("3653", "20261120"))
+    cards.existing.add(("3653", datetime.date(2026, 11, 20)))
     assert "已經寫過" in ai_task.summarize_card("3653", "20261120")
     assert "不在卡片牆上（stage_watched_stock），跳過" in ai_task.summarize_card("9999", "20261120")
     assert cards.asked == [] and cards.rows == []

@@ -19,7 +19,7 @@
 例外：summarize_news 要新聞全文，全文不存進資料庫（著作權），只能當場再抓一次網頁（用 crawler/client.py 的函式，不另寫爬蟲）。
 每個函式都用 @app.task 註冊成 Celery 任務（見 common/worker.py）；要用本機 embedding 模型的（embed_news、summarize_card）
 在 embed 佇列上跑，其他在 ai 佇列；
-shorten_once、fix_numbers_once、fix_answer、asker、card_news 是任務用的小函式，不是任務。
+shorten_once、fix_numbers_once、fix_answer、asker、skip_news、card_news 是任務用的小函式，不是任務。
 """
 import requests
 
@@ -111,9 +111,12 @@ def classify_announcement(company_id: str, enter_yyyymmdd: str, serial_number: i
     return f"ai_announcement_label/{key}：{label['category']}{f'（{flags}）' if flags else ''}{note}"
 
 
-# 新聞的網頁這次沒辦法摘要（打不開、被擋、全文太短）時，任務結果（job_run.result）有這段字：
-# ai/producer.py 數同一則跳過幾次，到 repository.MAX_FAILED_CALLS 次就不再排（新聞線一天跑好幾次，不會一直重抓同一個網頁）
-PAGE_SKIPPED = "網頁沒辦法摘要"
+def skip_news(news_id: str, reason: str) -> str:
+    """新聞的網頁沒辦法摘要（打不開、被擋、全文太短）：ai_news_summary 記一列「跳過」（model＝repository.NEWS_SKIPPED_MODEL、
+    摘要空的、summary_ok 為否，網站看不到），1 天後才再試（新聞線一天跑好幾次，不會一直重抓同一個網頁）。回傳任務結果那一行。"""
+    repository.insert_news_summary({"news_id": news_id, "prompt_version": summarizer.PROMPT_VERSION, "summary": "",
+                                    "summary_ok": False, "model": repository.NEWS_SKIPPED_MODEL})
+    return f"{news_id} 網頁沒辦法摘要：{reason}，跳過（1 天後再試）"
 
 
 @app.task(base=Job)
@@ -127,22 +130,22 @@ def summarize_news(news_id: str) -> str:
     在 ai 佇列上跑（同時 2 個），沒有 NewsDetailJob 的間隔：要摘要的網頁分散在十幾個網站，同一個網站不會被連續打。
     """
     if repository.has_news_summary(news_id, summarizer.PROMPT_VERSION):
-        return f"{news_id} 已經摘要過（{summarizer.PROMPT_VERSION}），跳過"
+        return f"{news_id} 這一版（{summarizer.PROMPT_VERSION}）已經有結果，跳過（摘要過了，或網頁 1 天內打不開、明天再試）"
     news = repository.read_news(news_id)
     if news is None:
         return f"{news_id} 不在 stage_news，跳過"
 
     unreachable = crawler_client.unreachable_link_problem(news["link"])   # Google 轉址：不打
     if unreachable:
-        return f"{news_id} {PAGE_SKIPPED}：{unreachable}，跳過"
+        return skip_news(news_id, unreachable)
     page = crawler_client.fetch_news_detail(news["link"])   # 逾時、連線失敗：requests 的錯誤直接丟出去（會重試）
     if page.problem:
         if page.status_code and repository.is_temporary_status(page.status_code):
             raise requests.HTTPError(page.problem)   # 5xx、429：丟 requests 的 HTTPError，runner／Celery 會重試
-        return f"{news_id} {PAGE_SKIPPED}：網頁打不開（{page.problem}），跳過"
+        return skip_news(news_id, f"網頁打不開（{page.problem}）")
     text = crawler_client.news_detail_text(page.content) or ""   # 全文只在記憶體裡
     if len(text) < summarizer.MIN_TEXT_CHARS:
-        return f"{news_id} {PAGE_SKIPPED}：全文太短（{len(text)} 字），跳過"
+        return skip_news(news_id, f"全文太短（{len(text)} 字）")
 
     limit = summarizer.summary_limit(text)   # 文章的三成，80～1200 字
     user_message = summarizer.build_user_message(news, text, limit)
@@ -208,16 +211,18 @@ def summarize_card(stock_id: str, date_yyyymmdd: str) -> str:
     輸入（只讀 stage 和其他 AI 結果）：那天的注意股、處置、漲跌幅（repository.card_facts）、近 30 天公告（含公告分類）、
     新聞 RAG 挑出的新聞（有就帶，沒有或出錯照寫）。
     輸入的雜湊值和前一天一樣（例如處置中、沒有新公告、新聞）就沿用前一天的摘要，不呼叫 API。
+    記下給了幾則公告（announcement_count）：寫完以後又出現新的公告（例如傍晚才發），下一輪新聞線重寫這張（見 repository.has_card_summary）。
     """
     key = f"{stock_id}_{date_yyyymmdd}"                       # 結果那一行看得懂
     card_id = key_md5(stock_id, date_yyyymmdd)                # ai_card_summary 的主鍵、ai_llm_call.ref_key
-    if repository.has_card_summary(card_id, card_summarizer.PROMPT_VERSION):
-        return f"{key} 已經寫過（{card_summarizer.PROMPT_VERSION}），跳過"
     day = parse_yyyymmdd(date_yyyymmdd)
+    if repository.has_card_summary(stock_id, day, card_summarizer.PROMPT_VERSION):
+        return f"{key} 已經寫過（{card_summarizer.PROMPT_VERSION}），跳過"
     card = repository.card_facts(stock_id, day)
     if card is None:
         return f"{key} 那天不在卡片牆上（stage_watched_stock），跳過"
-    announcements = repository.recent_announcements(stock_id, parse_yyyymmdd(days_before(date_yyyymmdd, 30)), day)
+    announcements = repository.recent_announcements(
+        stock_id, parse_yyyymmdd(days_before(date_yyyymmdd, repository.CARD_ANNOUNCEMENT_DAYS)), day)
     note = ""
     try:
         news = card_news(card, announcements)
@@ -227,7 +232,8 @@ def summarize_card(stock_id: str, date_yyyymmdd: str) -> str:
     user_message = card_summarizer.build_user_message(card, announcements, news)
     previous = repository.previous_card_summary(stock_id, day, card_summarizer.PROMPT_VERSION)
     if previous and previous["input_hash"] == card_summarizer.input_hash(user_message):
-        repository.insert_card_summary({**previous, "card_id": card_id, "card_date": day, "reused": True})
+        repository.insert_card_summary({**previous, "card_id": card_id, "card_date": day, "reused": True,
+                                        "announcement_count": len(announcements)})
         return f"ai_card_summary/{key}：輸入和 {previous['card_date']} 一樣，沿用"
 
     ask = asker("summarize_card", client.fetch_card_summary, card_summarizer.PROMPT_VERSION)
@@ -235,6 +241,6 @@ def summarize_card(stock_id: str, date_yyyymmdd: str) -> str:
     answer, model, fix_note = fix_answer(ask, card_id, user_message, answer, model, user_message,
                                          card_summarizer.SUMMARY_MAX_CHARS, card_summarizer.shorten_messages,
                                          card_summarizer.without_news_numbers)
-    row = card_summarizer.to_card_row(card, card_id, answer, news, user_message, model)
+    row = {**card_summarizer.to_card_row(card, card_id, answer, news, user_message, model), "announcement_count": len(announcements)}
     repository.insert_card_summary(row)
     return f"ai_card_summary/{key}：{row['summary'][:30]}{'' if row['summary_ok'] else '（summary_ok＝否）'}{note}{fix_note}"

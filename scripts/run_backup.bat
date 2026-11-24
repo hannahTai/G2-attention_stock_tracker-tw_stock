@@ -11,4 +11,7 @@ set UV_LINK_MODE=copy
 if not exist data mkdir data
 echo ===== %date% %time% >> data\backup.log
 uv run python scripts\backup_db.py >> data\backup.log 2>&1
-echo exit code %errorlevel% >> data\backup.log
+set EXIT_CODE=%errorlevel%
+echo exit code %EXIT_CODE% >> data\backup.log
+rem Pass the exit code on, so Task Scheduler shows a failed backup as the last run result
+exit /b %EXIT_CODE%

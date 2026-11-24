@@ -37,12 +37,11 @@ def build_classify_jobs(start: str, end: str) -> list[tuple]:
 
 def build_summary_jobs(start: str, end: str) -> list[tuple]:
     """新聞摘要：區間內（crawler 往前多抓 NEWS_LOOKBACK_DAYS 天，這裡也往前多看）被關注的上市公司（stage_watched_stock，
-    和卡片牆同一批）、有抓到網頁、全文至少 summarizer.MIN_TEXT_CHARS 字、這一版還沒摘要的新聞各一個任務。"""
+    和卡片牆同一批）、有抓到網頁、全文至少 summarizer.MIN_TEXT_CHARS 字、這一版還沒摘要的新聞各一個任務。
+    網頁打不開、全文太短的記一列「跳過」，1 天後才再排（見 ai/task.py 的 skip_news）。"""
     news_ids = repository.list_unsummarized_news(parse_yyyymmdd(days_before(start, NEWS_LOOKBACK_DAYS)), parse_yyyymmdd(end),
                                                  summarizer.PROMPT_VERSION, summarizer.MIN_TEXT_CHARS)
-    # 網頁打不開、全文太短跳過好幾次的不再排（新聞線一天跑好幾次，不會一直重抓同一個被擋的網頁）
-    skipped = repository.repeatedly_skipped("ai.task.summarize_news", task.PAGE_SKIPPED, "news_id")
-    return [(task.summarize_news, {"news_id": news_id}) for news_id in news_ids if news_id not in skipped]
+    return [(task.summarize_news, {"news_id": news_id}) for news_id in news_ids]
 
 
 def build_embed_jobs(start: str, end: str) -> list[tuple]:

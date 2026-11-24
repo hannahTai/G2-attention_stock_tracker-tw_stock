@@ -313,8 +313,7 @@ def test_run_chains_locally_keeps_going_when_one_chain_cannot_build(monkeypatch)
     assert order == ["b1"] and failed == ["第 1 條鏈產生 a1 的任務清單"]
 
 
-def test_summary_jobs_skip_news_whose_page_was_skipped_too_often(monkeypatch):
-    """網頁打不開、全文太短跳過 MAX_FAILED_CALLS 次的新聞不再排（看任務歷史）。"""
+def test_summary_jobs_one_per_news(monkeypatch):
+    """新聞摘要：list_unsummarized_news 給的每則一個任務（1 天內網頁打不開、跳過的，在 SQL 裡就不給了）。"""
     monkeypatch.setattr(ai_producer.repository, "list_unsummarized_news", lambda *a: ["n1", "n2"])
-    monkeypatch.setattr(ai_producer.repository, "repeatedly_skipped", lambda task, mark, arg: {"n2"})
-    assert [kw["news_id"] for _, kw in ai_producer.build_summary_jobs("20261120", "20261120")] == ["n1"]
+    assert [kw["news_id"] for _, kw in ai_producer.build_summary_jobs("20261120", "20261120")] == ["n1", "n2"]

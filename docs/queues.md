@@ -82,7 +82,7 @@ AI 這段在 `ai` 和 `embed` 兩個 worker 之間輪流（圖上一上一下）
 
 ## 8 個 worker
 
-一個 worker 聽一個佇列。三個名字各用在不同地方：Docker 服務（`docker compose restart`）、Celery worker 名稱（Flower、`job_run.worker`）、佇列（RabbitMQ、送任務時指定）。
+一個 worker 聽一個佇列。三個名字各用在不同地方：Docker 服務（`wsl docker compose restart`）、Celery worker 名稱（Flower、`job_run.worker`）、佇列（RabbitMQ、送任務時指定）。
 
 | Docker 服務 | Celery worker 名稱 | 聽的佇列 | 做什麼 | 同時做幾個 | 為什麼是這個數字 |
 |---|---|---|---|---|---|
@@ -103,7 +103,7 @@ AI 這段在 `ai` 和 `embed` 兩個 worker 之間輪流（圖上一上一下）
 
 ## 怎麼看
 
-- **Flower**（http://localhost:5556）：每個 worker 在做什麼、成功或失敗。
+- **Flower**（http://localhost:5556，`.env` 的 `FLOWER_USER`／`FLOWER_PASSWORD` 登入）：每個 worker 在做什麼、成功或失敗。
 - **RabbitMQ 管理介面**（http://localhost:15673）：Queues 頁的 Ready＝每個佇列還排幾個。
 - **任務歷史**：每個任務每跑一次一列。
 

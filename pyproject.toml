@@ -48,7 +48,7 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "common", "crawler", "transform", "analyze", "ai", "api", "dashboard"]
+testpaths = ["tests", "common", "crawler", "transform", "analyze", "ai", "api", "dashboard", "scripts"]
 addopts = "--doctest-modules"
 filterwarnings = ["ignore:SOCKS support in urllib3"]   # trafilatura 載入 urllib3 的 SOCKS 支援（沒用到）
 markers = ["integration: 連本機 PostgreSQL 的整合測試（建測試用資料庫 <資料庫>_test，測完刪掉）"]

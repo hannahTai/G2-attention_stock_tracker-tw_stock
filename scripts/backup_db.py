@@ -17,10 +17,7 @@ import shutil
 import subprocess
 
 from common import date_utils
-from common.config import DB_HOST, DB_NAME, DB_PASSWORD, DB_PORT, DB_USER, PROJECT_ROOT
-
-BACKUP_DIR = pathlib.Path(os.environ.get("BACKUP_DIR", PROJECT_ROOT / "data" / "backup"))
-PG_CONTAINER = os.environ.get("PG_CONTAINER", "postgres")
+from common.config import BACKUP_DIR, DB_HOST, DB_NAME, DB_PASSWORD, DB_PORT, DB_USER, PG_CONTAINER
 
 # --clean --if-exists --create：檔案裡含 DROP／CREATE DATABASE，還原不用先建庫
 # --no-owner：還原時不管原本的擁有者是誰

@@ -26,7 +26,7 @@
 {# 卡片 AI 摘要（ai_card_summary，經 app_card、API）：沒有摘要（還沒寫、沒通過檢查）就寫一行說明。
    有摘要時顯示全文和第三句用到的新聞（標題連結、媒體、日期） #}
 <section class="block">
-  <h3>AI 摘要 <span class="muted">僅供參考，不構成投資建議{% if ai_summary and ai_summary.time %}・<span class="mono">{{ ai_summary.time }}</span>{% endif %}</span></h3>
+  <h3>AI 摘要 <span class="muted">僅供參考，不構成投資建議</span></h3>
   <div class="box">
     {% if ai_summary %}
     <p class="ai-text">{{ ai_summary.summary }}</p>

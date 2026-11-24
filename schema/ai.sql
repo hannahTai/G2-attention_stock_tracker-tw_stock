@@ -87,7 +87,7 @@ COMMENT ON COLUMN ai_news_summary.news_id IS '新聞代號（stage_news.news_id�
 COMMENT ON COLUMN ai_news_summary.prompt_version IS 'prompt 版本（ai/summarizer.py 的 PROMPT_VERSION）；改 prompt 換版本才重跑';
 COMMENT ON COLUMN ai_news_summary.summary IS '摘要（上限依文章長度：文章的三成，80～1200 字，超過會請 LLM 縮短一次；不是新聞內容的為空字串）';
 COMMENT ON COLUMN ai_news_summary.summary_ok IS '摘要通過程式檢查：不是空的、不超過這篇的上限、數字都出現在原文裡；否的話不顯示';
-COMMENT ON COLUMN ai_news_summary.model IS '模型';
+COMMENT ON COLUMN ai_news_summary.model IS '模型；skipped＝網頁打不開、全文太短，沒有問 LLM（summary 是空字串、summary_ok 為否；1 天後再試）';
 COMMENT ON COLUMN ai_news_summary.summarized_at IS '摘要時間（台灣時間）';
 
 -- 新聞 RAG：新聞（標題＋新聞摘要）的向量（pgvector）。每則新聞每個模型一列；換模型另外存一份，比較完再換
@@ -124,19 +124,22 @@ COMMENT ON COLUMN ai_news_story.grouped_at IS '歸類的時間（台灣時間）
 
 -- 卡片 AI 摘要：每張卡片（一檔一天）每個 prompt 版本一列；輸入和前一天一樣就沿用（reused），不呼叫 API
 CREATE TABLE IF NOT EXISTS ai_card_summary (
-    card_id         CHAR(32)     NOT NULL,
-    prompt_version  VARCHAR(20)  NOT NULL,
-    stock_id        VARCHAR(10)  NOT NULL,
-    card_date       DATE         NOT NULL,
-    summary         VARCHAR(300) NOT NULL,
-    news_ids        TEXT[]       NOT NULL DEFAULT '{}',
-    input_hash      CHAR(32)     NOT NULL,
-    summary_ok      BOOLEAN      NOT NULL,
-    reused          BOOLEAN      NOT NULL DEFAULT FALSE,
-    model           VARCHAR(50)  NOT NULL,
-    summarized_at   TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
+    card_id             CHAR(32)     NOT NULL,
+    prompt_version      VARCHAR(20)  NOT NULL,
+    stock_id            VARCHAR(10)  NOT NULL,
+    card_date           DATE         NOT NULL,
+    summary             VARCHAR(300) NOT NULL,
+    news_ids            TEXT[]       NOT NULL DEFAULT '{}',
+    input_hash          CHAR(32)     NOT NULL,
+    summary_ok          BOOLEAN      NOT NULL,
+    reused              BOOLEAN      NOT NULL DEFAULT FALSE,
+    model               VARCHAR(50)  NOT NULL,
+    summarized_at       TIMESTAMP(0) NOT NULL DEFAULT LOCALTIMESTAMP(0),
+    announcement_count  INT,
     PRIMARY KEY (card_id, prompt_version)
 );
+-- 舊的資料庫（這一欄加進來以前建的表）：補上這一欄，舊的列是 NULL（不會因為這一欄重寫）
+ALTER TABLE ai_card_summary ADD COLUMN IF NOT EXISTS announcement_count INT;
 CREATE INDEX IF NOT EXISTS idx_ai_card_summary_stock ON ai_card_summary (stock_id, card_date);   -- app_card 用它接
 COMMENT ON TABLE ai_card_summary IS '卡片 AI 摘要：卡片牆上的每一張（stage_watched_stock）每天 2～3 句白話（最近為什麼漲跌、公告和新聞裡的原因）';
 COMMENT ON COLUMN ai_card_summary.card_id IS '卡片代號：md5(證券代號_日期)，例如 md5(''2330_20261120'')；ai_llm_call.ref_key 記這個';
@@ -149,4 +152,5 @@ COMMENT ON COLUMN ai_card_summary.input_hash IS '輸入的雜湊值（prompt 版
 COMMENT ON COLUMN ai_card_summary.summary_ok IS '摘要通過程式檢查：不超過 150 字、數字都出現在輸入裡、引用的新聞編號是這次給的；否的話不顯示';
 COMMENT ON COLUMN ai_card_summary.reused IS '沿用前一天的摘要（輸入一樣，沒有呼叫 API）';
 COMMENT ON COLUMN ai_card_summary.model IS '模型';
-COMMENT ON COLUMN ai_card_summary.summarized_at IS '寫摘要的時間（台灣時間；沿用前一天的摘要，是原本寫的時間）';
+COMMENT ON COLUMN ai_card_summary.summarized_at IS '這一列寫入的時間（台灣時間；沿用前一天的摘要也是寫入的時間）';
+COMMENT ON COLUMN ai_card_summary.announcement_count IS '寫的時候給了幾則公告（那天往前 30 天）；之後又出現新的公告（例如傍晚才發），下一輪新聞線重寫。NULL＝舊的列，不重寫';
