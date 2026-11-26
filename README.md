@@ -105,7 +105,7 @@ common/                     各資料夾共用（crawler、transform、analyze �
 ├─ runner.py                  四個 producer 共用的任務執行：依序執行、好幾條任務鏈同時進行、暫時性失敗重試、列出失敗
 ├─ cli.py                     四個 producer 共用的指令參數（daily／backfill、--refetch、--part；main.py 多一個 news）
 ├─ config.py                  設定（會因環境改變的值，從 .env 讀）
-├─ worker.py                  Celery app 和任務共用的行為（重試、間隔）；USE_CELERY=1 時任務送進 RabbitMQ（佇列 crawl_twse、crawl_mops、crawl_finmind、crawl_news、transform、analyze、ai、embed）
+├─ worker.py                  Celery app 和任務共用的行為（重試、間隔）；USE_CELERY=1 時任務送進 RabbitMQ（佇列 crawl_twse、crawl_mops、crawl_finmind、crawl_news、transform、analyze、ai）
 ├─ date_utils.py              日期工具
 ├─ rules.py                   處置規則的常數（門檻、計入的款次、新制、處置天數、撮合間隔）：規則引擎和網頁共用
 └─ hash_utils.py              雜湊工具：url_md5（新聞的 news_id＝連結的 md5）
@@ -123,11 +123,11 @@ main.py                     兩條資料線：股價線（證交所 → transfor
 
 ### Docker Compose（一鍵啟動）
 
-PostgreSQL、RabbitMQ、8 個 Celery worker、Flower、資料 API、網頁全部用 Docker 跑（Docker 裝在 WSL 裡，在 PowerShell 要打 `wsl docker compose …`）：
+PostgreSQL、RabbitMQ、7 個 Celery worker、Flower、資料 API、網頁全部用 Docker 跑（Docker 裝在 WSL 裡，在 PowerShell 要打 `wsl docker compose …`）：
 
 ```bash
 cp .env.example .env                                # 填入密碼（資料庫、RabbitMQ 一定要填；AI 項目要 ANTHROPIC_API_KEY，沒填就跳過）
-wsl docker compose up -d --build                        # 啟動（第一次會建表）
+wsl docker compose up -d --build --remove-orphans       # 啟動（第一次會建表；--remove-orphans 順便刪掉 compose 檔已經拿掉的服務，例如舊的 celery-embed）
 wsl docker compose run --rm producer python main.py       # 跑一次股價線：任務送進 RabbitMQ，由 worker 執行
 wsl docker compose run --rm producer python main.py news  # 跑一次新聞線（要讀股價線整理好的注意股）
 ```
@@ -135,7 +135,7 @@ wsl docker compose run --rm producer python main.py news  # 跑一次新聞線�
 開發時 `.env` 的 `COMPOSE_FILE` 把 `docker-compose.local.yml` 疊上來：程式碼直接掛進容器，api、web 存檔自動重載；改了任務的程式要重啟 worker：
 
 ```bash
-wsl docker compose restart celery-crawl-twse celery-crawl-mops celery-crawl-finmind celery-crawl-news   celery-transform celery-analyze celery-ai celery-embed
+wsl docker compose restart celery-crawl-twse celery-crawl-mops celery-crawl-finmind celery-crawl-news   celery-transform celery-analyze celery-ai
 ```
 
 | 服務 | 網址 |
@@ -147,8 +147,8 @@ wsl docker compose restart celery-crawl-twse celery-crawl-mops celery-crawl-finm
 
 只有網頁（8502）開給別台電腦（同一個網路的手機、筆電）；資料庫、RabbitMQ、Flower、資料 API 只開在這台電腦。網頁的容器不拿 `.env`（不連資料庫、不用金鑰）。
 
-8 個 worker 各聽一個佇列（`crawl_twse`、`crawl_mops`、`crawl_finmind`、`crawl_news`、`transform`、`analyze`、`ai`、`embed`），各自控制速度：打外部網站的一次做一個、做完等一下，只碰資料庫的同時做好幾個。
-log 在 `data/logs/`，每天一個檔、留 30 天：`daily-YYYY-MM-DD.log`（股價線）、`news-YYYY-MM-DD.log`（新聞線）、`crawl_twse-…`、`crawl_mops-…`、`crawl_finmind-…`、`crawl_news-…`、`transform-…`、`analyze-…`、`ai-…`、`embed-…`（八個 worker）。每個任務每跑一次另外記一列在 `tw_stock.job_run`（任務歷史，永久保留）。
+7 個 worker 各聽一個佇列（`crawl_twse`、`crawl_mops`、`crawl_finmind`、`crawl_news`、`transform`、`analyze`、`ai`），各自控制速度：打外部網站的一次做一個、做完等一下，只碰資料庫的同時做好幾個。
+log 在 `data/logs/`，每天一個檔、留 30 天：`daily-YYYY-MM-DD.log`（股價線）、`news-YYYY-MM-DD.log`（新聞線）、`crawl_twse-…`、`crawl_mops-…`、`crawl_finmind-…`、`crawl_news-…`、`transform-…`、`analyze-…`、`ai-…`（七個 worker）。每個任務每跑一次另外記一列在 `tw_stock.job_run`（任務歷史，永久保留）。
 
 ### 本機（不用 Docker 跑程式，資料庫還是要有）
 
@@ -163,7 +163,7 @@ uv run python main.py       # 股價線：建表、更新 VIEW（schema/*.sql �
 uv run python main.py news  # 新聞線：抓重大訊息、新聞 → 整理 → AI 項目
 ```
 
-回補一段期間：`uv run python main.py backfill --start 20260701`（兩條線都跑，先股價線；已經抓完整的跳過，加 `--refetch` 全部重抓）。
+回補一段期間：`uv run python main.py backfill --start 20260701`（兩條線都跑，先股價線；已經抓完整的跳過，加 `--refetch` 全部重抓）。AI 任務只有一個 worker、一次做一個，大量回補請挑沒有排程的時段跑，不然排程的新聞線要排在後面等。
 
 網站分兩個程式，開兩個終端機各跑一個（或直接執行 `scripts\run_web.bat`，兩個一起開；Docker Compose 已經在跑就不用，埠號會撞）：
 

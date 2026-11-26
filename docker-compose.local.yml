@@ -3,7 +3,7 @@
 # 把 Windows 上的程式碼直接掛進容器（.:/app），改了存檔就生效，不用每次 --build：
 #   api（FastAPI）    存檔自動重啟（uvicorn --reload）
 #   web（網頁）       存檔自動重啟（uvicorn --reload），重新整理網頁就看得到
-#   Celery worker、producer、setup  用掛進來的最新程式碼；改了任務的程式要 wsl docker compose restart celery-crawl-twse celery-crawl-mops celery-crawl-finmind celery-crawl-news celery-transform celery-analyze celery-ai celery-embed
+#   Celery worker、producer、setup  用掛進來的最新程式碼；改了任務的程式要 wsl docker compose restart celery-crawl-twse celery-crawl-mops celery-crawl-finmind celery-crawl-news celery-transform celery-analyze celery-ai
 #                                  （worker 沒有自動重載：跑到一半的任務重載會被中斷）
 #
 # 為什麼要「輪詢」（polling）：檔案是在 Windows 改的（D:\ 掛到 WSL 的 /mnt/d），Linux 收不到「檔案變了」的通知，
@@ -67,11 +67,6 @@ services:
       - ./data/logs:/app/logs
 
   celery-ai:
-    volumes:
-      - .:/app
-      - ./data/logs:/app/logs
-
-  celery-embed:
     volumes:
       - .:/app
       - ./data/logs:/app/logs

@@ -11,12 +11,12 @@
 - 公告分類：區間內發言、有全文、這個 prompt 版本還沒分類的公告 → ai_announcement_label（佇列 ai）
 - 新聞摘要：區間內（往前多 NEWS_LOOKBACK_DAYS 天）被關注的股票、有抓到網頁、全文夠長、這一版還沒摘要的新聞 → ai_news_summary（佇列 ai）
 - 新聞 RAG：區間內（往前多 NEWS_LOOKBACK_DAYS 天）每天一個任務，標題＋新聞摘要轉成向量 → ai_news_embedding
-  （佇列 embed，不用 API key；要在新聞摘要之後）
+  （佇列 ai，不用 API key；要在新聞摘要之後）
 - 同一件事：整段區間（往前多 NEWS_LOOKBACK_DAYS 天）一個任務，好幾家報同一件事的新聞歸在一起 → ai_news_story（佇列 ai，不用 API key）
 - 卡片 AI 摘要：區間內（往前多 NEWS_LOOKBACK_DAYS 天，補沒寫成的）每個交易日、卡片牆上的每一張
   （stage_watched_stock：往前 30 個交易日被列注意過的上市公司），要的資料都到了才寫，一檔一天一個任務 → ai_card_summary
-  （佇列 embed：查詢也要轉向量；要在公告分類、新聞 RAG 之後）
-順序：公告分類 → 新聞摘要 → 新聞 RAG → 同一件事 → 卡片 AI 摘要。
+  （佇列 ai；要在公告分類、新聞 RAG 之後）
+順序：公告分類 → 新聞摘要 → 新聞 RAG → 同一件事 → 卡片 AI 摘要，全部送佇列 ai（celery-ai 一次做一個，見 common/worker.py）。
 沒設 ANTHROPIC_API_KEY 就跳過要呼叫 Claude 的項目（新聞 RAG 的向量照樣轉，只用標題和導言），不算失敗。
 失敗只影響 AI 的結果，規則引擎算的還差幾次不受影響。
 新聞（FinMind 清單、新聞網頁的導言）由 crawler、transform 抓和整理；摘要要的全文由 task 當場再抓（見 ai/task.py）。
@@ -58,7 +58,7 @@ def build_card_jobs(start: str, end: str) -> list[tuple]:
     """卡片 AI 摘要：區間內（往前多 NEWS_LOOKBACK_DAYS 天）每個交易日、卡片牆上的每一張（stage_watched_stock），
     這一版還沒寫、要的資料都到了的各一個任務（見 repository.list_unsummarized_cards）。
     往前多看：股價線很晚才跑完、新聞抓失敗，沒寫成的卡片之後照樣補寫。
-    照日期排：輸入和前一天一樣就沿用前一天的摘要，要前一天先寫好（embed worker 一次做一個，照送出的順序做）。"""
+    照日期排：輸入和前一天一樣就沿用前一天的摘要，要前一天先寫好（ai worker 一次做一個，照送出的順序做）。"""
     rows = repository.list_unsummarized_cards(parse_yyyymmdd(days_before(start, NEWS_LOOKBACK_DAYS)), parse_yyyymmdd(end),
                                               card_summarizer.PROMPT_VERSION)
     return [(task.summarize_card, {"stock_id": stock_id, "date_yyyymmdd": to_yyyymmdd(day)}) for stock_id, day in rows]
@@ -67,7 +67,7 @@ def build_card_jobs(start: str, end: str) -> list[tuple]:
 def run_all(start: str, end: str) -> list[str]:
     """公告分類 → 新聞摘要 → 新聞 RAG → 同一件事 → 卡片 AI 摘要，回傳失敗的任務。
 
-    用到本機 embedding 模型的任務送 embed 佇列（只有 celery-embed 載入模型），其他送 ai。
+    全部送 ai 佇列（celery-ai 一次做一個：只載入一份 embedding 模型，卡片 AI 摘要照日期先後寫）。
     要呼叫 Claude 的項目沒有 API key 就跳過；向量、同一件事不用 key，照樣跑（夾在中間，順序不能換）。
     """
     failed = []
@@ -76,10 +76,10 @@ def run_all(start: str, end: str) -> list[str]:
         failed += runner.run_jobs(build_summary_jobs(start, end), queue="ai")
     else:
         print("沒設 ANTHROPIC_API_KEY，跳過公告分類、新聞摘要、卡片 AI 摘要")
-    failed += runner.run_jobs(build_embed_jobs(start, end), queue="embed")   # 轉標題＋新聞摘要，排在新聞摘要後面
-    failed += runner.run_jobs(build_story_jobs(start, end), queue="ai")      # 用新聞向量，不用 API key
+    failed += runner.run_jobs(build_embed_jobs(start, end), queue="ai")    # 轉標題＋新聞摘要，排在新聞摘要後面
+    failed += runner.run_jobs(build_story_jobs(start, end), queue="ai")    # 用新聞向量，不用 API key
     if ANTHROPIC_API_KEY:
-        failed += runner.run_jobs(build_card_jobs(start, end), queue="embed")   # 用到公告分類、新聞 RAG 的結果，排最後
+        failed += runner.run_jobs(build_card_jobs(start, end), queue="ai")    # 用到公告分類、新聞 RAG 的結果，排最後
     return failed
 
 

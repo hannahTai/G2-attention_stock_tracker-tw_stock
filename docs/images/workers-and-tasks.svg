@@ -1,0 +1,146 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2100" height="712" viewBox="0 0 2100 712">
+<!-- 任務和 worker：docs/queues.md 用的圖。改這個檔，再用瀏覽器輸出成 workers-and-tasks.png -->
+<style>
+text { font-family: 'Microsoft JhengHei','Noto Sans TC','PingFang TC',sans-serif; }
+.t { font-size: 12.5px; font-weight: 700; fill: #0f172a; text-anchor: middle; }
+.c { font-size: 8.5px; fill: #475569; text-anchor: middle; }
+.g { font-size: 9.5px; font-weight: 700; fill: #1e40af; text-anchor: middle; }
+.hb { font-size: 14px; font-weight: 700; fill: #fff; text-anchor: middle; }
+.hs { font-size: 13px; font-weight: 700; text-anchor: middle; }
+.wn { font-size: 13px; font-weight: 700; }
+.wq { font-size: 10.5px; fill: #475569; }
+.wc { font-size: 9.5px; fill: #64748b; }
+.n { font-size: 11px; fill: #475569; }
+</style>
+<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M0,0 L10,5 L0,10 z" fill="#334155"/></marker></defs>
+<rect width="2100" height="712" fill="#fff"/>
+<line x1="0" y1="86" x2="2100" y2="86" stroke="#e2e8f0"/>
+<text x="16" y="162.0" class="wn" fill="#1e40af">crawl_twse@tw_stock</text>
+<text x="16" y="178.0" class="wq">佇列 crawl_twse</text>
+<text x="16" y="192.0" class="wc">一次 1 個，每個等 1 秒</text>
+<rect x="0" y="250" width="2100" height="61" fill="#f8fafc"/>
+<line x1="0" y1="250" x2="2100" y2="250" stroke="#e2e8f0"/>
+<text x="16" y="274.5" class="wn" fill="#1e40af">crawl_mops@tw_stock</text>
+<text x="16" y="290.5" class="wq">佇列 crawl_mops</text>
+<text x="16" y="304.5" class="wc">一次 1 個，每個等 0.6 秒</text>
+<line x1="0" y1="311" x2="2100" y2="311" stroke="#e2e8f0"/>
+<text x="16" y="335.5" class="wn" fill="#1e40af">crawl_finmind@tw_stock</text>
+<text x="16" y="351.5" class="wq">佇列 crawl_finmind</text>
+<text x="16" y="365.5" class="wc">一次 1 個，每個等 6 秒</text>
+<rect x="0" y="372" width="2100" height="61" fill="#f8fafc"/>
+<line x1="0" y1="372" x2="2100" y2="372" stroke="#e2e8f0"/>
+<text x="16" y="396.5" class="wn" fill="#1e40af">crawl_news@tw_stock</text>
+<text x="16" y="412.5" class="wq">佇列 crawl_news</text>
+<text x="16" y="426.5" class="wc">同時 4 個</text>
+<line x1="0" y1="433" x2="2100" y2="433" stroke="#e2e8f0"/>
+<text x="16" y="457.5" class="wn" fill="#166534">transform@tw_stock</text>
+<text x="16" y="473.5" class="wq">佇列 transform</text>
+<text x="16" y="487.5" class="wc">同時 4 個</text>
+<rect x="0" y="494" width="2100" height="61" fill="#f8fafc"/>
+<line x1="0" y1="494" x2="2100" y2="494" stroke="#e2e8f0"/>
+<text x="16" y="518.5" class="wn" fill="#92400e">analyze@tw_stock</text>
+<text x="16" y="534.5" class="wq">佇列 analyze</text>
+<text x="16" y="548.5" class="wc">同時 2 個</text>
+<line x1="0" y1="555" x2="2100" y2="555" stroke="#e2e8f0"/>
+<text x="16" y="579.5" class="wn" fill="#6b21a8">ai@tw_stock</text>
+<text x="16" y="595.5" class="wq">佇列 ai（Claude API、bge-m3）</text>
+<text x="16" y="609.5" class="wc">一次 1 個，照順序一個接一個</text>
+<line x1="0" y1="616" x2="2100" y2="616" stroke="#e2e8f0"/>
+<rect x="205" y="12" width="755" height="30" rx="4" fill="#1e3a8a"/>
+<text x="582.5" y="32.0" class="hb">股價線：python main.py（週一～五 18:00～22:00）</text>
+<rect x="970" y="12" width="1120" height="30" rx="4" fill="#6b21a8"/>
+<text x="1530.0" y="32.0" class="hb">新聞線：python main.py news（每天 08:00 起每 3 小時）</text>
+<rect x="205" y="48" width="500" height="26" rx="4" fill="#fff" stroke="#1e40af" stroke-width="1.5"/>
+<text x="455.0" y="66.0" class="hs" fill="#1e40af">crawler：證交所 → raw_*</text>
+<rect x="715" y="48" width="117" height="26" rx="4" fill="#fff" stroke="#166534" stroke-width="1.5"/>
+<text x="773.5" y="66.0" class="hs" fill="#166534">transform</text>
+<rect x="842" y="48" width="118" height="26" rx="4" fill="#fff" stroke="#92400e" stroke-width="1.5"/>
+<text x="901.0" y="66.0" class="hs" fill="#92400e">analyze</text>
+<rect x="970" y="48" width="245" height="26" rx="4" fill="#fff" stroke="#1e40af" stroke-width="1.5"/>
+<text x="1092.5" y="66.0" class="hs" fill="#1e40af">crawler：觀測站、新聞 → raw_*</text>
+<rect x="1225" y="48" width="115" height="26" rx="4" fill="#fff" stroke="#166534" stroke-width="1.5"/>
+<text x="1282.5" y="66.0" class="hs" fill="#166534">transform</text>
+<rect x="1350" y="48" width="740" height="26" rx="4" fill="#fff" stroke="#6b21a8" stroke-width="1.5"/>
+<text x="1720.0" y="66.0" class="hs" fill="#6b21a8">ai</text>
+<line x1="965" y1="80" x2="965" y2="616" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6 4"/>
+<rect x="205" y="111" width="124" height="112" rx="6" fill="none" stroke="#1e40af" stroke-width="1.5" stroke-dasharray="5 3"/>
+<text x="267.0" y="125" class="g">一起送出 2 個</text>
+<rect x="211" y="130" width="112" height="38" rx="4" fill="#dbeafe" stroke="#1e40af" stroke-width="1.5"/>
+<text x="267.0" y="147" class="t">開休市日期</text>
+<text x="267.0" y="161" class="c">crawl_holiday</text>
+<rect x="211" y="176" width="112" height="38" rx="4" fill="#dbeafe" stroke="#1e40af" stroke-width="1.5"/>
+<text x="267.0" y="193" class="t">市場成交</text>
+<text x="267.0" y="207" class="c">crawl_market_daily</text>
+<rect x="345" y="149" width="112" height="38" rx="4" fill="#dbeafe" stroke="#1e40af" stroke-width="1.5"/>
+<text x="401.0" y="166" class="t">收盤行情</text>
+<text x="401.0" y="180" class="c">crawl_stock_price</text>
+<rect x="476" y="149" width="112" height="38" rx="4" fill="#dbeafe" stroke="#1e40af" stroke-width="1.5"/>
+<text x="532.0" y="166" class="t">處置股</text>
+<text x="532.0" y="180" class="c">crawl_punish</text>
+<rect x="600" y="88" width="124" height="158" rx="6" fill="none" stroke="#1e40af" stroke-width="1.5" stroke-dasharray="5 3"/>
+<text x="662.0" y="102" class="g">一起送出 3 個</text>
+<rect x="606" y="112" width="112" height="38" rx="4" fill="#dbeafe" stroke="#1e40af" stroke-width="1.5"/>
+<text x="662.0" y="129" class="t">注意股</text>
+<text x="662.0" y="143" class="c">crawl_notice</text>
+<rect x="606" y="156" width="112" height="38" rx="4" fill="#dbeafe" stroke="#1e40af" stroke-width="1.5"/>
+<text x="662.0" y="173" class="t">注意累計名單</text>
+<text x="662.0" y="187" class="c">crawl_punish_watchlist</text>
+<rect x="606" y="198" width="112" height="38" rx="4" fill="#dbeafe" stroke="#1e40af" stroke-width="1.5"/>
+<text x="662.0" y="215" class="t">上市公司清單</text>
+<text x="662.0" y="229" class="c">crawl_company</text>
+<path d="M329,168 L343,168" fill="none" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+<path d="M457,168 L474,168" fill="none" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+<path d="M588,168 L598,168" fill="none" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+<rect x="717" y="444" width="112" height="38" rx="4" fill="#dcfce7" stroke="#166534" stroke-width="1.5"/>
+<text x="773.0" y="461" class="t">整理證交所的</text>
+<text x="773.0" y="475" class="c">transform_xxx，7 種</text>
+<path d="M662,246 L662,463 L715,463" fill="none" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+<rect x="846" y="506" width="112" height="38" rx="4" fill="#fef3c7" stroke="#92400e" stroke-width="1.5"/>
+<text x="902.0" y="523" class="t">還差幾次</text>
+<text x="902.0" y="537" class="c">analyze_progress</text>
+<path d="M773,482 L773,525 L844,525" fill="none" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+<rect x="975" y="261" width="112" height="38" rx="4" fill="#dbeafe" stroke="#1e40af" stroke-width="1.5"/>
+<text x="1031.0" y="278" class="t">重大訊息清單</text>
+<text x="1031.0" y="292" class="c">crawl_announcement</text>
+<rect x="1100" y="261" width="124" height="38" rx="4" fill="#dbeafe" stroke="#1e40af" stroke-width="1.5"/>
+<text x="1162.0" y="278" class="t">重大訊息全文</text>
+<text x="1162.0" y="292" class="c">crawl_announcement_detail</text>
+<path d="M1087,280 L1098,280" fill="none" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+<rect x="975" y="322" width="112" height="38" rx="4" fill="#dbeafe" stroke="#1e40af" stroke-width="1.5"/>
+<text x="1031.0" y="339" class="t">新聞清單</text>
+<text x="1031.0" y="353" class="c">crawl_stock_news</text>
+<rect x="1100" y="383" width="112" height="38" rx="4" fill="#dbeafe" stroke="#1e40af" stroke-width="1.5"/>
+<text x="1156.0" y="400" class="t">新聞網頁</text>
+<text x="1156.0" y="414" class="c">crawl_news_detail</text>
+<path d="M1031,360 L1031,402 L1098,402" fill="none" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+<rect x="1227" y="444" width="112" height="38" rx="4" fill="#dcfce7" stroke="#166534" stroke-width="1.5"/>
+<text x="1283.0" y="461" class="t">整理公告、新聞</text>
+<text x="1283.0" y="475" class="c">transform_xxx，4 種</text>
+<path d="M1224,280 L1283,280 L1283,442" fill="none" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+<path d="M1156,421 L1156,463 L1225,463" fill="none" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+<rect x="1364" y="566" width="112" height="38" rx="4" fill="#f3e8ff" stroke="#6b21a8" stroke-width="1.5"/>
+<text x="1420.0" y="583" class="t">公告分類</text>
+<text x="1420.0" y="597" class="c">classify_announcement</text>
+<rect x="1508" y="566" width="112" height="38" rx="4" fill="#f3e8ff" stroke="#6b21a8" stroke-width="1.5"/>
+<text x="1564.0" y="583" class="t">新聞摘要</text>
+<text x="1564.0" y="597" class="c">summarize_news</text>
+<path d="M1476,585.0 L1506,585.0" fill="none" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+<rect x="1652" y="566" width="112" height="38" rx="4" fill="#f3e8ff" stroke="#6b21a8" stroke-width="1.5"/>
+<text x="1708.0" y="583" class="t">新聞向量</text>
+<text x="1708.0" y="597" class="c">embed_news</text>
+<path d="M1620,585.0 L1650,585.0" fill="none" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+<rect x="1796" y="566" width="112" height="38" rx="4" fill="#f3e8ff" stroke="#6b21a8" stroke-width="1.5"/>
+<text x="1852.0" y="583" class="t">同一件事</text>
+<text x="1852.0" y="597" class="c">group_news_stories</text>
+<path d="M1764,585.0 L1794,585.0" fill="none" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+<rect x="1940" y="566" width="112" height="38" rx="4" fill="#f3e8ff" stroke="#6b21a8" stroke-width="1.5"/>
+<text x="1996.0" y="583" class="t">卡片 AI 摘要</text>
+<text x="1996.0" y="597" class="c">summarize_card</text>
+<path d="M1908,585.0 L1938,585.0" fill="none" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+<path d="M1283,482 L1283,585.0 L1362,585.0" fill="none" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+<text x="16" y="644" class="n">一列＝一個 worker（Celery worker 名稱、它聽的佇列、同時做幾個）　方塊＝任務　箭頭＝前面那批全部做完才送後面</text>
+<text x="16" y="662" class="n">虛線框＝同一批一起送進佇列，互不等（crawl_twse 一次做一個，所以框裡是一個接一個做完）　同一欄、不同 worker 的同時進行</text>
+<text x="16" y="680" class="n">AI 的五個任務都在 ai 這個 worker，一次一個、照箭頭順序做：只載入一份 bge-m3 模型，卡片 AI 摘要也照日期先後寫</text>
+<text x="16" y="698" class="n">兩條線各自排程，只靠 stage_watched_stock 接起來：新聞線讀股價線整理好的注意股，決定查哪些公司；卡片 AI 摘要只寫注意股整理好的日子</text>
+</svg>

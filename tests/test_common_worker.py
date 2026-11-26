@@ -258,12 +258,12 @@ def test_job_log_failure_does_not_break_the_task(monkeypatch, capsys):
 
 
 @pytest.mark.parametrize("key, expected", [
-    ("key", [("build_classify_jobs", "ai"), ("build_summary_jobs", "ai"), ("build_embed_jobs", "embed"),
-             ("build_story_jobs", "ai"), ("build_card_jobs", "embed")]),
-    ("", [("build_embed_jobs", "embed"), ("build_story_jobs", "ai")]),
+    ("key", [("build_classify_jobs", "ai"), ("build_summary_jobs", "ai"), ("build_embed_jobs", "ai"),
+             ("build_story_jobs", "ai"), ("build_card_jobs", "ai")]),
+    ("", [("build_embed_jobs", "ai"), ("build_story_jobs", "ai")]),
 ])
 def test_ai_producer_order_and_queues(monkeypatch, key, expected):
-    """公告分類 → 新聞摘要 → 新聞向量 → 同一件事 → 卡片 AI 摘要；用本機模型的送 embed，其他送 ai。
+    """公告分類 → 新聞摘要 → 新聞向量 → 同一件事 → 卡片 AI 摘要，全部送 ai。
     沒有 API key：只做不用 Claude 的新聞向量、同一件事。"""
     sent = []
     monkeypatch.setattr(ai_producer, "ANTHROPIC_API_KEY", key)

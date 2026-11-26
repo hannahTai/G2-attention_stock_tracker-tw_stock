@@ -4,7 +4,7 @@
   to_pgvector(vector)、from_pgvector(text)：向量 ↔ pgvector 的寫法 "[0.1,0.2,…]"
 
 模型第一次用時從 Hugging Face 下載（約 2.3 GB），存在 HF_HOME（容器裡是 /app/data/hf，重建 image 不用再下載）。
-一個行程只載入一次（get_model 有快取）；只有 embed worker（celery-embed）載入模型，其他 worker 不會多佔一份記憶體。
+一個行程只載入一次（get_model 有快取）；只有 ai worker（celery-ai）載入模型，其他 worker 不會多佔一份記憶體。
 """
 import functools
 import json

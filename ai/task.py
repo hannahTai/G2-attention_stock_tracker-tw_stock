@@ -17,8 +17,7 @@
 只讀 stage 表和前面的 AI 結果，不讀規則引擎的結果（app）：新聞線跑它，和股價線的 analyze 互不等。
 只寫自己的 ai_* 表，失敗不影響資料線和其他任務。
 例外：summarize_news 要新聞全文，全文不存進資料庫（著作權），只能當場再抓一次網頁（用 crawler/client.py 的函式，不另寫爬蟲）。
-每個函式都用 @app.task 註冊成 Celery 任務（見 common/worker.py）；要用本機 embedding 模型的（embed_news、summarize_card）
-在 embed 佇列上跑，其他在 ai 佇列；
+每個函式都用 @app.task 註冊成 Celery 任務（見 common/worker.py），全部在 ai 佇列上跑（一次一個）；
 shorten_once、fix_numbers_once、fix_answer、asker、skip_news、card_news 是任務用的小函式，不是任務。
 """
 import requests
@@ -127,7 +126,7 @@ def summarize_news(news_id: str) -> str:
     網頁這次打不開（被擋、不是網頁）或全文太短就跳過，不問 LLM；5xx、429、逾時丟錯誤重試（requests 的錯誤）。
     摘要上限依文章長度（summarizer.summary_limit：文章的三成，80～1200 字）；
     超過就請 LLM 縮短，只重問一次（和公告分類一樣），還是太長就照存，summary_ok＝否。
-    在 ai 佇列上跑（同時 2 個），沒有 NewsDetailJob 的間隔：要摘要的網頁分散在十幾個網站，同一個網站不會被連續打。
+    在 ai 佇列上跑（一次一個），沒有 NewsDetailJob 的間隔：要摘要的網頁分散在十幾個網站，同一個網站不會被連續打。
     """
     if repository.has_news_summary(news_id, summarizer.PROMPT_VERSION):
         return f"{news_id} 這一版（{summarizer.PROMPT_VERSION}）已經有結果，跳過（摘要過了，或網頁 1 天內打不開、明天再試）"

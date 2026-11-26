@@ -57,7 +57,7 @@ AI（新聞線：只讀 stage_* 和前面的 AI 結果，不讀 app_*；和股�
 | 呼叫方式 | 直接用 Anthropic SDK，不用 LangChain、LlamaIndex | 步驟少、每一步看得到；一則問一次，system prompt 標快取 |
 | embedding 模型 | bge-m3（本機跑，1024 維） | 中文效果好、免費、資料不用送出去 |
 | 向量存哪 | PostgreSQL 的 pgvector | 見下面「為什麼用 pgvector，不另外架 Chroma」 |
-| 佇列 | `ai`（呼叫 Claude，同時 2 個）、`embed`（要用 bge-m3 的，一次 1 個） | Claude API 有速率限制；模型約 2.3 GB 記憶體，只載入一份 |
+| 佇列 | `ai`（呼叫 Claude、用 bge-m3 的都在這裡，一次 1 個） | 模型約 2.3 GB 記憶體，只載入一份；卡片 AI 摘要要照日期先後寫 |
 
 ## ① 公告分類
 

@@ -105,7 +105,7 @@ def run_jobs(jobs: list[tuple], sleep: float = 0.0, retries: int = MAX_RETRIES, 
 
     sleep：每個任務之後等幾秒（打 API 太快會被擋）。retries：暫時性的失敗重試幾次（見 is_retryable）。
     queue：USE_CELERY=1 時送到哪個佇列
-    （crawl_twse、crawl_mops、crawl_finmind、crawl_news、transform、analyze、ai、embed，見 common/worker.py），
+    （crawl_twse、crawl_mops、crawl_finmind、crawl_news、transform、analyze、ai，見 common/worker.py），
     一定要給；沒開就在這裡依序執行，不用給。
     """
     if USE_CELERY:   # 重試、間隔都在 worker 那邊做（Job）
