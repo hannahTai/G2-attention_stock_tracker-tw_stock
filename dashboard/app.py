@@ -11,6 +11,8 @@
     ?date=20261120&tab=one&only=listed   總覽：交易日、分頁、「只看」篩選
     ?q=2330                              總覽只留代號或名稱符合的（搜尋框）
     ?stock=1795&date=20261120            個股頁
+    ?view=stats&date=20261120&part=history&history=30&period=week   統計頁（part：分頁，未來幾日 future／歷史統計 history）
+        history：歷史統計看近 30、60 個交易日或新制以來（all）；period：新增處置每日（day）／每週（week）
 伺服器直接回完整的 HTML（CSS 在 <head>），瀏覽器換頁時舊的畫面留到新的出來才換，不會整頁閃一下空白。
 API 在同一台、查詢很快（幾十毫秒），所以不另外加 cache。
 """
@@ -22,7 +24,7 @@ import fastapi.responses
 import fastapi.staticfiles
 
 from common.date_utils import parse_yyyymmdd_strict
-from dashboard import client, render
+from dashboard import client, render, views
 
 # 網頁不是 API：不開 /docs、/openapi.json（openapi_url=None 連 /docs、/redoc 一起關掉）
 app = fastapi.FastAPI(openapi_url=None)
@@ -49,6 +51,19 @@ def page_html(params) -> tuple[str, int]:
     except ValueError:
         return render.error_html(f"看不懂日期「{params.get('date')}」；請寫成 20261120。"), 400
     try:
+        if params.get("view") == "stats":
+            part = params.get("part", "future")
+            if part not in views.PARTS:
+                return render.error_html(f"看不懂「part={part}」；只能看未來幾日（future）或歷史統計（history）。"), 400
+            history = params.get("history", "30")
+            if history not in views.HISTORIES:
+                return render.error_html(f"看不懂「history={history}」；只能看近 30、60 個交易日（30、60）或新制以來（all）。"), 400
+            period = params.get("period", "week")
+            if period not in views.PERIODS:
+                return render.error_html(f"看不懂「period={period}」；只能看每日（day）或每週（week）。"), 400
+            # 先問 /stats 是哪一天，卡片拿同一天的（兩次之間資料線剛好算完新的一天也不會混）
+            stats = client.stats(requested, period, history)
+            return render.stats_html(client.cards(stats["trade_date"]), stats, client.dates(), requested, part), 200
         stock_id = params.get("stock")
         if stock_id:
             back_params = {key: params.get(key, "") for key in ("tab", "only", "q")}   # 從哪個分頁、篩選、搜尋點進來的

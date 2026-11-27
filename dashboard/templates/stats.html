@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+{% import "_charts.html" as chart %}
+
+{# 統計頁（?view=stats）。兩個分頁（?part=future／history，一次只畫一個）：
+   「明日與未來幾日」（放上面、比較重）：明日交易限制（聽牌、即將處置、處置中，和卡片牆的分頁同名同色）＋未來出關日程
+   「歷史統計」（比較淡，期間可選近 30、60 個交易日或新制以來），照一檔股票從被盯上到被處置的順序：
+   每天被列注意（含第 13 款）→ 聽牌與處置中（同一張）→ 開始處置（每日／每週）→ 被處置前最常被列哪一款 → 哪些產業比較常被列注意
+   文字：標題是讀者會問的問題，結論一句白話，條文用語（第 13 款、預收款券）放括號當補充。
+   資料都在 views.stats_page()、圖的座標在 charts.py。每張圖先一句結論（.insight，只陳述數字，不推論以後會怎樣），再放圖；
+   換網址的切換：?history=30／60／all（歷史統計的期間）、?period=day／week（新增處置）。static/stats.js 在背景抓新的頁面、
+   只換掉 data-swap 寫的那幾塊（空白隔開），不整頁重新載入；沒有 JavaScript 時照樣是一般連結。
+   分頁在標題列（base.html 的 #page-nav：卡片牆／未來幾日／歷史統計）；換期間、分頁時 #page-nav 和交易日選單（#stats-head）也一起換，
+   連結才會帶著新的參數。 #}
+
+{% block title %}統計・注意股，還差幾步？{% endblock %}
+
+{% block header_right %}
+<div class="stats-head" id="stats-head">
+{# 交易日選單：和卡片牆一樣，只在開發時顯示（SHOW_DATE_PICKER） #}
+{% if show_date_picker %}
+<details class="datepick">
+  <summary>交易日 <span class="mono">{{ roc(day) }}</span></summary>
+  <nav class="datepick-list" aria-label="交易日">
+    {% for d in dates %}
+    <a href="?{{ stats_query(date=ymd(d)) }}" {% if d == day %}aria-current="date"{% endif %}><span class="mono">{{ roc(d) }}</span></a>
+    {% endfor %}
+  </nav>
+</details>
+{% endif %}
+</div>
+{% endblock %}
+
+{% block content %}
+
+{# 兩個分頁，一次只畫一個；stats.js 在背景換掉 #stats-body 和標題列，不整頁重新載入 #}
+<div id="stats-body">
+
+{% if part == "future" %}
+<section class="group group-now" aria-labelledby="now-title">
+  <h2 class="sr-only" id="now-title">明日與未來幾日</h2>
+  <div class="now-grid">
+    <section class="block" aria-labelledby="tomorrow-title">
+      <div class="block-head"><h3 id="tomorrow-title">明天的交易限制</h3></div>
+      {% if next_day %}<p class="block-sub"><span class="mono">{{ md(next_day) }}</span> 週{{ next_weekday }}</p>{% endif %}
+      <div class="tomorrow">
+        {% for t in tomorrow %}
+        <a class="tm {{ t.kind }}" href="?{{ wall_query(t.tab) }}">
+          <span class="tm-k">{{ t.label }}</span>
+          <b class="tm-n">{{ t.count }}<span class="tm-unit">檔</span></b>
+          <span class="tm-note">{{ t.note }}</span>
+          <span class="tm-go" aria-hidden="true">›</span>
+        </a>
+        {% endfor %}
+      </div>
+      <p class="note">處置期間，一次買賣 10 張以上、或一天累積 30 張以上，要先把錢或股票交給券商（預收款券）；第二次處置每筆都要。</p>
+    </section>
+
+    <section class="block" aria-labelledby="release-title">
+      <div class="block-head"><h3 id="release-title">接下來哪天出關</h3></div>
+      <p class="block-sub">出關日在處置公告上就寫好了，不是預測</p>
+      <div class="box">
+        <p class="rel-total">未來 {{ release_days }} 個交易日共 <b class="rel-n">{{ releases|sum(attribute="count") }}</b> 檔出關</p>
+        {# 一天一列；點開列出那天出關的是哪幾檔（<details>），名稱連到個股頁。0 檔的不能點開 #}
+        <ol class="rel-list">
+          {% for r in releases %}
+          {% set row %}<span class="rel-day"><span class="mono">{{ md(r.day) }}</span> <span class="muted small">週{{ r.weekday }}</span></span>
+            <span class="rel-bar" role="img" aria-label="{{ md(r.day) }} 出關 {{ r.count }} 檔"><i style="width: {{ r.width }}%"></i><b class="mono">{{ r.count }}</b></span>{% endset %}
+          <li>
+            {% if r.stocks %}
+            <details class="rel"><summary class="rel-row">{{ row }}<span class="chev" aria-hidden="true"></span></summary>
+              <ul class="rel-stocks">{% for s in r.stocks %}<li><a href="?stock={{ s.id }}&amp;date={{ ymd(day) }}">{{ s.name }}<span class="code">{{ s.id }}</span></a></li>{% endfor %}</ul>
+            </details>
+            {% else %}<div class="rel-row">{{ row }}</div>{% endif %}
+          </li>
+          {% endfor %}
+        </ol>
+      </div>
+    </section>
+  </div>
+</section>
+{% else %}
+
+<section class="group group-history" id="history-group" aria-labelledby="history-title">
+  {# 分頁已經寫「歷史統計」：這裡只顯示期間（標題文字留給讀螢幕軟體） #}
+  <div class="group-head"><h2 class="group-title" id="history-title"><span class="sr-only">歷史統計，</span>
+      <span class="period">期間 <span class="mono">{{ md(history_start) }}</span>～<span class="mono">{{ md(day) }}</span></span></h2>
+    <nav class="seg" aria-label="歷史統計的期間">
+      {% for key, name in histories.items() %}<a href="?{{ stats_query(history=key) }}" data-swap="history-group page-nav stats-head" {% if key == history %}class="on" aria-current="true"{% endif %}>{{ name }}</a>{% endfor %}
+    </nav></div>
+
+  <section class="block" aria-labelledby="attention-title">
+    <div class="block-head"><h3 id="attention-title">每天有幾檔被列注意</h3>
+      {{ chart.legend(attention_chart) }}</div>
+    {% if listed_avg is not none %}<p class="insight">平均每天 <b>{{ '%.1f'|format(listed_avg) }}</b> 檔被列注意，其中 <b>{{ '%.1f'|format(clause13_avg) }}</b> 檔列第 13 款（當沖占比過高）。</p>{% endif %}
+    {% if state_totals %}<dl class="mini-stats">
+      <div><dt>被列注意過</dt><dd><b>{{ state_totals.listed_stocks }}</b> 檔</dd></div>
+      <div><dt>其中列過第 13 款</dt><dd><b>{{ state_totals.clause13_stocks }}</b> 檔</dd></div>
+    </dl>{% endif %}
+    <div class="box">
+      {{ chart.line(attention_chart, "每天被列注意的股票檔數，和其中列第 13 款的檔數") }}
+    </div>
+    <p class="note">第 13 款：當沖占比過高。沒有每檔股票的當沖量，所以用列第 13 款的檔數來看當沖熱不熱。上方的檔數是期間內一檔只算一次。</p>
+  </section>
+
+  <section class="block" aria-labelledby="state-title">
+    <div class="block-head"><h3 id="state-title">每天有幾檔處置中、聽牌</h3>
+      {{ chart.legend(state_chart) }}</div>
+    {% if state_avg[0] is not none %}<p class="insight">平均每天處置中 <b>{{ '%.1f'|format(state_avg[0]) }}</b> 檔、聽牌 <b>{{ '%.1f'|format(state_avg[1]) }}</b> 檔；最多處置中 {{ state_peak[0].value }} 檔（{{ md(state_peak[0].day) }}）、聽牌 {{ state_peak[1].value }} 檔（{{ md(state_peak[1].day) }}）。</p>{% endif %}
+    {% if state_totals %}<dl class="mini-stats">
+      <div><dt>聽牌過</dt><dd><b>{{ state_totals.one_stocks }}</b> 檔</dd></div>
+      <div><dt>被處置過</dt><dd><b>{{ state_totals.punished_stocks }}</b> 檔（{{ state_totals.punishments }} 次）</dd></div>
+      <div><dt>其中第二次處置</dt><dd><b>{{ state_totals.second_stocks }}</b> 檔</dd></div>
+    </dl>{% endif %}
+    <div class="box">
+      {{ chart.line(state_chart, "每天處置中和聽牌的股票檔數") }}
+    </div>
+    <p class="note">聽牌：再被列注意 1 次就會處置。第二次處置：30 個營業日內第二次被處置，每筆委託都要預收款券。上方的檔數是期間內一檔只算一次；圖上每天的線會重複算同一檔。</p>
+  </section>
+
+  <section class="block" aria-labelledby="punish-title">
+    <div class="block-head"><h3 id="punish-title">{{ period_name }}有幾檔開始處置</h3>
+      <nav class="seg" aria-label="分組">
+        {% for key, name in periods.items() %}<a href="?{{ stats_query(period=key) }}" data-swap="history-group page-nav stats-head" {% if key == period %}class="on" aria-current="true"{% endif %}>{{ name }}</a>{% endfor %}
+      </nav></div>
+    {% if punish_avg is not none %}<p class="insight">平均{{ period_name }} <b>{{ '%.1f'|format(punish_avg) }}</b> 檔開始處置。</p>{% endif %}
+    {% if punish_ended %}<dl class="mini-stats">
+      <div><dt>期間內已結束的處置</dt><dd><b>{{ punish_ended }}</b> 次</dd></div>
+      <div><dt>其中延長成 {{ extended_days }} 天</dt><dd><b>{{ punish_extended }}</b> 次</dd></div>
+    </dl>{% endif %}
+    <div class="box">
+      {{ chart.columns(punish_chart, period_name ~ "開始處置的股票檔數") }}
+    </div>
+    <p class="note">只算 {{ md(history_start) }} 以後公布的處置；{{ '這週還沒過完' if period == 'week' else '還沒開始的' }}顏色較淡，不算進平均。處置一般 {{ normal_days }} 天，計算期間內曾列第 13 款的延長成 {{ extended_days }} 天。</p>
+  </section>
+
+  <section class="block" aria-labelledby="clause-title">
+    <div class="block-head"><h3 id="clause-title">被處置前，最常被列哪一款</h3></div>
+    {% if clauses.top %}<p class="insight"><b>{{ clauses.top.pct }}%</b> 有第 {{ clauses.top.no }} 款（{{ clauses.top.name }}），最常見。</p>{% endif %}
+    <div class="box">
+      <ol class="hb">
+        {% for r in clauses.rows %}
+        <li class="hb-row"><span class="hb-label">第{{ r.no }}款<span class="muted small"> {{ r.name }}</span></span>
+          <span class="hb-track" aria-hidden="true"><i style="width: {{ r.pct }}%"></i></span>
+          <span class="hb-val"><b class="mono">{{ r.pct }}%</b><span class="hb-sub mono">{{ r.count }} 筆</span></span></li>
+        {% endfor %}
+      </ol>
+    </div>
+    <p class="note">共 {{ clauses.total }} 筆，每一筆是某檔股票某一天被列注意，而且這天有算進處置次數。同一天的注意股可能同時列好幾款，所以加起來超過 100%；第 9～14 款不算處置次數，不列。</p>
+  </section>
+
+  {% macro industry_row(r) -%}
+  <li class="hb-row"><span class="hb-label">{{ r.name }}</span>
+    <span class="hb-track" aria-hidden="true"><i style="width: {{ r.rate }}%"></i></span>
+    <span class="hb-val"><b class="mono">{{ r.rate }}</b><span class="hb-sub mono">{{ r.listed }}／{{ r.companies }}</span></span></li>
+  {%- endmacro %}
+  <section class="block" aria-labelledby="industry-title">
+    <div class="block-head"><h3 id="industry-title">哪些產業比較常被列注意</h3></div>
+    {% if industries.rows %}<p class="insight"><b>{{ industries.rows[0].name }}</b>每 100 家有 <b>{{ industries.rows[0].rate }}</b> 家被列注意，全體上市公司是 {{ industries.overall }} 家。</p>{% endif %}
+    <div class="industry-grid">
+    <div class="box">
+      <ol class="hb">
+        <li class="hb-row base"><span class="hb-label">全體上市公司</span>
+          <span class="hb-track" aria-hidden="true"><i style="width: {{ industries.overall }}%"></i></span>
+          <span class="hb-val"><b class="mono">{{ industries.overall }}</b><span class="hb-sub mono">{{ industries.overall_listed }}／{{ industries.overall_companies }}</span></span></li>
+        {% for r in industries.rows %}{{ industry_row(r) }}{% endfor %}
+      </ol>
+      {% if industries.more %}
+      <details class="more"><summary>顯示其他 {{ industries.more|length }} 個產業</summary>
+        <ol class="hb">{% for r in industries.more %}{{ industry_row(r) }}{% endfor %}</ol>
+      </details>
+      {% endif %}
+    </div>
+    {# 組成：被列注意的公司各產業占多少。甜甜圈的圓周當 100（pathLength），每塊用 stroke-dasharray 畫，塊之間留一點縫 #}
+    {% if industry_share.slices %}
+    <figure class="box share">
+      <figcaption class="share-title">被列注意的 <b>{{ industry_share.total }}</b> 家，是哪些產業</figcaption>
+      <svg class="donut" viewBox="0 0 120 120" role="img" aria-label="被列注意的公司各產業占比：{% for s in industry_share.slices %}{{ s.name }} {{ s.pct }}%{% if not loop.last %}、{% endif %}{% endfor %}">
+        <circle class="donut-bg" cx="60" cy="60" r="44" pathLength="100"/>
+        {% for s in industry_share.slices %}<circle class="sl sl-{{ 'other' if s.other else loop.index0 }}" cx="60" cy="60" r="44" pathLength="100" stroke-dasharray="{{ [s.share - 0.6, 0.1]|max }} 100" stroke-dashoffset="{{ -s.offset }}"/>{% endfor %}
+      </svg>
+      <ul class="share-list">
+        {% for s in industry_share.slices %}<li><i class="sl-key sl-{{ 'other' if s.other else loop.index0 }}"></i><span class="share-name">{{ s.name }}</span><b class="mono">{{ s.pct }}%</b><span class="hb-sub mono">{{ s.listed }} 家</span></li>{% endfor %}
+      </ul>
+    </figure>
+    {% endif %}
+    </div>
+    <p class="note">長條：每 100 家上市公司有幾家被列注意，右邊是被列注意家數／這個產業的上市公司家數。圓餅：被列注意的公司裡各產業占多少，公司多的產業塊就大，不代表比較容易被列注意。</p>
+  </section>
+</section>
+{% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}<script src="/static/stats.js?v={{ js_version }}" defer></script>{% endblock %}

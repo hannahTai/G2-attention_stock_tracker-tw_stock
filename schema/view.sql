@@ -5,8 +5,8 @@
 -- 先 DROP 再 CREATE：重跑會用最新的定義蓋掉舊的，不影響資料
 -- （PostgreSQL 的 CREATE OR REPLACE VIEW 不能拿掉欄位、改欄位順序或型別，所以整個重建）
 
-DROP VIEW IF EXISTS app_card, app_trading_day, app_notice_history, app_punish_history, app_announcement, app_stock_news,
-    stage_watched_stock;
+DROP VIEW IF EXISTS app_card, app_trading_day, app_holiday, app_company, app_notice_history, app_punish_history,
+    app_announcement, app_stock_news, stage_watched_stock;
 
 
 -- ---------- 卡片牆、個股頁最上面 ----------
@@ -123,6 +123,27 @@ CREATE VIEW app_trading_day AS
 SELECT trade_date
 FROM stage_trading_day
 WHERE is_trading;
+
+
+-- ---------- 休市日 ----------
+-- 統計頁推算之後的交易日（未來幾天出關）：還沒發生的日子＝週一～五、扣掉這裡的休市日，和規則引擎一樣（analyze/engine.py 的 add_future_days）
+-- stage_holiday 也列了有交易的日子（「開始交易日」「最後交易日」「補行交易日」，名稱是「…交易日」），不算休市
+-- （和 common/date_utils.py 的 holiday_is_trading 同一個規則；「市場無交易，僅辦理結算交割作業。」結尾不是「交易日」，算休市）
+CREATE VIEW app_holiday AS
+SELECT holiday_date
+FROM stage_holiday
+WHERE btrim(holiday_name) NOT LIKE '%交易日';
+
+
+-- ---------- 上市公司 ----------
+-- 統計頁用：產業分布（每個產業有幾家上市公司、幾家被列注意）、每日檔數只算上市公司（和 app_card.is_company 同一個判斷：下市的也算，那時候是上市公司）
+CREATE VIEW app_company AS
+SELECT
+    company_id,
+    short_name,
+    industry_code,     -- 證交所的產業別代碼，例如 24＝半導體業；名稱在 dashboard/views.py 的 INDUSTRY_NAMES
+    snapshot_date = (SELECT MAX(snapshot_date) FROM stage_company) AS is_listed_now   -- 在最新的上市公司清單上（下市的留著，但不在最新清單）
+FROM stage_company;
 
 
 -- ---------- 注意紀錄 ----------

@@ -2,7 +2,7 @@
 import datetime
 
 from dashboard import views
-from tests.web_fixtures import CARDS, DAY, NEXT, card_of, make_card, stock_detail
+from tests.web_fixtures import CARDS, DAY, NEXT, card_of, make_card, stats_response, stock_detail
 
 
 def section_names(page: dict, key: str) -> list[str]:
@@ -109,3 +109,49 @@ def test_search_filters_cards_but_keeps_tab_counts():
     page = views.overview([dict(c) for c in CARDS], search="1111")
     assert [c["stock_id"] for s in page["sections"] for c in s["cards"]] == ["1111"]
     assert page["counts"]["all"] == views.overview([dict(c) for c in CARDS])["counts"]["all"]   # 分頁數字不跟著搜尋變
+
+
+# ---------- 統計頁 ----------
+def test_stats_tomorrow_limits_and_releases_come_from_the_cards():
+    """下一個交易日 11/23：丁公司開始處置、丙公司恢復正常交易；3 天內出關只有丙公司（丁公司 11/30 才出關）。"""
+    page = views.stats_page([dict(c) for c in CARDS], stats_response())
+    assert page["next_day"] == datetime.date(2026, 11, 23)
+    assert [(t["label"], t["count"], t["tab"]) for t in page["tomorrow"]] == [
+        ("聽牌", 1, "one"), ("即將處置", 1, "soon"), ("處置中", 0, "punish")]
+    assert [r["count"] for r in page["releases"]] == [1, 0, 0, 0, 0]   # 固定看 5 個交易日
+
+
+def test_stats_numbers_for_the_insights():
+    """平均、延長成 7 天的次數、款次比例、產業只列 20 家以上。"""
+    page = views.stats_page([dict(c) for c in CARDS], stats_response())
+    assert (page["listed_avg"], page["clause13_avg"]) == (18.0, 3.0)
+    assert (page["punish_ended"], page["punish_extended"], page["extended_days"]) == (12, 3, 7)
+    assert page["punish_avg"] == 18 / 16   # 8/03～11/16 共 16 週：12、0、6，其他沒處置的週補 0（連到 11/20 那週）
+    assert page["clauses"]["top"]["no"] == 1
+    assert [r["name"] for r in page["industries"]["rows"]] == ["玻璃陶瓷", "電子零組件業", "半導體業"]   # 全部列，家數少的也列
+    assert page["industries"]["overall"] == 29   # 全體（含玻璃陶瓷）：60／205
+    assert sum(s["pct"] for s in page["industry_share"]["slices"]) == 100   # 組成圓餅加起來剛好 100%
+
+
+def test_stats_page_without_next_trading_days_does_not_break():
+    stats = {**stats_response(), "next_trading_days": [], "daily": [], "new_punish": []}
+    page = views.stats_page([dict(c) for c in CARDS], stats)
+    assert page["next_day"] is None and [t["count"] for t in page["tomorrow"]] == [0, 0, 0]
+    assert page["clause13_avg"] is None and page["punish_avg"] == 0   # 沒有處置的週也算，平均 0
+
+
+def test_one_step_card_warns_when_next_punishment_is_the_second():
+    """聽牌、規則引擎算出再處置是 30 個營業日內第二次：多一個「再處置為第二次」小標籤。"""
+    texts = [t["text"] for t in views.tags(card_of("2222"))]   # 乙公司：聽牌、next_punish_round＝2
+    assert texts == ["聽牌", "再處置為第二次", "11/20 注意股"]
+    assert "再處置為第二次" not in [t["text"] for t in views.tags(make_card("7777", "庚公司", steps_left=1))]
+
+
+def test_industry_share_folds_the_rest_into_other():
+    """組成圓餅：家數多的前 4 個產業各一塊，其他合成「其他」放最後；百分比加起來剛好 100。"""
+    rows = [{"industry_code": code, "companies": 50, "listed": n} for code, n in
+            (("28", 30), ("24", 20), ("26", 10), ("27", 5), ("25", 3), ("05", 2))]
+    share = views.industry_share(rows)
+    assert share["slices"][-1]["name"] == "其他" and share["slices"][-1]["listed"] == 5 and share["slices"][-1]["other"]
+    assert len(share["slices"]) == 5 and sum(s["pct"] for s in share["slices"]) == 100 and share["total"] == 70
+    assert views.industry_share([]) == {"total": 0, "slices": []}

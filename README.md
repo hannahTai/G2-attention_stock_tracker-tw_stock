@@ -44,7 +44,7 @@ Source → Ingest → Storage → Process → Serve → Observe
 | Ingest | Python requests；Celery + RabbitMQ 任務佇列（證交所、觀測站、FinMind 各一個 worker 限速，新聞網頁同時 4 個、照網站輪流，Flower 監看）；Windows 工作排程器（之後 Airflow） |
 | Storage | PostgreSQL 三層：`raw_*`（API 原文）→ `stage_*`（清理後）→ `app_*`（引擎結果），另外 `ai_*`（AI 結果、LLM 呼叫紀錄）；之後 Cloud SQL、BigQuery |
 | Process | pandas：`transform/` 整理（raw → stage）、`analyze/` 規則引擎——依要點第六條算離處置還差幾次（stage → app）；`ai/` Claude API——公告分類、新聞摘要、卡片 AI 摘要（結構化輸出），新聞 RAG（本機 bge-m3 轉向量，pgvector 檢索） |
-| Serve | FastAPI 資料 API（只讀 `app_*` 表和 VIEW，回 JSON）＋ 網頁（FastAPI＋Jinja2 範本，卡片牆、個股頁，只打 API、不連資料庫）；Metabase → Looker Studio 儀表板 |
+| Serve | FastAPI 資料 API（只讀 `app_*` 表和 VIEW，回 JSON）＋ 網頁（FastAPI＋Jinja2 範本，卡片牆、個股頁、統計頁，只打 API、不連資料庫） |
 | Observe | `data/logs/`、任務歷史 `tw_stock.job_run`、每天的檢查（資料線、網站、備份，有問題跳 Windows 通知）、AI 品質報表、回測（真實處置 75 筆全部算到，條件也都對上）；GitHub Actions 跑 CI（ruff、全部測試） |
 
 順序是 ELT：原文先存進 raw，再清理、計算；規則改了可以從 raw 重算，不必重抓。每天只處理當天的資料。
@@ -57,7 +57,7 @@ Source → Ingest → Storage → Process → Serve → Observe
 | --- | --- |
 | 個股卡片 | 狀態和收盤價、AI 摘要、近 30 個營業日公告（公開資訊）、新聞資訊、四條路徑還差幾次（處置進度，列出計入的日期）、注意紀錄、處置紀錄（幾號出關） |
 | 卡片牆 | 每間上市公司一張卡片（不含權證、ETF）；分頁：全部、聽牌、即將處置、處置中、明日出關、其他；另可只看那天的注意股、出關（標籤寫日期，例如「11/20 注意股」） |
-| 統計儀表板 | 各款次進入處置的比例、有無公告的差異、產業分布 |
+| 統計頁 | 標題列三個分頁：卡片牆／未來幾日／歷史統計（統計頁兩個分頁之間切換不整頁重新載入）。未來幾日：明天的交易限制（聽牌、即將處置、處置中幾檔，點了到卡片牆同名分頁）、未來 5 個交易日哪天出關（每天幾檔，點開看是哪幾檔）。歷史統計（近 30、60 個交易日或 8/10 新制以來），照被盯上到被處置的順序：每天被列注意幾檔（含第 13 款）、每天處置中與聽牌幾檔、開始處置幾檔（每日／每週）、被處置前最常被列哪一款、各產業列注意比例（每 100 家，全部產業都列，含全體上市公司基準）與被列注意公司的產業組成（圓餅，前 4 名＋其他）。每張圖一句結論和期間合計，只陳述數字；折線的圖例可開關，點圖上任一天看當天數字 |
 
 線框圖見 [`docs/images/`](docs/images/)，詳細定義見 [`docs/proposal.md`](docs/proposal.md) 第 5 節。
 卡片網站實際畫面：[`docs/images/web-1-card-wall.png`](docs/images/web-1-card-wall.png)（卡片牆）、[`docs/images/web-3-stock-card.png`](docs/images/web-3-stock-card.png)（個股卡片）。
@@ -92,14 +92,15 @@ ai/                         AI 項目：只讀 stage 和前面的 AI 結果，�
 └─ verifier.py                檢查 AI 的回答，三個項目共用（摘要裡的數字要出現在原文裡）
 api/                        資料 API：FastAPI 讀 app_* 表和 VIEW，回 JSON
 ├─ main.py                    進入點（uvicorn api.main:app）
-├─ routes.py                  端點：/health、/dates、/cards、/stocks/{代號}（文件在 /docs）
+├─ routes.py                  端點：/health、/dates、/cards、/stocks/{代號}、/stats（文件在 /docs）
 └─ queries.py                 讀資料庫（只讀 app_*，參數化查詢）
 dashboard/                  網頁（FastAPI＋Jinja2）：打資料 API，不直接連資料庫
 ├─ app.py                     進入點（uvicorn dashboard.app:app）：讀網址參數、打 API、回傳整頁 HTML
 ├─ client.py                  呼叫 API（requests），日期字串換回 date
 ├─ views.py                   把資料整理成畫面上的文字、分區、篩選（不碰網路）
+├─ charts.py                  統計頁的圖：只算 SVG 座標（不碰網路、不寫 HTML）
 ├─ render.py                  把資料套進 Jinja2 範本，變成 HTML
-└─ templates/、static/        網頁範本（卡片牆、個股頁）、CSS
+└─ templates/、static/        網頁範本（卡片牆、個股頁、統計頁）、CSS
 common/                     各資料夾共用（crawler、transform、analyze 彼此不互相 import，只用 common；ai 的新聞摘要例外，用 crawler/client.py）
 ├─ repository.py              repository：連線、建表、raw 表讀寫、stage／app 表讀寫
 ├─ runner.py                  四個 producer 共用的任務執行：依序執行、好幾條任務鏈同時進行、暫時性失敗重試、列出失敗

@@ -399,6 +399,8 @@ VIEW 是存起來的查詢，不複製資料；網頁查的時候資料庫才去
 |---|---|---|
 | `app_card` | 卡片牆、個股卡片上半部 | `app_progress` 每一列，加上 `stock_name`、`is_listed_today`、`is_company`（上市公司；卡片牆只放這些，不放權證、ETF）、`close_price`（`stage_stock_price` 當天的收盤；還沒抓到就用注意股公告上的）、`price_change`、`change_pct`（漲跌、漲跌幅 %＝漲跌 ÷（收盤－漲跌）× 100，只有收盤行情有）、`reason_text`、`clauses`（今天被列第幾款，例如 `1,2`）、`is_counted_today`、處置中那次的 `measure_type`／`trigger_condition`／`match_interval_minutes`（和 `app_punish_history` 同名）、`announcement_count`（近 30 個交易日公告則數）、`ai_summary`、`ai_summary_news_ids`、`ai_summary_at`、`ai_summary_reused`（卡片 AI 摘要最新一版、通過檢查的，用到的新聞、寫的時間、是不是沿用前一天的；網頁只顯示摘要和新聞，不顯示寫的時間） |
 | `app_trading_day` | 注意紀錄格子、公告和處置紀錄的起日 | `stage_trading_day` 裡有交易的日子（`trade_date`） |
+| `app_holiday` | 統計頁（未來幾天出關） | `stage_holiday` 的休市日（`holiday_date`）；名稱是「…交易日」的（開始交易日、最後交易日、補行交易日）有交易，不列。推算還沒發生的交易日＝週一～五扣掉休市日，和規則引擎一樣 |
+| `app_company` | 統計頁（每日檔數、款次、產業分布只算上市公司） | `stage_company` 的 `company_id`、`short_name`、`industry_code`（證交所產業別代碼，名稱在網頁的程式裡）、`is_listed_now`（在最新的上市公司清單上；下市的留著但為否，產業分布的家數只算這些）；每日檔數、款次和 `app_card.is_company` 同一個判斷（下市的也算，那時候是上市公司） |
 | `app_notice_history` | 注意紀錄格子 | 每檔每個被列注意的交易日：`clauses`、`is_counted`（true＝累計）、`reason_text`（那天被列的原因全文）。沒被列的日子沒有列；早於 `count_start` 的是「已計入前次處置」 |
 | `app_punish_history` | 處置紀錄 | `stage_punish` 的欄位 |
 | `app_stock_news` | 新聞資訊（網站的新聞列表） | `stage_stock_news` 每一列，用 `news_id` JOIN `stage_news` 帶出標題、媒體（`publisher`）、時間、連結，LEFT JOIN `stage_news_detail` 帶出 `lead`（導言）；3 則以上新聞共用的同一句導言（網站介紹、個股概覽頁）當成沒有，為 NULL。`ai_summary`：`ai_news_summary` 最新一版、通過檢查的摘要。`story_id`：同一件事（`ai_news_story`；還沒歸類就是自己的 `news_id`），API 的新聞列表一件事只列最早的那則；標題有「股市爆料同學會」的論壇貼文不列 |

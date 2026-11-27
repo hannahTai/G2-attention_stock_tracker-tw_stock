@@ -52,6 +52,37 @@ ANNOUNCEMENTS = [
 ]
 
 
+NEXT_TRADING_DAYS = [datetime.date(2026, 11, 23), datetime.date(2026, 11, 24), datetime.date(2026, 11, 25),
+                     datetime.date(2026, 11, 26), datetime.date(2026, 11, 27)]
+
+
+def stats_response() -> dict:
+    """API /stats 的回應（日期已換回 date）。和 CARDS 搭配：下一個交易日 11/23 丁公司開始處置、丙公司恢復正常交易。
+    每日、每週都跨 8/10 新制，前後各有資料（算得出前後平均）。"""
+    return {
+        "trade_date": DAY,
+        "history": "30",
+        "history_start": datetime.date(2026, 8, 3),
+        "next_trading_days": list(NEXT_TRADING_DAYS),
+        "daily": [
+            {"trade_date": datetime.date(2026, 8, 7), "listed": 30, "clause13": 1, "one": 2, "punish": 20},
+            {"trade_date": datetime.date(2026, 8, 10), "listed": 20, "clause13": 3, "one": 1, "punish": 10},
+            {"trade_date": DAY, "listed": 4, "clause13": 5, "one": 1, "punish": 1},
+        ],
+        "period": "week",
+        "new_punish": [{"period_start": datetime.date(2026, 8, 3), "count": 12},
+                       {"period_start": datetime.date(2026, 8, 17), "count": 6}],
+        "punish_lengths": [{"days": 5, "count": 9}, {"days": 7, "count": 3}],
+        "state_totals": {"listed_stocks": 30, "clause13_stocks": 7, "punished_stocks": 5, "punishments": 6, "second_stocks": 1,
+                         "one_stocks": 8},
+        "trigger_clauses": {"total": 10, "by_clause": [{"clause": 1, "count": 7}, {"clause": 2, "count": 3},
+                                                        {"clause": 13, "count": 1}]},
+        "industries": [{"industry_code": "28", "companies": 104, "listed": 36},
+                       {"industry_code": "24", "companies": 96, "listed": 22},
+                       {"industry_code": "08", "companies": 5, "listed": 2}],
+    }
+
+
 def card_of(stock_id: str) -> dict | None:
     return next((dict(c) for c in CARDS if c["stock_id"] == stock_id), None)
 

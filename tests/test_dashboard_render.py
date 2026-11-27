@@ -2,7 +2,7 @@
 import datetime
 
 from dashboard import render, views
-from tests.web_fixtures import CARDS, DAY, NEXT, card_of, make_card, stock_detail
+from tests.web_fixtures import CARDS, DAY, NEXT, card_of, make_card, stats_response, stock_detail
 
 
 def overview(tab: str = "all", only: str = "", requested: datetime.date | None = None, cards=None) -> str:
@@ -421,7 +421,8 @@ def test_stock_hero_uses_the_card_layout():
     """個股頁最上面和總覽卡片同一個版面：標籤在名稱右邊（小框在左、色塊在右）、進度條、底部收盤價｜公告。"""
     page = render.stock_html(stock_detail(card_of("2222")))   # 乙公司：聽牌、今天被列
     hero = page[page.index('<div class="hero'):page.index("AI 摘要")]
-    assert '<div class="card-tags"><span class="sub-tag acc">11/20 注意股</span><span class="pill amber">聽牌</span></div>' in hero
+    assert ('<div class="card-tags"><span class="sub-tag mut">再處置為第二次</span><span class="sub-tag acc">11/20 注意股</span>'
+            '<span class="pill amber">聽牌</span></div>') in hero
     assert 'class="progress"' in hero and 'class="card-foot"' in hero and 'href="#announcements"' in hero
 
 
@@ -433,3 +434,115 @@ def test_card_shows_change_next_to_close():
     assert '725.00</span> <span class="chg up mono">▲3.50%</span>' in page
     assert '<span class="chg down mono">▼1.20%</span>' in page
     assert page.split("壬公司")[1].split("</article>")[0].count("chg ") == 0
+
+
+# ---------- 統計頁 ----------
+def stats_page(requested: datetime.date | None = None, stats: dict | None = None, part: str = "history") -> str:
+    return render.stats_html({"trade_date": DAY, "cards": [dict(c) for c in CARDS]}, stats or stats_response(), [DAY],
+                             requested, part)
+
+
+def test_stats_page_has_two_tabs_drawn_one_at_a_time():
+    """兩個分頁：未來幾日（明天的交易限制、接下來哪天出關）、歷史統計（三張圖＋款次＋產業），一次只畫一個。"""
+    future, history = stats_page(part="future"), stats_page()
+    assert all(f'id="{i}-title"' in future for i in ("tomorrow", "release")) and 'id="history-group"' not in future
+    ids = ["history", "attention", "state", "punish", "clause", "industry"]
+    positions = [history.index(f'id="{i}-title"') for i in ids]
+    assert positions == sorted(positions) and 'id="tomorrow-title"' not in history
+    assert history.count('<svg class="chart') == 3
+    assert 'aria-current="page">未來幾日' in future and 'aria-current="page">歷史統計' in history
+    assert 'href="?view=stats&amp;date=20261120&amp;part=history" data-swap="stats-body page-nav stats-head"' in future
+    assert future.index('id="page-nav"') < future.index('id="main"')   # 分頁在標題列：卡片牆／未來幾日／歷史統計
+
+
+def test_stats_page_links_go_to_the_right_places():
+    """明日交易限制連到卡片牆的同名分頁；歷史期間、每日／每週是換網址，帶著其他參數，預設值不寫。"""
+    future = stats_page(part="future")
+    for tab in ("one", "soon", "punish"):
+        assert f'href="?date=20261120&amp;tab={tab}"' in future
+    page = stats_page(stats={**stats_response(), "history": "60"})
+    assert "tab=leave_tomorrow" not in future   # 明日出關在出關日程的第一列，不另外一格
+    assert 'href="?view=stats&amp;date=20261120&amp;part=history"' in page   # 近 30 個交易日、每週是預設，不寫
+    assert 'href="?view=stats&amp;date=20261120&amp;part=history&amp;history=60&amp;period=day"' in page
+    assert 'class="on" aria-current="true">近 60 個交易日' in page and 'class="on" aria-current="true">每週' in page
+    assert "日</a>" not in future.split('id="release-title"')[1].split("</section>")[0]   # 出關日程沒有 2／3／5 日的切換
+
+
+def test_release_rows_open_to_list_the_stocks():
+    """未來出關日程：有出關的那天點開列出是哪幾檔（連到個股頁）；0 檔的不能點開。丙公司 11/23 出關。"""
+    page = stats_page(part="future")
+    opened = page.split('<details class="rel">')[1].split("</details>")[0]
+    assert "11/23" in opened and 'href="?stock=3333&amp;date=20261120">丙公司' in opened
+    assert page.count('<details class="rel">') == 1   # 其他天 0 檔
+
+
+def test_stats_insights_state_numbers_only():
+    page = stats_page()
+    assert "平均每天 <b>18.0</b> 檔被列注意，其中 <b>3.0</b> 檔列第 13 款" in page
+    assert "平均每週 <b>1.1</b> 檔開始處置" in page
+    assert "<dt>其中延長成 7 天</dt><dd><b>3</b> 次</dd>" in page   # 圖上沒有的數字放數字卡
+    assert "<dt>被處置過</dt><dd><b>5</b> 檔（6 次）</dd>" in page and "<dt>聽牌過</dt><dd><b>8</b> 檔</dd>" in page
+    assert "<dt>被列注意過</dt><dd><b>30</b> 檔</dd>" in page and "<dt>其中列過第 13 款</dt><dd><b>7</b> 檔</dd>" in page
+    assert page.index("<dt>聽牌過</dt>") < page.index("<dt>被處置過</dt>")   # 照流程：聽牌 → 處置
+    assert "平均每天處置中 <b>10.3</b> 檔、聽牌 <b>1.3</b> 檔；最多處置中 20 檔（08/07）、聽牌 2 檔（08/07）" in page
+    assert "當沖太多" not in page   # 用正式的「第 13 款」
+    assert "有 <b>1</b> 檔處置中" not in page and "end-n" not in page   # 歷史統計不強調最後一天的數字
+    assert "全體上市公司是" in page   # 產業有基準
+    assert "新制施行前" not in page and "舊制" not in page and "主因" not in page   # 只陳述數字
+    assert "會漲" not in page and "推薦" not in page
+
+
+def test_daily_punish_period():
+    page = stats_page(stats={**stats_response(), "period": "day", "new_punish": [{"period_start": DAY, "count": 2}]})
+    assert "平均每日 <b>" in page and "每日有幾檔開始處置" in page
+
+
+def test_nav_switches_between_wall_and_stats_and_keeps_the_date():
+    assert 'aria-current="page">歷史統計</a>' in stats_page() and 'aria-current="page">未來幾日</a>' in stats_page(part="future")
+    wall = overview()
+    assert '<a href="?date=20261120" aria-current="page">卡片牆</a>' in wall
+    assert '<a href="?view=stats&amp;date=20261120">未來幾日</a>' in wall
+    assert '<a href="?view=stats&amp;part=history&amp;date=20261120">歷史統計</a>' in wall
+    stock = render.stock_html(stock_detail(card_of("2222")))
+    assert 'aria-current="page">' not in stock.split('class="nav"')[1].split("</nav>")[0]   # 個股頁兩個都不標
+
+
+def test_glossary_explains_day_trading_and_margin():
+    page = render.stock_html(stock_detail(card_of("3333")))
+    assert "當沖、融資融券" in page and "融資自備款或融券保證金" in page
+
+
+def test_chart_points_show_a_tip_card_on_tap():
+    """每天一塊點得到（tabindex="-1"，不是 Tab 停點）的區域，裡面有說明卡片：日期＋每條線的名稱和數字。"""
+    page = stats_page()
+    point = page.split('<g class="pt" tabindex="-1" aria-label="11/20：注意股 4 檔、第 13 款 5 檔">')[1].split("</g></g>")[0]
+    assert '<text class="tip-date"' in point and "11/20（週五）" in point
+    assert '<text class="tip-row"' in point and ">注意股</text>" in point and '>4</text>' in point
+    assert 'tabindex="0"' not in page.split("<main")[1]   # 圖上不是 Tab 停點
+    assert "<title>" not in page.split("<body>")[1]   # 圖裡不用瀏覽器內建的小提示
+
+
+def test_history_switches_swap_the_section_without_reloading():
+    """歷史期間、每日／每週的切換：連結上有 data-swap（stats.js 只換掉歷史統計那一塊），沒有 JavaScript 時照樣是一般連結。"""
+    page = stats_page()
+    assert 'id="history-group"' in page and page.count('data-swap="history-group page-nav stats-head"') == 5   # 3 個期間＋每日、每週
+    assert page.count('data-swap="stats-body page-nav stats-head"') == 2   # 兩個分頁
+    assert '<script src="/static/stats.js' in page
+    assert "stats.js" not in overview()   # 其他頁沒有 JavaScript
+
+
+def test_line_chart_legend_toggles_each_line():
+    """折線圖的圖例是開關：每條線一個 checkbox，線、線尾名稱、說明卡片那一行都標了同一個 k-xxx，取消勾選就一起藏起來。"""
+    page = stats_page()
+    state = page.split('id="state-title"')[1].split("</section>")[0]
+    assert '<input type="checkbox" class="lg-seal" checked>' in state and '<input type="checkbox" class="lg-amber" checked>' in state
+    assert 'class="ln ln-seal k-seal"' in state and 'class="end k-amber"' in state and '<g class="k-amber">' in state
+
+
+def test_industry_block_has_rate_bars_and_share_donut():
+    """產業那張：左邊比例長條，右邊組成圓餅（每個產業一塊，圖例附百分比和家數）。"""
+    block = stats_page().split('id="industry-title"')[1].split("</section>")[0]
+    assert 'class="hb-row base"' in block and '<svg class="donut"' in block
+    assert "被列注意的 <b>60</b> 家，是哪些產業" in block
+    assert block.count('<circle class="sl sl-') == 3
+    assert '電子零組件業</span><b class="mono">60%</b>' in block

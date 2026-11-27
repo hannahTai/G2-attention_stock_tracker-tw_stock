@@ -40,9 +40,10 @@ def restore_types(value):
     return value
 
 
-def get(path: str, day: datetime.date | None = None) -> dict:
-    """GET 一個端點；day 給了就帶 ?date=20261120。錯誤一律變成 ApiError。"""
+def get(path: str, day: datetime.date | None = None, **extra) -> dict:
+    """GET 一個端點；day 給了就帶 ?date=20261120，extra 是其他參數（例如 period）。錯誤一律變成 ApiError。"""
     params = {"date": day.strftime("%Y%m%d")} if day else {}
+    params.update(extra)
     try:
         response = requests.get(config.API_URL + path, params=params, timeout=10)
     except requests.RequestException as exc:
@@ -65,6 +66,12 @@ def dates() -> list[datetime.date]:
 def cards(day: datetime.date | None = None) -> dict:
     """{'trade_date': 實際的日子, 'cards': [app_card 一列一檔]}。"""
     return get("/cards", day)
+
+
+def stats(day: datetime.date | None = None, period: str = "week", history: str = "30") -> dict:
+    """統計頁要的全部資料（見 api/routes.py 的 /stats）；period：新增處置每日（day）或每週（week）；
+    history：歷史統計看近 30、60 個交易日（30、60）或新制以來（all）。"""
+    return get("/stats", day, period=period, history=history)
 
 
 def stock(stock_id: str, day: datetime.date | None = None) -> dict:

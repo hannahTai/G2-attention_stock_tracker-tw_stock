@@ -7,7 +7,7 @@ import pytest
 
 from dashboard import app as dashboard_app
 from dashboard import client
-from tests.web_fixtures import CARDS, DAY, card_of, stock_detail
+from tests.web_fixtures import CARDS, DAY, card_of, stats_response, stock_detail
 
 
 @pytest.fixture(autouse=True)
@@ -91,3 +91,16 @@ def test_unexpected_error_shows_error_page(monkeypatch):
 
 def test_no_api_docs_on_the_web_page(web):
     assert web.get("/docs").status_code == 404
+
+
+def test_stats_page_and_bad_params(web, monkeypatch):
+    monkeypatch.setattr(client, "stats",
+                        lambda day=None, period="week", history="30": {**stats_response(), "period": period, "history": history})
+    assert web.get("/", params={"view": "stats"}).status_code == 200
+    assert web.get("/", params={"view": "stats", "history": "all"}).status_code == 200
+    assert web.get("/", params={"view": "stats", "part": "history"}).status_code == 200
+    assert web.get("/", params={"view": "stats", "part": "x"}).status_code == 400
+    bad = web.get("/", params={"view": "stats", "history": "90"})
+    assert bad.status_code == 400 and "只能看近 30、60 個交易日" in bad.text
+    assert web.get("/", params={"view": "stats", "period": "day"}).status_code == 200
+    assert web.get("/", params={"view": "stats", "period": "month"}).status_code == 400

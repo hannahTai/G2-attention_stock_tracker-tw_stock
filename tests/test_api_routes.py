@@ -8,7 +8,7 @@ import sqlalchemy
 import sqlalchemy.exc
 
 from api import main, queries, routes
-from tests.web_fixtures import ANNOUNCEMENTS, CARDS, DAY, TRADING_DAYS, card_of
+from tests.web_fixtures import ANNOUNCEMENTS, CARDS, DAY, TRADING_DAYS, card_of, stats_response
 
 
 @pytest.fixture
@@ -29,7 +29,7 @@ def client(monkeypatch):
     monkeypatch.setattr(queries, "card", lambda conn, stock_id, day: card_of(stock_id))
     monkeypatch.setattr(queries, "counted_dates",
                         lambda conn, stock_id, day: {"streak3": [datetime.date(2026, 11, 19), DAY]})
-    monkeypatch.setattr(queries, "trading_days", lambda conn, day: list(TRADING_DAYS))
+    monkeypatch.setattr(queries, "trading_days", lambda conn, day, count=30: list(TRADING_DAYS))
     monkeypatch.setattr(queries, "notice_history",
                         lambda conn, stock_id, start, end: [{"trade_date": DAY, "clauses": "1", "is_counted": 1}])
     monkeypatch.setattr(queries, "punish_history", lambda conn, stock_id, start, end: [])
@@ -91,6 +91,34 @@ def test_stock_ai_summary_comes_with_its_news_sources(client, monkeypatch):
     assert body["ai_summary"]["summary"].startswith("因累積漲幅太大")
     assert [s["title"] for s in body["ai_summary"]["sources"]] == ["健策營收創高"]
     assert body["ai_summary"]["summarized_at"] == "2026-11-20T19:05:00"
+
+
+def test_stats_returns_everything_the_page_needs(client, monkeypatch):
+    """統計頁：每一塊都有，產業的期間從近 30 個營業日的第一天起；新制後已結束的處置從 8/10 起算。"""
+    fake = stats_response()
+    asked = {}
+    monkeypatch.setattr(queries, "next_trading_days", lambda conn, day: fake["next_trading_days"])
+    monkeypatch.setattr(queries, "first_full_history_day", lambda conn: datetime.date(2026, 6, 12))
+    monkeypatch.setattr(queries, "daily_counts",
+                        lambda conn, start, day: asked.setdefault("daily_start", start) and fake["daily"])
+    monkeypatch.setattr(queries, "new_punish",
+                        lambda conn, start, day, period: asked.setdefault("punish", (start, period)) and fake["new_punish"])
+    monkeypatch.setattr(queries, "punish_lengths",
+                        lambda conn, since, day: asked.setdefault("since", since) and fake["punish_lengths"])
+    monkeypatch.setattr(queries, "state_totals", lambda conn, start, day: fake["state_totals"])
+    monkeypatch.setattr(queries, "trigger_clauses",
+                        lambda conn, start, day: asked.setdefault("trigger_start", start) and fake["trigger_clauses"])
+    monkeypatch.setattr(queries, "industry_counts",
+                        lambda conn, start, day: asked.setdefault("start", start) and fake["industries"])
+    body = client.get("/stats").json()
+    assert set(body) == {"trade_date", "next_trading_days", "history", "history_start", "daily", "period", "new_punish",
+                         "punish_lengths", "trigger_clauses", "state_totals", "industries"}
+    assert body["next_trading_days"][0] == "2026-11-23" and body["daily"][-1]["clause13"] == 5
+    # 預設近 30 個交易日（假資料只有 3 天：從 TRADING_DAYS[0] 起）、新增處置每週；全部的期間都一樣
+    start = TRADING_DAYS[0]
+    assert asked == {"daily_start": start, "punish": (start, "week"), "trigger_start": start, "since": start, "start": start}
+    assert client.get("/stats", params={"period": "month"}).status_code == 422   # 只有 day、week
+    assert body["history_start"] == TRADING_DAYS[0].isoformat()
 
 
 def test_unknown_stock_is_404(client):

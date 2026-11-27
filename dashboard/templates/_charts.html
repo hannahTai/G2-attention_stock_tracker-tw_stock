@@ -1,0 +1,48 @@
+{# 統計頁的圖（inline SVG）。座標在 dashboard/charts.py 算好，這裡只畫。用法：{% import "_charts.html" as chart %}，再 {{ chart.line(c, label) }}。
+
+   line(c, label)    折線圖：c 是 charts.line_chart() 的結果
+   columns(c, label) 直條圖：c 是 charts.column_chart() 的結果
+   label：整張圖的說明（role="img" 的 aria-label，讀螢幕軟體唸這句）。
+   顏色用 class（.ln-accent、.ln-seal…），style.css 換成顏色變數，深色模式跟著換。
+
+   點一下看數字（網頁沒有 JavaScript，用 CSS 做）：每天（每週）一塊看不見的區域（.pt），點到或滑鼠移上去時（:focus、:hover）
+   顯示那天的直線、每條線上的點和說明卡片（.tip）；點別的地方就收起來。tabindex="-1"：點得到，但不是 Tab 停點
+   （一張圖上百天，逐日都是 Tab 停點的話鍵盤要按上百次）。.pt 放在最後面畫，卡片才會蓋在線和其他點上面。
+   .tip-card 的 left／right：卡片在直線的哪一邊（手機上放大卡片時，從靠直線的那一角放大）。
+   k-線的kind（k-seal…）：每條線的線、線尾名稱、點、說明卡片那一行都有，圖例的開關（legend）靠它把整條線藏起來。 #}
+
+{# 圖例＝開關：每條線一個 checkbox，取消勾選就藏起那條線（style.css 的 .block:has(.lg-xxx:not(:checked)) .k-xxx） #}
+{% macro legend(c) -%}
+<div class="legend-row toggles" role="group" aria-label="顯示哪幾條線">{% for l in c.lines %}<label class="lg"><input type="checkbox" class="lg-{{ l.kind }}" checked><i class="key-{{ l.kind }}"></i>{{ l.name }}</label>{% endfor %}</div>
+{%- endmacro %}
+
+{% macro axes(c) -%}
+{% for t in c.y_ticks %}<line class="grid" x1="{{ c.left }}" x2="{{ c.right }}" y1="{{ t.y }}" y2="{{ t.y }}"/><text class="tick" x="{{ c.left - 6 }}" y="{{ t.y + 4 }}" text-anchor="end">{{ t.label }}</text>{% endfor %}
+{% for t in c.x_ticks %}<line class="xtick" x1="{{ t.x }}" x2="{{ t.x }}" y1="{{ c.bottom }}" y2="{{ c.bottom + 5 }}"/><text class="tick xlabel" x="{{ t.x }}" y="{{ c.height - 6 }}" text-anchor="{{ t.anchor }}">{{ t.label }}</text>{% endfor %}
+{%- endmacro %}
+
+{# 說明卡片：日期一行，下面每條線一行（色點＋名稱＋數字） #}
+{% macro tip_card(t) -%}
+<g class="tip-card {{ t.side }}"><rect class="tip-box" x="{{ t.x }}" y="{{ t.y }}" width="{{ t.width }}" height="{{ t.height }}" rx="8"/>
+<text class="tip-date" x="{{ t.x + 12 }}" y="{{ t.title_y }}">{{ t.title }}</text>
+{% for r in t.rows %}<g class="k-{{ r.kind }}"><circle class="dot-{{ r.kind }}" cx="{{ t.x + 16 }}" cy="{{ r.y - 4 }}" r="4"/><text class="tip-row" x="{{ t.x + 28 }}" y="{{ r.y }}">{{ r.label }}</text><text class="tip-n" x="{{ t.x + t.width - 12 }}" y="{{ r.y }}" text-anchor="end">{{ r.value }}</text></g>{% endfor %}</g>
+{%- endmacro %}
+
+{% macro line(c, label) -%}
+<div class="chart-wrap"><svg class="chart{% if c.width < 1000 %} chart-sm{% endif %}" viewBox="0 0 {{ c.width }} {{ c.height }}" role="img" aria-label="{{ label }}">
+{{ axes(c) }}
+{% for l in c.lines %}<polyline class="ln ln-{{ l.kind }} k-{{ l.kind }}" points="{{ l.points }}"/>{% endfor %}
+{# 線尾只標名稱（認哪條線用）；歷史統計看的是整段期間，不強調最後一天的數字，要看某天的數字就點那天 #}
+{% for l in c.lines %}<text class="end k-{{ l.kind }}" x="{{ c.right + 8 }}" y="{{ l.end.label_y + 4 }}">{{ l.name }}</text>{% endfor %}
+{% for h in c.hits %}<g class="pt" tabindex="-1" aria-label="{{ h.label }}"><rect class="hit" x="{{ h.x }}" y="{{ c.top }}" width="{{ h.width }}" height="{{ c.bottom - c.top }}"/><g class="tip"><line class="guide" x1="{{ h.center }}" x2="{{ h.center }}" y1="{{ c.top }}" y2="{{ c.bottom }}"/>{% for p in h.points %}<circle class="dot-{{ p.kind }} k-{{ p.kind }}" cx="{{ h.center }}" cy="{{ p.y }}" r="5"/>{% endfor %}{{ tip_card(h.tip) }}</g></g>{% endfor %}
+</svg></div>
+{%- endmacro %}
+
+{% macro columns(c, label) -%}
+<div class="chart-wrap"><svg class="chart" viewBox="0 0 {{ c.width }} {{ c.height }}" role="img" aria-label="{{ label }}">
+{{ axes(c) }}
+{% for b in c.bars %}<rect class="col {{ 'partial' if b.partial }}" x="{{ b.x }}" y="{{ b.y }}" width="{{ b.width }}" height="{{ b.height }}" rx="2"/>{% endfor %}
+{% if c.average %}{% set a = c.average %}<line class="avg" x1="{{ a.x1 }}" x2="{{ a.x2 }}" y1="{{ a.y }}" y2="{{ a.y }}"/><text class="avg-label" x="{{ a.x2 - 4 }}" y="{{ a.y - 6 }}" text-anchor="end">{{ a.text }}</text>{% endif %}
+{% for b in c.bars %}<g class="pt" tabindex="-1" aria-label="{{ b.label }}"><rect class="hit" x="{{ b.slot_x }}" y="{{ c.top }}" width="{{ b.slot_width }}" height="{{ c.bottom - c.top }}"/><g class="tip"><rect class="col-on" x="{{ b.x }}" y="{{ b.y }}" width="{{ b.width }}" height="{{ b.height }}" rx="2"/>{{ tip_card(b.tip) }}</g></g>{% endfor %}
+</svg></div>
+{%- endmacro %}

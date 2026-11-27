@@ -9,6 +9,7 @@
   6. notice_cells()          個股頁近 30 個營業日的注意紀錄（30 格、注意紀錄列表）
   7. announcement_groups()   個股頁公開資訊
   8. stock_page()            個股頁要的全部東西
+  9. stats_page()            統計頁要的全部東西（圖的座標在 charts.py）
 
 命名：畫面要的東西用名詞（status、headline、timeline、announcement_groups…），回傳 dict 或 dataclass；
 判斷用的小函式也用名詞（section_of、filters_of、rule_for）；只有布林值用 is_、has_ 開頭。
@@ -22,6 +23,7 @@ import decimal
 import re
 
 from common import date_utils, rules, url_utils
+from dashboard import charts
 
 # ---------- 固定資料 ----------
 # 四條路徑：(畫面上的名稱, 門檻)；門檻和規則引擎同一份（common/rules.py）
@@ -392,7 +394,8 @@ def headline(card: dict) -> dict:
 def tags(card: dict) -> list[dict]:
     """狀態標籤（kind 對應 CSS 的 class）。main＝主要狀態，和分頁名稱同一個詞（即將處置、處置中、聽牌），最多一個、放第一個；
     處置最後一天的主要標籤是「明日出關」（和分頁同名），不另外標處置中。
-    其他是次要標籤（第二次處置、「11/20 出關」、聽牌、「11/20 注意股」，日期是資料的那天）。
+    其他是次要標籤（第二次處置、「11/20 出關」、聽牌、再處置為第二次、「11/20 注意股」，日期是資料的那天）。
+    「再處置為第二次」：差 1 次、而且規則引擎算出再處置會是 30 個營業日內第二次（next_punish_round）。
     「11/20 注意股」＝那天被列注意（任何一款，不管算不算次數），每種卡片都標。當天出關的卡片和一般卡片一樣（大字寫差幾次），
     只多一個「11/20 出關」小標籤；又只差 1 次的，主要標籤是聽牌。
     即將處置是推算還是已公布，看大字（「達標」或「11/23 起處置」）。總覽和個股頁都全部顯示。
@@ -403,6 +406,8 @@ def tags(card: dict) -> list[dict]:
     ...                           "period_start": datetime.date(2026, 11, 13), "period_end": datetime.date(2026, 11, 20),
     ...                           "measure_type": "第二次處置"})]
     ['明日出關', '第二次處置', '聽牌']
+    >>> [t["text"] for t in tags({"trade_date": datetime.date(2026, 11, 20), "steps_left": 1, "next_punish_round": 2})]
+    ['聽牌', '再處置為第二次']
     """
     day, state = card["trade_date"], status(card)
     main = {
@@ -422,6 +427,8 @@ def tags(card: dict) -> list[dict]:
         result.append({"text": f"{md(day)} 出關", "kind": "ok", "main": False})
     if state != "one" and one_step:   # 處置中又差 1 次就會再處置
         result.append({"text": "聽牌", "kind": "amber", "main": False})
+    if one_step and card.get("next_punish_round") == 2:   # 規則引擎算的：再處置的話，30 個營業日內第二次（全部委託都要預收）
+        result.append({"text": "再處置為第二次", "kind": "mut", "main": False})
     if card.get("is_listed_today"):
         result.append({"text": f"{md(day)} 注意股", "kind": "acc", "main": False})
     return result
@@ -889,4 +896,266 @@ def stock_page(detail: dict) -> dict:
         "paths": paths,
         "cells": cells,
         "legend": cell_legend(cells),
+    }
+
+
+# ---------- 9. 統計頁 ----------
+# 證交所的產業別代碼（上市公司清單的「產業別」）→ 名稱；沒列到的代碼顯示「產業 NN」
+INDUSTRY_NAMES = {
+    "01": "水泥工業", "02": "食品工業", "03": "塑膠工業", "04": "紡織纖維", "05": "電機機械", "06": "電器電纜",
+    "08": "玻璃陶瓷", "09": "造紙工業", "10": "鋼鐵工業", "11": "橡膠工業", "12": "汽車工業", "14": "建材營造業",
+    "15": "航運業", "16": "觀光餐旅", "17": "金融保險業", "18": "貿易百貨業", "19": "綜合", "20": "其他業",
+    "21": "化學工業", "22": "生技醫療業", "23": "油電燃氣業", "24": "半導體業", "25": "電腦及週邊設備業", "26": "光電業",
+    "27": "通信網路業", "28": "電子零組件業", "29": "電子通路業", "30": "資訊服務業", "31": "其他電子業", "32": "文化創意業",
+    "33": "農業科技業", "34": "電子商務", "35": "綠能環保", "36": "數位雲端", "37": "運動休閒", "38": "居家生活",
+    "91": "存託憑證",
+}
+PARTS = {"future": "未來幾日", "history": "歷史統計"}   # 統計頁的兩個分頁（網址 ?part=），預設未來幾日
+RELEASE_DAYS = 5                  # 未來出關日程看幾個交易日
+HISTORIES = {"30": "近 30 個交易日", "60": "近 60 個交易日", "all": "新制以來"}   # 歷史統計的期間（網址 ?history=），預設 30
+PERIODS = {"day": "每日", "week": "每週"}   # 新增處置的分組（網址 ?period=）；資料滿半年再考慮加「每月」
+INDUSTRY_SLICES = 4               # 產業組成的圓餅：前幾名各一塊，其他合成「其他」（塊太多就看不出大小）
+INDUSTRY_ROWS = 10                # 產業列注意比例：前幾名直接顯示，其他收起來（全部都列，不篩）
+
+
+def tomorrow_limits(cards: list[dict], next_day: datetime.date | None) -> list[dict]:
+    """明日交易限制：聽牌、即將處置、處置中三格，名稱、顏色、順序和卡片牆的分頁一樣，點了去那個分頁。
+    數字：聽牌＝明日再被列注意 1 次就處置（卡片牆「聽牌」分頁那些）；即將處置＝明日開始處置；處置中＝明日仍在處置（不含明日才開始的）。
+    明日出關不放這裡：「未來出關日程」的第一列就是明日。
+    「即將處置」分頁還有今天剛達標、明天才公布的（後天才開始），所以分頁裡的檔數可能比這格多。
+
+    >>> day, nxt = datetime.date(2026, 11, 26), datetime.date(2026, 11, 27)
+    >>> rows = tomorrow_limits([{"trade_date": day, "period_start": nxt, "period_end": datetime.date(2026, 12, 3)},
+    ...                         {"trade_date": day, "steps_left": 1}], nxt)
+    >>> [(r["label"], r["count"]) for r in rows]
+    [('聽牌', 1), ('即將處置', 1), ('處置中', 0)]
+    """
+    def count(test) -> int:
+        return sum(1 for c in cards if next_day and test(c))
+
+    return [
+        {"label": "聽牌", "note": "再列注意 1 次即處置", "kind": "amber", "tab": "one",
+         "count": count(lambda c: section_of(c) == "one")},
+        {"label": "即將處置", "note": "明天開始處置", "kind": "orange", "tab": "soon",
+         "count": count(lambda c: c.get("period_start") == next_day)},
+        {"label": "處置中", "note": "明天還在處置", "kind": "seal", "tab": "punish",
+         "count": count(lambda c: c.get("period_start") and c["period_start"] < next_day <= c["period_end"])},
+    ]
+
+
+def release_rows(cards: list[dict], days: list[datetime.date]) -> list[dict]:
+    """這幾個交易日每天有幾檔出關（resume_date＝恢復正常交易的那天）、是哪幾檔（照代號排，點開列出來）；
+    width 是長條佔最長那根的百分比。
+
+    >>> d = datetime.date(2026, 12, 1)
+    >>> cards = [{"resume_date": d, "stock_id": "2", "stock_name": "乙"}, {"resume_date": d, "stock_id": "1", "stock_name": "甲"}]
+    >>> rows = release_rows(cards, [datetime.date(2026, 11, 30), d])
+    >>> [(r["count"], r["width"]) for r in rows], [s["name"] for s in rows[1]["stocks"]]
+    ([(0, 0.0), (2, 100.0)], ['甲', '乙'])
+    """
+    stocks = [sorted(({"id": c["stock_id"], "name": c.get("stock_name") or c["stock_id"]}
+                      for c in cards if c.get("resume_date") == d), key=lambda s: s["id"]) for d in days]
+    top = max((len(s) for s in stocks), default=0) or 1
+    return [{"day": d, "weekday": weekday(d), "count": len(s), "width": round(len(s) / top * 100, 1), "stocks": s}
+            for d, s in zip(days, stocks, strict=True)]
+
+
+def fill_periods(rows: list[dict], period: str, days: list[datetime.date],
+                 start: datetime.date | None = None, day: datetime.date | None = None) -> list[datetime.date]:
+    """新增處置的橫軸：沒有處置的日子、週也要有一格（補 0）。
+    week：從 start 那週連到 day 那週（或最後一個已公布的那週，取晚的；每週的星期一）；
+    day：用交易日（days），再接上已公布、還沒開始的日子。
+
+    >>> rows = [{"period_start": datetime.date(2026, 11, 2), "count": 2}, {"period_start": datetime.date(2026, 11, 16), "count": 3}]
+    >>> [md(w) for w in fill_periods(rows, "week", [])]
+    ['11/02', '11/09', '11/16']
+    >>> [md(w) for w in fill_periods(rows, "week", [], datetime.date(2026, 10, 28), datetime.date(2026, 11, 26))]
+    ['10/26', '11/02', '11/09', '11/16', '11/23']
+    >>> [md(d) for d in fill_periods([{"period_start": datetime.date(2026, 11, 27), "count": 1}], "day",
+    ...                              [datetime.date(2026, 11, 25), datetime.date(2026, 11, 26)])]
+    ['11/25', '11/26', '11/27']
+    """
+    starts = [r["period_start"] for r in rows]
+    if period == "day":
+        last = days[-1] if days else None
+        return list(days) + sorted(d for d in starts if last is None or d > last)
+    ends = [d for d in (starts[-1] if starts else None, day) if d]
+    if not ends:
+        return []
+    first = min(d for d in (starts[0] if starts else None, start) if d)
+    week, last, result = first - datetime.timedelta(days=first.weekday()), max(ends), []
+    while week <= last:
+        result.append(week)
+        week += datetime.timedelta(days=7)
+    return result
+
+
+def average(values: list[int]) -> float | None:
+    """平均；沒有資料為 None。
+
+    >>> average([1, 3, 5]), average([])
+    (3.0, None)
+    """
+    return sum(values) / len(values) if values else None
+
+
+def peak(days: list[datetime.date], values: list[int]) -> dict | None:
+    """期間內最多的那天（同樣多取最近的一天）和數字；沒有資料為 None。
+
+    >>> peak([datetime.date(2026, 10, 8), datetime.date(2026, 10, 9), datetime.date(2026, 10, 12)], [3, 16, 16])
+    {'day': datetime.date(2026, 10, 12), 'value': 16}
+    """
+    if not values:
+        return None
+    i = max(range(len(values)), key=lambda k: (values[k], k))
+    return {"day": days[i], "value": values[i]}
+
+
+def clause_rows(trigger: dict) -> dict:
+    """計入處置條件的注意紀錄裡，第 1～8 款各出現在幾筆（百分比＝佔全部筆數），多的在前。
+
+    >>> page = clause_rows({"total": 10, "by_clause": [{"clause": 2, "count": 3}, {"clause": 1, "count": 7},
+    ...                                                {"clause": 13, "count": 1}]})
+    >>> [(r["no"], r["pct"]) for r in page["rows"][:3]]
+    [(1, 70), (2, 30), (3, 0)]
+    """
+    total = trigger["total"] or 0
+    counts = {r["clause"]: r["count"] for r in trigger["by_clause"]}
+
+    def pct(n: int) -> int:
+        return round(n / total * 100) if total else 0
+
+    rows = [{"no": n, "name": CLAUSE_NAMES[n], "count": counts.get(n, 0), "pct": pct(counts.get(n, 0))}
+            for n in sorted(rules.COUNTED_CLAUSES)]
+    rows.sort(key=lambda r: (-r["count"], r["no"]))
+    return {"total": total, "rows": rows, "top": rows[0] if total else None}
+
+
+def industry_rows(rows: list[dict]) -> dict:
+    """各產業列注意比例：每 100 家上市公司有幾家被列注意（rate），全部產業照比例由高到低排（同樣高的家數多的在前），
+    不篩掉家數少的：每列都附「被列注意家數／上市公司家數」，讀者自己看得出家數多少。
+    rows 是前 INDUSTRY_ROWS 名（直接顯示），more 是其他（收起來）；overall 是全體上市公司（所有產業加總）的比例，當基準。
+    長條的刻度固定 0～100（和款次那張一樣），不會因為第一名是多少而變。
+
+    >>> page = industry_rows([{"industry_code": "28", "companies": 104, "listed": 36},
+    ...                       {"industry_code": "24", "companies": 96, "listed": 22},
+    ...                       {"industry_code": "08", "companies": 5, "listed": 2}])
+    >>> [(r["name"], r["rate"]) for r in page["rows"]], page["more"], page["overall"]
+    ([('玻璃陶瓷', 40), ('電子零組件業', 35), ('半導體業', 23)], [], 29)
+    """
+    def rate(listed: int, companies: int) -> int:
+        return round(listed / companies * 100) if companies else 0
+
+    rows = [r for r in rows if r["companies"]]   # 只剩下市公司的產業（現在 0 家）不列
+    ranked = sorted(rows,
+                    key=lambda r: (-r["listed"] / r["companies"], -r["companies"], r["industry_code"]))
+    items = [{"name": INDUSTRY_NAMES.get(r["industry_code"], f"產業 {r['industry_code']}"),
+              "rate": rate(r["listed"], r["companies"]), "listed": r["listed"], "companies": r["companies"]} for r in ranked]
+    total_listed, total_companies = sum(r["listed"] for r in rows), sum(r["companies"] for r in rows)
+    return {
+        "rows": items[:INDUSTRY_ROWS],
+        "more": items[INDUSTRY_ROWS:],
+        "overall": rate(total_listed, total_companies),
+        "overall_listed": total_listed, "overall_companies": total_companies,
+    }
+
+
+def industry_share(rows: list[dict]) -> dict:
+    """被列注意的公司各產業占多少（每家公司只屬於一個產業，所以加起來剛好 100%；含之後下市的 listed_all）：
+    家數多的前 INDUSTRY_SLICES 個各一塊，
+    其他合成「其他」放最後。pct 是整數百分比，用最大餘數法讓加起來剛好 100；share 是精確的百分比、offset 是這塊從哪裡開始
+    （0～100，圓餅從 12 點順時針畫）。和 industry_rows 不同：這裡看的是「被列注意的公司都是哪些產業」，
+    公司多的產業塊就大，不代表比較容易被列注意。
+
+    >>> page = industry_share([{"industry_code": "28", "companies": 104, "listed": 36},
+    ...                        {"industry_code": "24", "companies": 96, "listed": 22},
+    ...                        {"industry_code": "08", "companies": 5, "listed": 2}])
+    >>> page["total"], [(s["name"], s["pct"], s["offset"]) for s in page["slices"]]
+    (60, [('電子零組件業', 60, 0.0), ('半導體業', 37, 60.0), ('玻璃陶瓷', 3, 96.67)])
+    """
+    counted = [{**r, "n": r.get("listed_all", r["listed"])} for r in rows]   # 含之後下市的
+    ranked = sorted((r for r in counted if r["n"]), key=lambda r: (-r["n"], r["industry_code"]))
+    parts = [(INDUSTRY_NAMES.get(r["industry_code"], f"產業 {r['industry_code']}"), r["n"], False)
+             for r in ranked[:INDUSTRY_SLICES]]
+    rest = sum(r["n"] for r in ranked[INDUSTRY_SLICES:])
+    if rest:
+        parts.append(("其他", rest, True))
+    total = sum(n for _, n, _ in parts)
+    if not total:
+        return {"total": 0, "slices": []}
+    exact = [100 * n / total for _, n, _ in parts]
+    pcts = [int(e) for e in exact]
+    for i in sorted(range(len(parts)), key=lambda i: pcts[i] - exact[i])[:100 - sum(pcts)]:
+        pcts[i] += 1
+    return {"total": total, "slices": [
+        {"name": name, "listed": n, "other": other, "pct": pct, "share": round(e, 2), "offset": round(sum(exact[:i], 0.0), 2)}
+        for i, ((name, n, other), pct, e) in enumerate(zip(parts, pcts, exact, strict=True))]}
+
+
+def stats_page(cards: list[dict], stats: dict) -> dict:
+    """統計頁要的全部東西。cards 是 API /cards 的 cards，stats 是 /stats 的回應（日期已換回 date）。
+
+    兩組：「明日與未來幾日」（明天的交易限制、未來 RELEASE_DAYS 個交易日哪天出關）和「歷史統計」（照從被盯上到被處置的順序：
+    每天被列注意、聽牌與處置中、開始處置、被處置前最常被列哪一款、哪些產業比較常被列注意；
+    期間 history：近 30、60 個交易日或新制以來，由 API 算好起日）。
+    每張圖一句結論（*_avg 等數字），只陳述數字，不推論以後會怎樣。
+    """
+    day = stats["trade_date"]
+    next_days = stats["next_trading_days"]
+    next_day = next_days[0] if next_days else None
+    daily = stats["daily"]
+    days = [r["trade_date"] for r in daily]
+
+    def series(key: str) -> list[int]:
+        return [r[key] for r in daily]
+
+    period = stats.get("period", "week")
+    periods = fill_periods(stats["new_punish"], period, days, stats["history_start"], day)
+    by_period = {r["period_start"]: r["count"] for r in stats["new_punish"]}
+    counts = [by_period.get(p, 0) for p in periods]
+    # 這一組過完了沒：下一個交易日已經在下一組（週五放假也算過完）；不知道下一個交易日時，看最後一天（週五）過了沒
+    length = datetime.timedelta(days=7 if period == "week" else 1)
+    span = datetime.timedelta(days=4 if period == "week" else 0)
+    complete = sum(1 for p in periods if (next_day >= p + length if next_day else p + span <= day))
+    first = 1 if period == "week" and periods and periods[0] < stats["history_start"] else 0   # 期間從週中開始：第一週不滿一週
+    lengths = stats["punish_lengths"]
+    extended_days = rules.PUNISH_DAYS_EXTENDED["new"]
+    return {
+        "day": day,
+        "history": stats["history"],
+        "history_start": stats["history_start"],
+        "histories": HISTORIES,
+        # 明日與未來幾日
+        "next_day": next_day,
+        "next_weekday": weekday(next_day) if next_day else "",
+        "tomorrow": tomorrow_limits(cards, next_day),
+        "release_days": RELEASE_DAYS,
+        "releases": release_rows(cards, next_days[:RELEASE_DAYS]),
+        # 注意股與第 13 款（第 13 款是注意股的一部分，同一張圖）
+        "attention_chart": charts.line_chart(days, [
+            {"name": "注意股", "kind": "accent", "values": series("listed")},
+            {"name": "第 13 款", "kind": "ink", "values": series("clause13")},
+        ]),
+        "listed_avg": average(series("listed")),
+        "clause13_avg": average(series("clause13")),
+        # 新增處置（每日／每週）；延長處置的事實也放這裡
+        "period": period,
+        "period_name": PERIODS.get(period, ""),
+        "periods": PERIODS,
+        "punish_chart": charts.column_chart(periods, counts, complete=complete, period=period, first=first),
+        "punish_avg": average(counts[first:complete]),
+        "punish_ended": sum(r["count"] for r in lengths),
+        "punish_extended": sum(r["count"] for r in lengths if r["days"] == extended_days),
+        "extended_days": extended_days,
+        "normal_days": rules.PUNISH_DAYS["new"],
+        # 處置中、聽牌：都是「當天有幾檔在這個狀態」，同一張圖兩條線
+        "state_chart": charts.line_chart(days, [{"name": "處置中", "kind": "seal", "values": series("punish")},
+                                                {"name": "聽牌", "kind": "amber", "values": series("one")}], height=220),
+        "state_avg": (average(series("punish")), average(series("one"))),
+        "state_peak": (peak(days, series("punish")), peak(days, series("one"))),
+        "state_totals": stats.get("state_totals"),
+        # 款次、產業
+        "clauses": clause_rows(stats["trigger_clauses"]),
+        "industries": industry_rows(stats["industries"]),
+        "industry_share": industry_share(stats["industries"]),
     }

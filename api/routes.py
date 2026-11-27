@@ -4,6 +4,7 @@
   GET /dates                   最近 30 個有算的交易日（日期選單用）
   GET /cards?date=             這一天每檔上市公司一列（卡片牆）
   GET /stocks/{stock_id}?date= 個股頁要的全部資料
+  GET /stats?date=             統計頁要的全部資料
 
 函式名稱用動詞（list_、get_），和 FastAPI 文件、課程一樣；Swagger 上會顯示成 List Cards、Get Stock。
 回傳的是資料庫的原始值（日期在 JSON 裡是 2026-11-20 這種字串），怎麼顯示由 dashboard/ 決定。
@@ -17,6 +18,7 @@ import sqlalchemy
 import sqlalchemy.exc
 
 from api import queries
+from common import rules
 from common.config import NEWS_LOOKBACK_DAYS
 from common.date_utils import parse_yyyymmdd_strict
 from common.repository import get_engine
@@ -26,6 +28,9 @@ router = fastapi.APIRouter()
 # Swagger（/docs）上的分組
 TAG_SYSTEM = "系統"
 TAG_STOCK = "注意股"
+
+# 統計頁的歷史統計最早到這天（近 30、60 個交易日也不早於這天）：8/10 新制施行起，只看新制
+STATS_START = rules.NEW_RULE_DATE
 
 DATE_HELP = "交易日，只接受 8 位數字，例如 20261120；不給就是最新一天。沒有資料的日子改用那天以前最近的交易日"
 
@@ -104,4 +109,35 @@ def get_stock(stock_id: str, date: str | None = fastapi.Query(None, description=
                             "sources": queries.news_by_ids(conn, card["ai_summary_news_ids"] or [])}
                            if card.get("ai_summary") else None),
             "news": queries.stock_news(conn, stock_id, day - datetime.timedelta(days=NEWS_LOOKBACK_DAYS - 1), day),   # 含當天
+        }
+
+
+@router.get("/stats", tags=[TAG_STOCK])
+def get_stats(date: str | None = fastapi.Query(None, description=DATE_HELP),
+              period: str = fastapi.Query("week", pattern="^(day|week)$", description="新增處置的分組：day 每天、week 每週"),
+              history: str = fastapi.Query("30", pattern="^(30|60|all)$",
+                                           description="歷史統計的期間：30、60＝近 30、60 個交易日，all＝新制施行以來")) -> dict:
+    """統計頁：之後 5 個交易日（未來出關日程），和歷史統計（期間由 history 決定，最早到 STATS_START）：
+    每日檔數（含第 13 款）、新增處置（每天或每週）、已結束的處置幾天、
+    計入處置條件的注意紀錄各款幾筆、各產業被列注意幾家。都只算上市公司、只看這一天（含）以前；
+    期間的起日不早於規則引擎有完整 30 個營業日資料的那天（在那之前「差幾次」不準）。"""
+    with get_engine().connect() as conn:
+        day = pick_day(conn, parse_date(date))
+        start = STATS_START
+        if history != "all":
+            days = queries.trading_days(conn, day, count=int(history))
+            start = max(STATS_START, days[0] if days else day)
+        start = max(start, queries.first_full_history_day(conn) or start)   # 不滿 30 個營業日的不算：所有圖、合計都從同一天起
+        return {
+            "trade_date": day,
+            "next_trading_days": queries.next_trading_days(conn, day),
+            "history": history,
+            "history_start": start,
+            "daily": queries.daily_counts(conn, start, day),
+            "period": period,
+            "new_punish": queries.new_punish(conn, start, day, period),
+            "punish_lengths": queries.punish_lengths(conn, start, day),
+            "trigger_clauses": queries.trigger_clauses(conn, start, day),
+            "state_totals": queries.state_totals(conn, start, day),
+            "industries": queries.industry_counts(conn, start, day),
         }

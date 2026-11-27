@@ -239,6 +239,53 @@ def test_analyze_rerun_same_result(db):
 
 
 
+# ---------- 統計頁的 SQL（api/queries.py）：只算上市公司、未來的交易日扣掉休市日 ----------
+def test_stats_queries_on_a_small_market(db):
+    """6533 連 3 日第 1 款（最後一天也列第 13 款）→ 11/06 達標；0050 是 ETF（不在上市公司清單），每一項都不算。
+    11/06 之後已知的交易日到 11/06，接著推算：11/09 一、11/10 休市、11/11 三…"""
+    days = list(pd.bdate_range("2026-11-02", "2026-11-06").date)
+    with db.begin() as conn:
+        run = lambda sql, rows: conn.execute(sqlalchemy.text(sql), rows)   # noqa: E731
+        run("INSERT INTO stage_trading_day (trade_date, is_trading) VALUES (:d, TRUE)", [{"d": d} for d in days])
+        for table in ["stage_notice_day", "stage_punish_day"]:
+            run(f"INSERT INTO {table} (query_date, {table.split('_')[1]}_count) VALUES (:d, 0)", [{"d": d} for d in days])
+        run("INSERT INTO stage_holiday (holiday_date, holiday_name) VALUES (:d, :n)",
+            [{"d": datetime.date(2026, 11, 10), "n": "測試休市"},
+             {"d": datetime.date(2026, 11, 11), "n": "測試開始交易日"}])   # 「…交易日」有交易
+        run("INSERT INTO stage_punish (announce_date, stock_id, stock_name, trigger_condition, period_start, period_end, "
+            "measure_type, content, has_star_mark) VALUES (:a, '6533', '6533', '連續三次', :s, :e, '第一次處置', '', FALSE)",
+            [{"a": days[-1], "s": datetime.date(2026, 11, 9), "e": datetime.date(2026, 11, 13)}])   # 11/06 達標當天公布處置
+        run("INSERT INTO stage_company (company_id, short_name, full_name, industry_code, snapshot_date) "
+            "VALUES (:c, :c, :c, :i, :s)", [{"c": "6533", "i": "24", "s": "2026-11-06"}, {"c": "2330", "i": "24", "s": "2026-11-06"},
+                                             {"c": "2302", "i": "24", "s": "2026-10-01"}])   # 2302 已下市（不在最新清單）
+        run("INSERT INTO stage_notice_clause (trade_date, stock_id, clause) VALUES (:d, :s, :c)",
+            [{"d": d, "s": "6533", "c": 1} for d in days[2:]] + [{"d": days[-1], "s": "6533", "c": 13}]
+            + [{"d": d, "s": "0050", "c": 1} for d in days[2:]])
+    for d in ("20261105", "20261106"):
+        analyze_task.analyze_progress(d)
+
+    day = days[-1]
+    with db.connect() as conn:
+        assert queries.next_trading_days(conn, days[1], count=3) == days[2:5]   # 已知的交易日照實際
+        assert queries.next_trading_days(conn, day, count=3) == [datetime.date(2026, 11, 9), datetime.date(2026, 11, 11),
+                                                                 datetime.date(2026, 11, 12)]   # 跳過 11/10 休市；11/11 開始交易日照算
+        assert queries.first_full_history_day(conn) is None              # 資料不到 30 個營業日
+        daily = {r["trade_date"]: r for r in queries.daily_counts(conn, days[0], day)}
+        assert (daily[day]["listed"], daily[day]["clause13"]) == (1, 1)   # 只有 6533；0050 不是上市公司
+        assert daily[days[3]]["one"] == 1                                 # 11/05 連 2 日：聽牌
+        trigger = queries.trigger_clauses(conn, days[0], day)
+        assert trigger["total"] == 3                                      # 連 3 日計入的三天
+        assert {r["clause"]: r["count"] for r in trigger["by_clause"]} == {1: 3, 13: 1}
+        assert queries.industry_counts(conn, days[0], day) == [{"industry_code": "24", "companies": 2, "listed": 1,
+                                                                 "listed_all": 1}]   # 下市的不算
+        assert queries.new_punish(conn, days[0], day, "week") == [{"period_start": datetime.date(2026, 11, 9), "count": 1}]
+        assert queries.new_punish(conn, days[0], day, "day") == [{"period_start": datetime.date(2026, 11, 9), "count": 1}]
+        assert queries.punish_lengths(conn, days[0], day) == []           # 還沒結束
+        assert queries.state_totals(conn, days[0], day) == {"listed_stocks": 1, "clause13_stocks": 1, "punished_stocks": 1,
+                                                            "punishments": 1, "second_stocks": 0, "one_stocks": 1}
+        # 6533：被列注意 3 天（最後一天也列第 13 款）、11/05 聽牌、11/06 公布處置；0050 不是上市公司
+
+
 # ---------- analyze 算之前的檢查：往前 30 個營業日都要有資料 ----------
 def test_analyze_needs_every_day_in_window(db):
     days = list(pd.bdate_range("2026-11-02", "2026-11-06").date)   # 11/02～11/06 五個營業日

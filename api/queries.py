@@ -170,3 +170,167 @@ def news_by_ids(conn: sqlalchemy.Connection, news_ids: list[str]) -> list[dict]:
                           "FROM app_stock_news WHERE news_id = ANY(:ids) ORDER BY news_id", ids=news_ids)
     by_id = {row["news_id"]: row for row in rows}
     return [by_id[news_id] for news_id in news_ids if news_id in by_id]
+
+
+# ---------- 統計頁 ----------
+# 都只算上市公司（JOIN app_company，和 app_card.is_company 同一個判斷），只看 day（含）以前的資料
+
+def next_trading_days(conn: sqlalchemy.Connection, day: datetime.date, count: int = 5) -> list[datetime.date]:
+    """day 之後的 count 個交易日。已經有的日子照 app_trading_day；還沒發生的推算：週一～五、扣掉休市日（app_holiday），
+    和規則引擎推算出關日的方法一樣（analyze/engine.py 的 add_future_days）。颱風這種臨時休市要等實際資料才知道。"""
+    sql = """
+        WITH known AS (SELECT MAX(trade_date) AS last_day FROM app_trading_day)
+        SELECT g.d::date
+        FROM generate_series(CAST(:day AS date) + 1, CAST(:day AS date) + 40, INTERVAL '1 day') AS g(d), known k
+        WHERE CASE WHEN g.d::date <= k.last_day
+                   THEN g.d::date IN (SELECT trade_date FROM app_trading_day)
+                   ELSE EXTRACT(ISODOW FROM g.d) < 6 AND g.d::date NOT IN (SELECT holiday_date FROM app_holiday)
+              END
+        ORDER BY 1
+        LIMIT :count
+    """
+    return _dates(conn, sql, day=day, count=count)
+
+
+def first_full_history_day(conn: sqlalchemy.Connection) -> datetime.date | None:
+    """規則引擎第一個有完整 30 個營業日資料的交易日（has_full_history）；在那之前「差幾次」不準，每日檔數從這天畫起。"""
+    days = _dates(conn, "SELECT MIN(trade_date) FROM app_progress WHERE has_full_history")
+    return days[0] if days else None
+
+
+def daily_counts(conn: sqlalchemy.Connection, start: datetime.date, day: datetime.date) -> list[dict]:
+    """start～day 每個交易日一列（舊的在前）：listed 被列注意、clause13 其中被列第 13 款（當沖占比過高）、
+    one 聽牌（差 1 次）、punish 在處置期間內（含最後一天）。"""
+    sql = """
+        WITH notice AS (
+            SELECT n.trade_date,
+                   COUNT(*) AS listed,
+                   COUNT(*) FILTER (WHERE '13' = ANY(string_to_array(n.clauses, ','))) AS clause13
+            FROM app_notice_history n
+            JOIN app_company c ON c.company_id = n.stock_id
+            WHERE n.trade_date BETWEEN :start AND :day
+            GROUP BY n.trade_date
+        ), progress AS (
+            SELECT p.trade_date,
+                   COUNT(*) FILTER (WHERE p.steps_left = 1) AS one,
+                   COUNT(*) FILTER (WHERE p.period_start <= p.trade_date AND p.period_end >= p.trade_date) AS punish
+            FROM app_progress p
+            JOIN app_company c ON c.company_id = p.stock_id
+            WHERE p.trade_date BETWEEN :start AND :day
+            GROUP BY p.trade_date
+        )
+        SELECT p.trade_date, COALESCE(n.listed, 0) AS listed, COALESCE(n.clause13, 0) AS clause13, p.one, p.punish
+        FROM progress p
+        LEFT JOIN notice n ON n.trade_date = p.trade_date
+        ORDER BY p.trade_date
+    """
+    return _records(conn, sql, start=start, day=day)
+
+
+def new_punish(conn: sqlalchemy.Connection, start: datetime.date, day: datetime.date, period: str = "week") -> list[dict]:
+    """新增處置幾檔：start 以後開始、day（含）以前公布的處置，依處置開始日分組（period＝day 每天、week 每週，
+    period_start＝那天或那週的星期一）。最後一組可能含已公布、還沒開始的。沒有處置的日子、週沒有列。"""
+    if period not in ("day", "week"):
+        raise ValueError(f"period 只能是 day 或 week：{period}")
+    sql = f"""
+        SELECT date_trunc('{period}', ph.period_start)::date AS period_start, COUNT(*) AS count
+        FROM app_punish_history ph
+        JOIN app_company c ON c.company_id = ph.stock_id
+        WHERE ph.period_start >= :start AND ph.announce_date <= :day
+        GROUP BY 1
+        ORDER BY 1
+    """
+    return _records(conn, sql, start=start, day=day)
+
+
+def punish_lengths(conn: sqlalchemy.Connection, since: datetime.date, day: datetime.date) -> list[dict]:
+    """since 起開始、day（含）以前已經結束的處置，依期間幾個交易日分組：[{days, count}]（例如新制 5 天、延長 7 天）。
+    期間的天數用 app_trading_day 數；市場成交還沒抓到的月份數不準，所以結束日要在 app_trading_day 已有的日子內。"""
+    sql = """
+        SELECT (SELECT COUNT(*) FROM app_trading_day d WHERE d.trade_date BETWEEN ph.period_start AND ph.period_end) AS days,
+               COUNT(*) AS count
+        FROM app_punish_history ph
+        JOIN app_company c ON c.company_id = ph.stock_id
+        WHERE ph.period_start >= :since AND ph.period_end <= :day
+          AND ph.period_end <= (SELECT MAX(trade_date) FROM app_trading_day)
+        GROUP BY 1
+        ORDER BY 1
+    """
+    return _records(conn, sql, since=since, day=day)
+
+
+def trigger_clauses(conn: sqlalchemy.Connection, start: datetime.date, day: datetime.date) -> dict:
+    """觸發處置的注意紀錄：規則引擎判定達標（punished_by）、而且那天真的公布了處置的日子，
+    達標的那條路徑計入了哪幾天，一檔一天算一筆（達標但沒公布處置的不算）。
+    回傳 {total: 幾筆, by_clause: [{clause, count}]}：每款出現在幾筆裡（一筆可能同時列好幾款，加起來會超過 total）。"""
+    trigger = """
+        SELECT DISTINCT pd.stock_id, pd.counted_date
+        FROM app_progress p
+        JOIN app_company c ON c.company_id = p.stock_id
+        JOIN app_progress_date pd
+          ON pd.trade_date = p.trade_date AND pd.stock_id = p.stock_id
+         AND pd.path = ANY(string_to_array(p.punished_by, ','))
+        WHERE p.punished_by IS NOT NULL AND p.trade_date BETWEEN :start AND :day
+          AND EXISTS (SELECT 1 FROM app_punish_history ph WHERE ph.stock_id = p.stock_id AND ph.announce_date = p.trade_date)
+    """
+    total = conn.execute(sqlalchemy.text(f"SELECT COUNT(*) FROM ({trigger}) t"), {"start": start, "day": day}).scalar_one()
+    by_clause = _records(conn, f"""
+        SELECT CAST(x.clause AS INT) AS clause, COUNT(*) AS count
+        FROM ({trigger}) t
+        JOIN app_notice_history n ON n.stock_id = t.stock_id AND n.trade_date = t.counted_date
+        CROSS JOIN unnest(string_to_array(n.clauses, ',')) AS x(clause)
+        GROUP BY 1
+        ORDER BY 1
+    """, start=start, day=day)
+    return {"total": total, "by_clause": by_clause}
+
+
+def industry_counts(conn: sqlalchemy.Connection, start: datetime.date, day: datetime.date) -> list[dict]:
+    """每個產業一列：companies 現在的上市公司幾家（最新清單上的，下市的不算）、listed 其中 start～day 被列注意過的幾家
+    （比例用，分子分母同一群公司）；listed_all 被列注意過的幾家，含之後下市的（組成用，和 state_totals 的 listed_stocks 一致）。"""
+    sql = """
+        WITH c AS (
+            SELECT c.*, EXISTS (
+                SELECT 1 FROM app_notice_history n
+                WHERE n.stock_id = c.company_id AND n.trade_date BETWEEN :start AND :day
+            ) AS was_listed
+            FROM app_company c
+        )
+        SELECT industry_code,
+               COUNT(*) FILTER (WHERE is_listed_now) AS companies,
+               COUNT(*) FILTER (WHERE is_listed_now AND was_listed) AS listed,
+               COUNT(*) FILTER (WHERE was_listed) AS listed_all
+        FROM c
+        GROUP BY c.industry_code
+        ORDER BY c.industry_code
+    """
+    return _records(conn, sql, start=start, day=day)
+
+
+def state_totals(conn: sqlalchemy.Connection, start: datetime.date, day: datetime.date) -> dict:
+    """start～day 期間內：listed_stocks 幾檔被列注意過、clause13_stocks 其中幾檔列過第 13 款、
+    punished_stocks 幾檔被處置過（公布日在期間內）、punishments 共幾次、
+    second_stocks 其中幾檔是第二次處置（measure_type＝第二次處置；人工管制撮合不算）、one_stocks 幾檔聽牌過（差 1 次）。
+    每日的圖會重複算同一檔（處置 5 天算 5 次），這裡一檔只算一次。"""
+    punished = conn.execute(sqlalchemy.text("""
+        SELECT COUNT(DISTINCT ph.stock_id) AS punished_stocks,
+               COUNT(*) AS punishments,
+               COUNT(DISTINCT ph.stock_id) FILTER (WHERE ph.measure_type = '第二次處置') AS second_stocks
+        FROM app_punish_history ph
+        JOIN app_company c ON c.company_id = ph.stock_id
+        WHERE ph.announce_date BETWEEN :start AND :day
+    """), {"start": start, "day": day}).mappings().one()
+    one = conn.execute(sqlalchemy.text("""
+        SELECT COUNT(DISTINCT p.stock_id)
+        FROM app_progress p
+        JOIN app_company c ON c.company_id = p.stock_id
+        WHERE p.steps_left = 1 AND p.trade_date BETWEEN :start AND :day
+    """), {"start": start, "day": day}).scalar_one()
+    listed = conn.execute(sqlalchemy.text("""
+        SELECT COUNT(DISTINCT n.stock_id) AS listed_stocks,
+               COUNT(DISTINCT n.stock_id) FILTER (WHERE '13' = ANY(string_to_array(n.clauses, ','))) AS clause13_stocks
+        FROM app_notice_history n
+        JOIN app_company c ON c.company_id = n.stock_id
+        WHERE n.trade_date BETWEEN :start AND :day
+    """), {"start": start, "day": day}).mappings().one()
+    return {**{k: int(v) for k, v in listed.items()}, **{k: int(v) for k, v in punished.items()}, "one_stocks": int(one)}

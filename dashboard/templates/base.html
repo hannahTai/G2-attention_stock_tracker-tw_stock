@@ -1,5 +1,5 @@
-{# 每一頁的外框（整頁的 HTML）。換頁都用網址參數（?date=、?tab=、?only=、?stock=），app.py 讀網址決定畫哪一頁。
-   網頁沒有 JavaScript：交易日選單用 <details> 做成下拉清單、搜尋框是一般的表單。
+{# 每一頁的外框（整頁的 HTML）。換頁都用網址參數（?date=、?tab=、?only=、?stock=、?view=stats），app.py 讀網址決定畫哪一頁。
+   網頁沒有 JavaScript（只有統計頁的切換用一小段 static/stats.js，沒有它也能用）：交易日選單用 <details> 做成下拉清單、搜尋框是一般的表單。
    右上角放各頁自己的東西（header_right）：總覽是交易日選單和搜尋框，個股頁沒有。
    lang：讀螢幕軟體用中文唸；跳到主要內容：鍵盤使用者不用每頁都先跳過標題、交易日選單 #}
 <!doctype html>
@@ -7,6 +7,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f3f5f8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0f141b" media="(prefers-color-scheme: dark)">
   <title>{% block title %}注意股，還差幾步？{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -22,6 +25,16 @@
       <p class="sub">上市注意股離處置還差幾次、什麼時候處置和出關{% if day %}・資料截至 <span class="mono">{{ roc(day) }}</span> 收盤{% endif %}</p>
     </div>
     <div class="top-right">
+      {# 每一頁都有的三個分頁：卡片牆、未來幾日、歷史統計（後兩個是統計頁的 part），帶著目前的交易日；
+         current_view：overview_html 給 wall、stats_html 給 stats（再看 part），個股頁都不標。
+         在統計頁上，未來幾日／歷史統計之間切換不整頁換（stats.js 換掉內容和這一列，連結帶著目前的期間、每日／每週） #}
+      <nav class="nav" id="page-nav" aria-label="切換頁面">
+        <a href="?{% if day %}date={{ ymd(day) }}{% endif %}" {% if current_view == 'wall' %}aria-current="page"{% endif %}>卡片牆</a>
+        {% for key, name in {"future": "未來幾日", "history": "歷史統計"}.items() %}
+        {% if current_view == 'stats' %}<a href="?{{ stats_query(part=key) }}" data-swap="stats-body page-nav stats-head" {% if key == part %}aria-current="page"{% endif %}>{{ name }}</a>
+        {% else %}<a href="?view=stats{% if key == 'history' %}&amp;part=history{% endif %}{% if day %}&amp;date={{ ymd(day) }}{% endif %}">{{ name }}</a>{% endif %}
+        {% endfor %}
+      </nav>
       {% block header_right %}{% endblock %}
     </div>
   </header>
@@ -38,5 +51,6 @@
     <p>免責聲明：本網站僅彙整主管機關已公布之資訊，並依前述規定推算處置進度，不預測股價，亦不構成任何投資建議；推算結果以臺灣證券交易所公告為準。</p>
   </footer>
 </div>
+{% block scripts %}{% endblock %}
 </body>
 </html>

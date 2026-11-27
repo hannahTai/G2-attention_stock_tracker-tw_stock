@@ -17,7 +17,7 @@
    5. 用一般人聽得懂的話：寫「這次會算進處置次數」，不寫「is_counted」。
    6. 字要看得清楚：內文 15px；灰字和背景的對比至少 4.5:1（WCAG AA）；深色模式同樣檢查。
 
-   順序：顏色和字型（token）→ 整頁 → 共用版面 → 共用元件 → 總覽 → 個股頁 → 手機
+   順序：顏色和字型（token）→ 整頁 → 共用版面 → 共用元件 → 總覽 → 個股頁 → 卡片牆／統計切換 → 統計頁 → 手機
    ===================================================================== */
 
 /* ---------- 顏色和字型：只在這裡定義，下面都用 var(--xxx) ---------- */
@@ -33,7 +33,7 @@
   --cell-on: #1f4e8c; --cell-reset: #9fb7d9;
   --shadow: 0 6px 20px rgb(0 0 0 / .14);   /* 浮在內容上面的小框（分頁說明、預收撮合說明） */
   --f-body: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
-  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;   /* Consolas：Windows 字型還沒載入時不要變成襯線字 */
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -376,6 +376,178 @@ details pre { white-space: pre; overflow: auto; font-family: var(--f-mono); font
 .legend i.reset { background: var(--cell-reset); border-color: var(--cell-reset); }
 .legend i.punish { background: var(--seal); border-color: var(--seal); height: 4px; vertical-align: 2px; }
 
+/* ---------- 每一頁：卡片牆／統計切換 ---------- */
+.nav { display: flex; gap: 2px; background: var(--sunk); border-radius: 8px; padding: 3px; font-size: 13px; }
+.nav a { padding: 3px 12px; border-radius: 6px; color: var(--muted); text-decoration: none; }
+.nav a:hover { color: var(--ink); }
+.nav a:focus-visible { outline-offset: -2px; }
+.nav a[aria-current="page"] { background: var(--surface); color: var(--ink); font-weight: 700; box-shadow: 0 1px 2px rgb(0 0 0 / .12); }
+
+/* ---------- 統計頁 ---------- */
+/* 兩個分頁：未來幾日、歷史統計（和卡片牆的分頁同一種底線樣式，不要前面的圓點） */
+.stats-head { display: contents; }   /* 標題列裡統計頁的交易日選單，排法照 .top-right */
+/* 兩組：「明日與未來幾日」和「歷史統計」。組標題是 h2，區塊標題是 h3 */
+.group { margin-bottom: 36px; }
+.group-title { font-size: 20px; font-weight: 900; margin: 0 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--line);
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.group-title .muted { font-size: 13px; font-weight: 400; }
+/* 組標題右邊放切換（歷史統計的期間）：標題和底線那一列 */
+.group-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px;
+  margin: 0 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.group-head .group-title { margin: 0; padding: 0; border: 0; }
+.group-title .period { font-size: 15px; font-weight: 600; color: var(--muted); }   /* 歷史統計的期間，接在標題後面 */
+.block-head > h2, .block-head > h3 { min-width: 0; }
+.block-sub { margin: -6px 0 10px; font-size: 13px; color: var(--muted); }   /* 標題下面一行小字（期間、範圍） */
+/* 每張圖先一句結論：一般內文，重點數字粗體；不加框（框會和圖、注意股的藍色搶） */
+.insight { margin: 0 0 10px; font-size: 15px; color: var(--ink); line-height: 1.7; }
+.insight b { font-variant-numeric: tabular-nums; font-weight: 800; }
+/* 切換期間時（stats.js 在背景抓新的內容）先變淡，表示正在換 */
+.group[aria-busy="true"] { opacity: .55; transition: opacity .15s; }
+/* 圖上沒有、但同一段期間的數字（期間內共幾檔、延長幾次）：圖上方一排小數字卡，不寫進說明句 */
+.mini-stats { display: flex; flex-wrap: wrap; gap: 8px 28px; margin: 0 0 12px; }
+.mini-stats div { display: grid; gap: 0; }
+.mini-stats dt { font-size: 12px; color: var(--muted); }
+.mini-stats dd { margin: 0; font-size: 14px; color: var(--muted); }
+.mini-stats dd b { font-size: 20px; font-weight: 800; color: var(--ink); font-variant-numeric: tabular-nums; margin-right: 2px; }
+/* 歷史那組的框淡一點：不畫邊框，只留白底 */
+.group-history .box { border-color: transparent; }
+
+/* 明日與未來幾日：寬螢幕左右並排（5:7），窄的時候上下 */
+.now-grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 20px 28px; align-items: start; }
+.now-grid > .block { margin-bottom: 0; }
+/* 明日交易限制：一個框、三格並排（手機也並排），名稱、色點、點進去的分頁和卡片牆一樣（琥珀＝聽牌、橘＝即將處置、紅＝處置中） */
+.tomorrow { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); background: var(--surface); border: 1px solid var(--line);
+  border-radius: 10px; overflow: hidden; }
+.tm { position: relative; display: grid; gap: 2px; align-content: start; padding: 14px 16px 16px; text-decoration: none; color: var(--muted); }
+.tm + .tm { border-left: 1px solid var(--line); }
+.tm:hover { background: var(--sunk); }
+.tm:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.tm-k { font-size: 14px; font-weight: 600; color: var(--ink); display: flex; align-items: center; gap: 6px; }
+.tm-k::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--line); flex: none; }
+.tm.amber .tm-k::before { background: var(--amber); } .tm.orange .tm-k::before { background: var(--orange); } .tm.seal .tm-k::before { background: var(--seal); }
+/* 大數字：和卡片牆的大字同一種（內文字型、最粗），數字等寬 */
+.tm-n { font-family: var(--f-body); font-size: 36px; line-height: 1.15; color: var(--ink); font-weight: 900; font-variant-numeric: tabular-nums; }
+.tm-unit { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 4px; }
+.tm-note { font-size: 12px; color: var(--faint); }
+.tm-go { position: absolute; top: 12px; right: 14px; font-size: 18px; line-height: 1; color: var(--faint); }
+.tm:hover .tm-go { color: var(--accent); }
+/* 換網址的分段按鈕（2／3／5 日、每日／每週） */
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; font-size: 13px; }
+.seg a { padding: 2px 12px; color: var(--muted); text-decoration: none; }
+.seg a + a { border-left: 1px solid var(--line); }
+.seg a:not(.on):hover { background: var(--sunk); color: var(--ink); }
+.seg a:focus-visible { outline-offset: -2px; }   /* 框在按鈕裡面，才不會被 overflow 切掉 */
+.seg a.on { background: var(--ink); color: var(--surface); font-weight: 600; }
+/* 未來出關日程：一天一列的橫條（綠＝出關） */
+.rel-total { margin: 0 0 4px; color: var(--muted); }
+.rel-n { font-size: 24px; font-weight: 900; color: var(--ink); margin: 0 2px; font-variant-numeric: tabular-nums; }
+.rel-list { list-style: none; display: grid; }
+.rel-list > li { border-bottom: 1px solid var(--line); }
+.rel-list > li:last-child { border-bottom: 0; }
+.rel-row { display: grid; grid-template-columns: 92px minmax(0, 1fr) 16px; gap: 14px; align-items: center; padding-block: 8px; }
+.rel-day { white-space: nowrap; }   /* 日期和週幾放同一行 */
+/* 點開看是哪幾檔：整列可以點，右邊箭頭（朝右＝收著、朝下＝打開，和公告、注意紀錄同一個 .chev） */
+.rel > summary { list-style: none; cursor: pointer; color: var(--ink); font-size: 15px; border-radius: 4px; }
+.rel > summary::-webkit-details-marker { display: none; }
+.rel > summary:hover { background: var(--sunk); }
+.rel > summary:focus { outline: none; }
+.rel > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.rel[open] .chev { transform: translateY(-3px) rotate(45deg); }
+.rel-stocks { list-style: none; display: flex; flex-wrap: wrap; gap: 6px 8px; padding: 2px 0 12px 106px; }
+.rel-stocks a { display: inline-flex; align-items: baseline; font-size: 14px; color: var(--ink); text-decoration: none;
+  padding: 2px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); }
+.rel-stocks a:hover { border-color: var(--ok); color: var(--ok); }
+.rel-bar { display: flex; align-items: center; gap: 8px; }
+.rel-bar i { display: block; height: 14px; min-width: 2px; background: var(--ok); border-radius: 0 4px 4px 0; }
+
+/* 圖（inline SVG，templates/_charts.html）：線和點的顏色照狀態色；第 13 款不是狀態，用墨色；文字用墨色、灰色 */
+/* 窄螢幕：圖保持 560px 寬、在框裡左右捲，一打開先看到最新的一端（rtl），手機上字放大（見最下面）；min-width: 0 才不會把框撐寬 */
+.chart-wrap { overflow-x: auto; min-width: 0; direction: rtl; }
+.chart { width: 100%; min-width: 560px; height: auto; display: block; font-family: var(--f-body); direction: ltr; }
+.chart-sm { min-width: 0; }   /* 並排的小圖：viewBox 本來就窄，跟著框縮放，不用左右捲 */
+.box > *, .block-head > * { min-width: 0; }
+.chart .grid { stroke: var(--line); stroke-width: 1; }
+.chart .tick { fill: var(--faint); font-size: 11px; font-family: var(--f-mono); }
+.chart .xlabel { fill: var(--muted); font-size: 12.5px; font-weight: 500; }   /* 橫軸的日期：比縱軸的數字明顯 */
+.chart .xtick { stroke: var(--faint); stroke-width: 1; }
+.chart .ln { fill: none; stroke-width: 2; stroke-linejoin: round; }
+.chart .ln-accent { stroke: var(--accent); } .chart .ln-amber { stroke: var(--amber); }
+.chart .ln-seal { stroke: var(--seal); } .chart .ln-ink { stroke: var(--muted); stroke-width: 1.5; }
+.chart [class^="dot-"] { stroke: var(--surface); stroke-width: 2; }
+.chart .dot-accent { fill: var(--accent); } .chart .dot-amber { fill: var(--amber); }
+.chart .dot-seal { fill: var(--seal); } .chart .dot-ink { fill: var(--muted); }
+.chart .end { fill: var(--muted); font-size: 12px; }
+.chart .end-n { fill: var(--ink); font-weight: 700; font-family: var(--f-mono); }
+/* 點一下看數字（_charts.html 的 .pt）：平常藏著，點到、滑鼠移上去時顯示直線、點和說明卡片 */
+.chart .hit { fill: transparent; }
+.chart .pt { cursor: pointer; outline: none; }
+.chart .pt .tip { display: none; pointer-events: none; }
+.chart .pt:hover .tip, .chart .pt:focus .tip { display: inline; }
+.chart .pt:hover .hit, .chart .pt:focus .hit { fill: color-mix(in srgb, var(--ink) 5%, transparent); }
+.chart .guide { stroke: var(--muted); stroke-width: 1; }
+.chart .tip-box { fill: var(--surface); stroke: var(--line); stroke-width: 1; filter: drop-shadow(0 4px 10px rgb(0 0 0 / .16)); }
+.chart .tip-date { fill: var(--ink); font-size: 13px; font-weight: 700; }
+.chart .tip-row { fill: var(--muted); font-size: 12.5px; }
+.chart .tip-n { fill: var(--ink); font-size: 14px; font-weight: 700; font-family: var(--f-mono); }
+/* 直條：處置用紅色，但不用整片實心（全站最強的警示色，歷史資料不需要那麼重）：淡紅；還沒過完的更淡；點到的變實心紅 */
+.chart .col { fill: color-mix(in srgb, var(--seal) 55%, var(--surface)); }
+.chart .col.partial { fill: color-mix(in srgb, var(--seal) 22%, var(--surface)); }
+.chart .col-on { fill: var(--seal); }
+.chart .avg { stroke: var(--ink); stroke-width: 1.5; stroke-dasharray: 6 3; }
+.chart .avg-label { fill: var(--ink); font-size: 12px; font-weight: 700; paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round; }
+.legend-row { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; color: var(--muted); }
+.legend-row i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: 4px; margin-right: 6px; }
+/* 圖例＝開關（_charts.html 的 legend）：點了藏起那條線；藏起來的圖例變淡、加刪除線 */
+.toggles .lg { position: relative; display: inline-flex; align-items: center; gap: 0; cursor: pointer; padding: 2px 10px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--surface); user-select: none; }
+.toggles .lg:hover { border-color: var(--muted); }
+.toggles .lg input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.toggles .lg:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.toggles .lg:has(input:not(:checked)) { color: var(--faint); text-decoration: line-through; }
+.toggles .lg:has(input:not(:checked)) i { opacity: .3; }
+.block:has(.lg-accent:not(:checked)) .k-accent, .block:has(.lg-ink:not(:checked)) .k-ink,
+.block:has(.lg-seal:not(:checked)) .k-seal, .block:has(.lg-amber:not(:checked)) .k-amber { display: none; }
+.key-accent { background: var(--accent); } .key-ink { background: var(--muted); } .key-seal { background: var(--seal); } .key-amber { background: var(--amber); }
+/* 款次、產業：一列一個橫條（名稱｜長條｜數字），長條刻度都是 0～100 */
+.stats-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 28px; align-items: start; }
+.stats-grid > * { min-width: 0; }
+.hb { list-style: none; display: grid; }
+.hb { max-width: 880px; }   /* 整行寬時長條不要拉太長 */
+/* 產業：左邊比例長條、右邊組成圓餅（甜甜圈）。圓餅用同一個藍由深到淺（由大到小），其他用灰 */
+.industry-grid { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; align-items: start; }
+.industry-grid > * { min-width: 0; margin: 0; }
+.share-title { font-size: 14px; color: var(--muted); margin-bottom: 8px; }
+.share-title b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.donut { display: block; width: 168px; margin: 4px auto 12px; transform: rotate(-90deg); }
+.donut circle { fill: none; stroke-width: 20; }
+.donut-bg { stroke: var(--sunk); }
+.sl-0 { --sl: var(--accent); }
+.sl-1 { --sl: color-mix(in oklab, var(--accent) 75%, var(--surface)); }
+.sl-2 { --sl: color-mix(in oklab, var(--accent) 52%, var(--surface)); }
+.sl-3 { --sl: color-mix(in oklab, var(--accent) 32%, var(--surface)); }
+.sl-other { --sl: color-mix(in oklab, var(--faint) 55%, var(--surface)); }   /* 其他：淡灰，不要比前幾名搶眼 */
+.donut .sl { stroke: var(--sl); }
+.sl-key { width: 12px; height: 12px; border-radius: 3px; background: var(--sl); }
+.share-list { list-style: none; margin: 0; padding: 0; display: grid; }
+.share-list li { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto 3.6em; gap: 8px; align-items: center; padding-block: 6px;
+  border-bottom: 1px solid var(--line); font-size: 14px; }
+.share-list li:last-child { border-bottom: 0; }
+.share-list b { text-align: right; font-variant-numeric: tabular-nums; }
+.share-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hb-row { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.4fr) 104px; gap: 12px; align-items: center; padding-block: 7px; border-bottom: 1px solid var(--line); font-size: 14px; }
+.hb-row:last-child { border-bottom: 0; }
+.hb-row.base { color: var(--muted); }   /* 基準列（全體上市公司）：灰色，長條用灰 */
+.hb-row.base .hb-track i { background: var(--faint); }
+.hb-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hb-track { position: relative; height: 10px; background: var(--sunk); border-radius: 0 4px 4px 0; }
+.hb-track i { position: absolute; inset: 0 auto 0 0; background: var(--accent); border-radius: 0 4px 4px 0; }
+.hb-val { display: flex; justify-content: flex-end; align-items: baseline; gap: 8px; white-space: nowrap; }
+.hb-sub { font-size: 12px; color: var(--faint); min-width: 4.5em; text-align: right; }
+@media (min-width: 761px) and (max-width: 959px) { .now-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 760px) {
+  .stats-grid, .now-grid, .industry-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* ---------- 手機（窄於 560px） ---------- */
 @media (max-width: 560px) {
   .paths { grid-template-columns: minmax(0, 1fr); }
@@ -383,6 +555,27 @@ details pre { white-space: pre; overflow: auto; font-family: var(--f-mono); font
   .day-row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
   .day-date { display: flex; gap: 6px; align-items: baseline; }
   .step { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  /* 統計頁 */
+  .rel-row { grid-template-columns: 88px minmax(0, 1fr) 16px; }
+  .rel-stocks { padding-left: 0; }
+  /* 名稱自己一行（款次名稱很長），下一行長條＋數字 */
+  .hb-row { grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; }
+  .hb-label { grid-column: 1 / -1; white-space: normal; }
+  .tm { padding: 12px 12px 14px; }
+  .tm-k { font-size: 13px; }
+  .tm-n { font-size: 28px; }
+  .tm-note { display: none; }
+  .tm-go { display: none; }   /* 窄的時候和標籤擠在一起；整格照樣可以點 */
+  .seg a, .nav a { padding-block: 8px; }   /* 手指點得到 */
+  /* 圖在手機上縮成約 0.6 倍：字（SVG 的單位）放大，畫出來才看得清楚；說明卡片從靠直線的那一角放大 */
+  .chart:not(.chart-sm) .tick { font-size: 18px; }   /* 小圖（.chart-sm，viewBox 本來就窄）不用放大 */
+  .chart:not(.chart-sm) .end { font-size: 20px; }
+  .chart:not(.chart-sm) .avg-label { font-size: 20px; }
+  .chart:not(.chart-sm) .tip-card { transform-box: fill-box; transform: scale(1.6); }
+  .chart-sm .tick { font-size: 16px; }   /* 小圖縮成約 0.65 倍：字放大一點 */
+  .chart-sm .end { font-size: 17px; }
+  .chart .tip-card.right { transform-origin: left top; }
+  .chart .tip-card.left { transform-origin: right top; }
 }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
